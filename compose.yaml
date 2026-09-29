@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: web.Dockerfile
+      args:
+        CADDY_BASE_IMAGE: ${CADDY_BASE_IMAGE:-caddy:2.11.4}
     image: cam-web:dev
     read_only: true
     user: "10001:10001"

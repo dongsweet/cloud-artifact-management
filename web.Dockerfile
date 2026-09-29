@@ -13,7 +13,8 @@ RUN mkdir -p /out/assets/fonts \
   && cp index.html /out/ \
   && cp app.js app.css /out/assets/
 
-FROM caddy-alidns:artform-test
+ARG CADDY_BASE_IMAGE=caddy:2.11.4
+FROM ${CADDY_BASE_IMAGE}
 COPY web/Caddyfile /etc/caddy/Caddyfile
 COPY --from=assets /out /srv/web
 RUN addgroup -S -g 10001 cam && adduser -S -D -H -u 10001 -G cam cam \
