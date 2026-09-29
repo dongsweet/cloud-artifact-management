@@ -1,3 +1,3 @@
-import { createServer } from '../../../libs/cam-server/src/server.js';
+import { createEdgeServer } from './app.js';
 
-await createServer({ service: 'cam-edge', port: Number(process.env.PORT ?? 3101) });
+await createEdgeServer();

@@ -113,7 +113,7 @@ export async function assembleChunks({ taskDir, manifest, outputPath }) {
     await destination.close();
   }
   const actual = await sha256File(outputTemp);
-  if (actual !== manifest.sha256) throw new Error('assembled file checksum mismatch');
+  if (manifest.sha256 && actual !== manifest.sha256) throw new Error('assembled file checksum mismatch');
   await rename(outputTemp, outputPath);
   return { path: outputPath, size: manifest.size, sha256: actual };
 }

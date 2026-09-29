@@ -396,7 +396,11 @@ transfer-bundle/
 | 服务 | 接口 | 作用 |
 |---|---|---|
 | `cam-edge` | `POST /api/v1/candidates` | 创建候选接收任务 |
+| `cam-edge` | `GET /api/v1/candidates/:id` | 查询候选元数据、状态和摘要 |
 | `cam-edge` | `GET /api/v1/candidates/:id/parts` | 查询候选分块进度 |
+| `cam-edge` | `PUT /api/v1/candidates/:id/parts/:partIndex` | 接收一个带 SHA-256 校验的候选分块 |
+| `cam-edge` | `POST /api/v1/candidates/:id/receive` | 按研发地址和 HTTP Range 异步接收候选文件 |
+| `cam-edge` | `POST /api/v1/candidates/:id/complete` | 合并分块、校验完整摘要并固化候选文件 |
 | `cam-edge` | `POST /api/v1/releases/:id/submit-approval` | 提交验证通过的正式发布申请 |
 | `cam-core` | `POST /api/v1/gate/receipts` | 登记网闸接收回执 |
 | `cam-core` | `GET /api/v1/distribution-tasks/:id/manifest` | 向云中心提供清单和授权 |
