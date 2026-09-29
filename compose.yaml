@@ -10,8 +10,8 @@ services:
     user: "10001:10001"
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev
-      - /data:size=16m,mode=0700
-      - /config:size=4m,mode=0700
+      - /data:size=16m,mode=0700,uid=10001,gid=10001
+      - /config:size=4m,mode=0700,uid=10001,gid=10001
     depends_on:
       - cam-edge
       - cam-core
