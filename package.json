@@ -1,0 +1,19 @@
+{
+  "name": "cloud-artifact-management",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloud Artifact Management system",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "start:edge": "node apps/cam-edge/src/server.js",
+    "start:core": "node apps/cam-core/src/server.js",
+    "start:agent": "node apps/cam-agent/src/server.js"
+  },
+  "dependencies": {
+    "fastify": "^5.6.1"
+  }
+}

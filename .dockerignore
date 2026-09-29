@@ -1,0 +1,9 @@
+.git
+node_modules
+data
+coverage
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+docs
+*.tar

@@ -1,0 +1,62 @@
+services:
+  cam-edge:
+    build:
+      context: .
+      args:
+        SERVICE: cam-edge
+    image: cam-edge:dev
+    read_only: true
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    volumes:
+      - edge-data:/data
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3101
+    ports:
+      - "3101:3101"
+    restart: unless-stopped
+
+  cam-core:
+    build:
+      context: .
+      args:
+        SERVICE: cam-core
+    image: cam-core:dev
+    read_only: true
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    volumes:
+      - core-data:/data
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3102
+    ports:
+      - "3102:3102"
+    restart: unless-stopped
+
+  cam-agent:
+    build:
+      context: .
+      args:
+        SERVICE: cam-agent
+    image: cam-agent:dev
+    read_only: true
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    volumes:
+      - agent-data:/data
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3103
+    ports:
+      - "3103:3103"
+    restart: unless-stopped
+
+volumes:
+  edge-data:
+  core-data:
+  agent-data:
