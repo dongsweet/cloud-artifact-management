@@ -1,3 +1,5 @@
+ARG CADDY_BASE_IMAGE=caddy:2.11.4
+
 FROM node:24-bookworm-slim AS assets
 WORKDIR /build
 COPY web/package.json web/package-lock.json ./
@@ -13,7 +15,7 @@ RUN mkdir -p /out/assets/fonts \
   && cp index.html /out/ \
   && cp app.js app.css /out/assets/
 
-ARG CADDY_BASE_IMAGE=caddy:2.11.4
+ARG CADDY_BASE_IMAGE
 FROM ${CADDY_BASE_IMAGE}
 COPY web/Caddyfile /etc/caddy/Caddyfile
 COPY --from=assets /out /srv/web
