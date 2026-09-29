@@ -16,7 +16,9 @@ RUN mkdir -p /out/assets/fonts \
   && cp app.js app.css /out/assets/
 
 ARG CADDY_BASE_IMAGE
-FROM ${CADDY_BASE_IMAGE}
+FROM ${CADDY_BASE_IMAGE} AS caddy-runtime
+
+FROM caddy-runtime
 COPY web/Caddyfile /etc/caddy/Caddyfile
 COPY --from=assets /out /srv/web
 RUN addgroup -S -g 10001 cam && adduser -S -D -H -u 10001 -G cam cam \
