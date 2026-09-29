@@ -1,0 +1,11 @@
+{
+  "name": "cloud-artifact-management-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "admin-lte": "4.9.1",
+    "bootstrap": "5.3.8",
+    "bootstrap-icons": "1.13.1"
+  }
+}

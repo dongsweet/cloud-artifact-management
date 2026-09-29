@@ -22,6 +22,9 @@ test('cam-edge accepts resumable candidate parts and finalizes the candidate', a
   });
   assert.equal(created.statusCode, 201);
   const candidate = created.json();
+  const listed = await app.inject({ method: 'GET', url: '/api/v1/candidates' });
+  assert.equal(listed.statusCode, 200);
+  assert.equal(listed.json().items[0].candidateId, candidate.candidateId);
   const putPart = async (index, bytes) => app.inject({ method: 'PUT', url: `/api/v1/candidates/${candidate.candidateId}/parts/${index}`, headers: { 'content-type': 'application/octet-stream', 'x-chunk-sha256': (await import('node:crypto')).createHash('sha256').update(bytes).digest('hex') }, payload: bytes });
   assert.equal((await putPart(2, payload.subarray(8))).statusCode, 200);
   assert.equal((await putPart(0, payload.subarray(0, 4))).statusCode, 200);

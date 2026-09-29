@@ -1,4 +1,21 @@
 services:
+  cam-web:
+    build:
+      context: .
+      dockerfile: web.Dockerfile
+    image: cam-web:dev
+    read_only: true
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    depends_on:
+      - cam-edge
+      - cam-core
+      - cam-agent
+    ports:
+      - "8088:8080"
+    restart: unless-stopped
+
   cam-edge:
     build:
       context: .

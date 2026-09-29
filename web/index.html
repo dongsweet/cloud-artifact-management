@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>云平台软件制品管理</title>
+  <link rel="stylesheet" href="/assets/bootstrap.min.css">
+  <link rel="stylesheet" href="/assets/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="/assets/adminlte.min.css">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body class="layout-fixed sidebar-expand-lg bg-body-tertiary">
+<div class="app-wrapper">
+  <nav class="app-header navbar navbar-expand bg-body">
+    <div class="container-fluid">
+      <a class="navbar-brand fw-semibold" href="#">CAM · 制品管理</a>
+      <span class="text-body-secondary small">统一运维外部交换区</span>
+    </div>
+  </nav>
+  <aside class="app-sidebar bg-dark shadow" data-bs-theme="dark">
+    <div class="sidebar-brand"><span class="brand-text fw-light">候选制品接收</span></div>
+    <div class="sidebar-wrapper"><nav>
+      <ul class="nav sidebar-menu flex-column" data-lte-toggle="treeview" role="menu">
+        <li class="nav-item menu-open"><a href="#candidates" class="nav-link active" data-view="candidates"><span class="nav-icon bi bi-box-seam"></span><p>候选制品</p></a></li>
+        <li class="nav-item"><a href="#create" class="nav-link" data-view="create"><span class="nav-icon bi bi-plus-square"></span><p>创建接收任务</p></a></li>
+      </ul>
+    </nav></div>
+  </aside>
+  <main class="app-main">
+    <div class="app-content-header"><div class="container-fluid"><div class="row"><div class="col-sm-6"><h3 class="mb-0" id="page-title">候选制品</h3></div><div class="col-sm-6"><ol class="breadcrumb float-sm-end"><li class="breadcrumb-item">CAM</li><li class="breadcrumb-item active" id="breadcrumb-title">候选制品</li></ol></div></div></div></div>
+    <div class="app-content"><div class="container-fluid">
+      <div id="alert" class="alert d-none" role="alert"></div>
+      <section id="view-candidates">
+        <div class="row g-3 mb-3"><div class="col-md-4"><div class="small-box text-bg-primary"><div class="inner"><h3 id="count-total">0</h3><p>候选任务总数</p></div><span class="small-box-icon"><i class="bi bi-boxes"></i></span></div></div><div class="col-md-4"><div class="small-box text-bg-warning"><div class="inner"><h3 id="count-receiving">0</h3><p>接收中</p></div><span class="small-box-icon"><i class="bi bi-arrow-repeat"></i></span></div></div><div class="col-md-4"><div class="small-box text-bg-success"><div class="inner"><h3 id="count-completed">0</h3><p>已完成验证前置接收</p></div><span class="small-box-icon"><i class="bi bi-check2-circle"></i></span></div></div></div>
+        <div class="card"><div class="card-header d-flex justify-content-between align-items-center"><h3 class="card-title">候选制品列表</h3><button class="btn btn-primary btn-sm" data-view="create"><i class="bi bi-plus-lg me-1"></i>创建任务</button></div><div class="card-body p-0 table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>候选 ID</th><th>版本</th><th>原始文件</th><th>大小</th><th>进度</th><th>状态</th><th>操作</th></tr></thead><tbody id="candidate-rows"><tr><td colspan="7" class="text-center text-body-secondary py-4">正在加载…</td></tr></tbody></table></div></div>
+      </section>
+      <section id="view-create" class="d-none"><div class="card card-primary card-outline"><div class="card-header"><h3 class="card-title">创建候选接收任务</h3></div><form id="create-form"><div class="card-body"><div class="row g-3"><div class="col-md-8"><label class="form-label" for="source-url">研发文件地址</label><input id="source-url" class="form-control" type="url" required placeholder="https://研发内网地址/release.bin"></div><div class="col-md-4"><label class="form-label" for="file-name">原始文件名</label><input id="file-name" class="form-control" required placeholder="release.bin"></div><div class="col-md-4"><label class="form-label" for="version">版本号</label><input id="version" class="form-control" required placeholder="8.0.6.2"></div><div class="col-md-4"><label class="form-label" for="size">文件大小（字节）</label><input id="size" class="form-control" type="number" min="0" required></div><div class="col-md-4"><label class="form-label" for="architecture">架构</label><input id="architecture" class="form-control" placeholder="amd64"></div><div class="col-md-8"><label class="form-label" for="targets">目标云中心 / 安全域</label><input id="targets" class="form-control" placeholder="政务外网,互联网"></div><div class="col-md-4"><label class="form-label" for="sha256">研发提供的完整 SHA-256（可选）</label><input id="sha256" class="form-control font-monospace" pattern="[a-fA-F0-9]{64}"></div></div></div><div class="card-footer d-flex justify-content-end gap-2"><button type="button" class="btn btn-outline-secondary" data-view="candidates">取消</button><button class="btn btn-primary" type="submit"><i class="bi bi-check-lg me-1"></i>创建并保存</button></div></form></div></section>
+      <section id="view-detail" class="d-none"><div class="card"><div class="card-header d-flex justify-content-between align-items-center"><h3 class="card-title" id="detail-title">候选详情</h3><button class="btn btn-outline-secondary btn-sm" data-view="candidates"><i class="bi bi-arrow-left me-1"></i>返回列表</button></div><div class="card-body"><dl class="row mb-0" id="detail-fields"></dl><div class="mt-4 d-flex gap-2"><button id="receive-button" class="btn btn-primary"><i class="bi bi-cloud-download me-1"></i>从研发地址接收</button><button id="complete-button" class="btn btn-success"><i class="bi bi-shield-check me-1"></i>合并并固化</button></div><div class="progress mt-4" role="progressbar"><div id="detail-progress" class="progress-bar" style="width:0%">0%</div></div></div></div></section>
+    </div></div>
+  </main>
+</div>
+<script src="/assets/bootstrap.bundle.min.js"></script>
+<script src="/assets/adminlte.min.js"></script>
+<script type="module" src="/assets/app.js"></script>
+</body>
+</html>

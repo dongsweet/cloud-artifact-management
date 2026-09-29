@@ -1,0 +1,19 @@
+:8080 {
+  root * /srv/web
+  encode gzip zstd
+
+  header {
+    X-Content-Type-Options nosniff
+    Referrer-Policy strict-origin-when-cross-origin
+    X-Frame-Options SAMEORIGIN
+  }
+
+  handle /api/* {
+    reverse_proxy cam-edge:3101
+  }
+
+  handle {
+    try_files {path} /index.html
+    file_server
+  }
+}

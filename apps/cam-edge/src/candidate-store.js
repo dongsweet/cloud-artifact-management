@@ -107,6 +107,16 @@ export class CandidateStore {
     return parseCandidate(row);
   }
 
+  list({ limit = 50, offset = 0 } = {}) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('limit must be between 1 and 200');
+    if (!Number.isInteger(offset) || offset < 0) throw new Error('offset must be a non-negative integer');
+    const rows = this.db.prepare(`SELECT c.*,
+      (SELECT COUNT(*) FROM candidate_parts p WHERE p.candidate_id = c.candidate_id AND p.status = 'COMPLETED') AS completed_parts,
+      (c.chunk_count - (SELECT COUNT(*) FROM candidate_parts p WHERE p.candidate_id = c.candidate_id AND p.status = 'COMPLETED')) AS missing_parts
+      FROM candidates c ORDER BY c.created_at DESC LIMIT ? OFFSET ?`).all(limit, offset);
+    return rows.map(parseCandidate);
+  }
+
   getPart(candidateId, partIndex) {
     return this.db.prepare('SELECT * FROM candidate_parts WHERE candidate_id = ? AND part_index = ?').get(candidateId, partIndex) ?? null;
   }

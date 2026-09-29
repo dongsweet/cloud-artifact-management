@@ -72,6 +72,16 @@ export function registerCandidateRoutes(app, { store, receiver }) {
     }
   });
 
+  app.get('/api/v1/candidates', async (request, reply) => {
+    try {
+      const limit = request.query?.limit === undefined ? 50 : Number(request.query.limit);
+      const offset = request.query?.offset === undefined ? 0 : Number(request.query.offset);
+      return reply.send({ items: store.list({ limit, offset }).map(candidateResponse), limit, offset });
+    } catch (err) {
+      return error(reply, 400, 'invalid_query', err.message);
+    }
+  });
+
   app.get('/api/v1/candidates/:candidateId', async (request, reply) => {
     const candidate = store.get(request.params.candidateId);
     return candidate ? reply.send(candidateResponse(candidate)) : error(reply, 404, 'candidate_not_found', 'candidate not found');
