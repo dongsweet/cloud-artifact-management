@@ -33,14 +33,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-    entrypoint:
-      - /usr/bin/tini
-      - "--"
-      - /bin/bash
-      - -lc
-      - |
-        ln -sf /usr/sbin/iptables-nft /usr/local/bin/iptables
-        exec /usr/local/bin/entrypoint.sh
     networks:
       default:
         aliases:

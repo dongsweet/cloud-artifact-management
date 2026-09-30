@@ -177,7 +177,7 @@ cloud-artifact-management/
 
 外部交换区的 `cam-edge` 与 Hillstone VPN 容器共享网络命名空间。Hillstone 容器负责 TUN 设备、VPN 会话和研发网段路由；`cam-edge` 不直接持有 VPN 凭据，也不直接访问外部代理端口。Hillstone 配置和运行数据使用独立持久化卷，管理端口只绑定目标虚拟机本地地址。
 
-在 Ubuntu 新内核环境中，Hillstone 镜像启动脚本需显式选择 `iptables-nft` 后端。容器入口先将通用 `iptables` 命令链接到该后端，再执行镜像入口脚本；不修改宿主机全局 iptables 选择。此设置用于兼容新内核的 netfilter 实现，并保留镜像要求的 IPv4 转发和 NAT 校验。
+在 Ubuntu 新内核环境中，Hillstone 仍使用镜像原生的 `iptables-legacy` 入口。部署前由 `deploy/cam-hillstone-netfilter.conf` 配置宿主机开机加载 `ip_tables`、`iptable_filter`、`iptable_nat` 和 `iptable_mangle` 模块，容器不替换 `iptables` 后端。这样保留 Hillstone 客户端依赖的 legacy 网络行为，避免仅满足容器健康检查而导致客户端隧道不在线。
 
 宿主机到研发地址的路由由 `deploy/cam-hillstone-route.service` 管理。路由脚本等待 Compose 网络和容器出现，使用网络 ID 的前 12 位动态定位 Docker 网桥，再查询 Hillstone 容器在该网络中的 IP，最后执行 `ip route replace <目标> via <Hillstone IP> dev <Docker 网桥>`。网络重建或容器重建后由 `start`、`restart` 流程重新执行服务；网桥名和容器 IP 不写入固定配置。默认目标为研发文件服务器 `172.22.5.177/32`，避免与测试机其他 Docker 网络的 `172.22.0.0/16` 地址空间产生全网段路由覆盖。
 

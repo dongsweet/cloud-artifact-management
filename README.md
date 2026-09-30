@@ -49,4 +49,6 @@ cd cloud-artifact-management/deploy
 sudo sh ./install-hillstone-route.sh
 ```
 
+安装脚本同时把 legacy netfilter 模块写入 `/etc/modules-load.d/cam-hillstone-netfilter.conf` 并立即加载，保证 Hillstone 使用原生 `iptables-legacy` 入口。宿主机重启后由 `systemd-modules-load` 自动恢复这些模块。
+
 传输核心位于 `libs/cam-transfer`，包括清单生成、分块摘要、原子写入、合并校验和 SQLite 进度恢复。
