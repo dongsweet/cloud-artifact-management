@@ -91,3 +91,30 @@ test('cam-edge receives a candidate from an HTTP Range source and records its so
   await app.close();
   await new Promise((resolve, reject) => source.close((error) => error ? reject(error) : resolve()));
 });
+
+test('release rounds inherit unchanged candidate packages and replace only updated package mappings', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-rounds-'));
+  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: '曙光云 Stack' } });
+  assert.equal(product.statusCode, 201);
+  const productId = product.json().productId;
+  const release = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/releases`, payload: { version: '8.0.6.2' } });
+  assert.equal(release.statusCode, 201);
+  const releaseId = release.json().releaseId;
+  const firstRound = await app.inject({ method: 'POST', url: `/api/v1/releases/${releaseId}/rounds`, payload: {} });
+  const round1 = firstRound.json();
+  const createPackage = (roundId, packageKey, fileName) => app.inject({ method: 'POST', url: `/api/v1/rounds/${roundId}/candidates`, payload: { packageKey, sourceUrl: `http://127.0.0.1/${fileName}`, fileName, size: 4 } });
+  const packageA = (await createPackage(round1.roundId, 'base', 'base.tar')).json();
+  const packageB = (await createPackage(round1.roundId, 'agent', 'agent.tar')).json();
+  const secondRound = await app.inject({ method: 'POST', url: `/api/v1/releases/${releaseId}/rounds`, payload: { baseRoundId: round1.roundId } });
+  const round2 = secondRound.json();
+  const inherited = await app.inject({ method: 'GET', url: `/api/v1/rounds/${round2.roundId}/candidates` });
+  assert.deepEqual(inherited.json().items.map((item) => [item.packageKey, item.candidateId, item.mappingSource]), [['agent', packageB.candidateId, 'INHERITED'], ['base', packageA.candidateId, 'INHERITED']]);
+  const replacement = (await createPackage(round2.roundId, 'agent', 'agent-v2.tar')).json();
+  const updated = await app.inject({ method: 'GET', url: `/api/v1/rounds/${round2.roundId}/candidates` });
+  const items = updated.json().items;
+  assert.equal(items.find((item) => item.packageKey === 'base').candidateId, packageA.candidateId);
+  assert.equal(items.find((item) => item.packageKey === 'agent').candidateId, replacement.candidateId);
+  assert.equal(items.find((item) => item.packageKey === 'agent').mappingSource, 'OWNED');
+  await app.close();
+});

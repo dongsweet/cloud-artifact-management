@@ -1,156 +1,29 @@
-const state = { candidates: [], selectedId: null, pollTimer: null };
-
+const state = { products: [], releases: [], releaseId: null, roundId: null, candidateId: null, pollTimer: null };
 const $ = (selector) => document.querySelector(selector);
-
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
-}
-
-function formatBytes(value) {
-  if (!Number.isFinite(Number(value))) return '-';
-  if (value < 1024) return `${value} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let amount = value;
-  let unit = -1;
-  while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
-  return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${units[unit]}`;
-}
-
-function statusLabel(status) {
-  return { CREATED: '待接收', RECEIVING: '接收中', PARTIAL: '待完成', FAILED: '失败', COMPLETED: '已完成' }[status] ?? status;
-}
-
-function statusClass(status) {
-  return { CREATED: 'text-bg-secondary', RECEIVING: 'text-bg-info', PARTIAL: 'text-bg-warning', FAILED: 'text-bg-danger', COMPLETED: 'text-bg-success' }[status] ?? 'text-bg-secondary';
-}
-
-function showAlert(message, type = 'success') {
-  const alert = $('#alert');
-  alert.className = `alert alert-${type}`;
-  alert.textContent = message;
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-  window.setTimeout(() => alert.classList.add('d-none'), 5000);
-}
-
-async function api(path, options = {}) {
-  const response = await fetch(path, { headers: { 'content-type': 'application/json', ...(options.headers ?? {}) }, ...options });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error?.message ?? `请求失败（${response.status}）`);
-  return body;
-}
-
-function setView(view) {
-  const views = ['candidates', 'create', 'detail'];
-  views.forEach((name) => $(`#view-${name}`).classList.toggle('d-none', name !== view));
-  document.querySelectorAll('[data-view]').forEach((link) => link.classList.toggle('active', link.dataset.view === view && link.classList.contains('nav-link')));
-  const title = view === 'create' ? '创建接收任务' : view === 'detail' ? '候选详情' : '候选制品';
-  $('#page-title').textContent = title;
-  $('#breadcrumb-title').textContent = title;
-  if (view === 'candidates') loadCandidates().catch((error) => showAlert(error.message, 'danger'));
-  if (view === 'create') $('#create-form').reset();
-}
-
-function renderCandidates(items) {
-  state.candidates = items;
-  $('#count-total').textContent = items.length;
-  $('#count-receiving').textContent = items.filter((item) => item.status === 'RECEIVING').length;
-  $('#count-completed').textContent = items.filter((item) => item.status === 'COMPLETED').length;
-  const rows = $('#candidate-rows');
-  if (items.length === 0) {
-    rows.innerHTML = '<tr><td colspan="7" class="text-center text-body-secondary py-4">暂无候选制品</td></tr>';
-    return;
-  }
-  rows.innerHTML = items.map((item) => {
-    const progress = item.chunkCount === 0 ? 100 : Math.round((item.completedParts / item.chunkCount) * 100);
-    return `<tr><td><span class="font-monospace small">${escapeHtml(item.candidateId.slice(-18))}</span></td><td>${escapeHtml(item.version)}</td><td><div class="fw-semibold text-truncate file-name">${escapeHtml(item.fileName)}</div><small class="text-body-secondary">${escapeHtml(item.architecture ?? '-')}</small></td><td>${formatBytes(item.size)}</td><td><div class="progress compact-progress"><div class="progress-bar" style="width:${progress}%"></div></div><small class="text-body-secondary">${item.completedParts}/${item.chunkCount}</small></td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><button class="btn btn-outline-primary btn-sm" data-candidate="${escapeHtml(item.candidateId)}" title="查看候选详情"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button></td></tr>`;
-  }).join('');
-  rows.querySelectorAll('[data-candidate]').forEach((button) => button.addEventListener('click', () => openDetail(button.dataset.candidate)));
-}
-
-async function loadCandidates() {
-  const result = await api('/api/v1/candidates?limit=100');
-  renderCandidates(result.items);
-}
-
-function renderDetail(candidate, parts) {
-  state.selectedId = candidate.candidateId;
-  $('#detail-title').textContent = candidate.fileName;
-  const fields = [
-    ['候选 ID', `<span class="font-monospace">${escapeHtml(candidate.candidateId)}</span>`],
-    ['研发地址', `<span class="text-break">${escapeHtml(candidate.sourceUrl)}</span>`],
-    ['版本 / 架构', `${escapeHtml(candidate.version)} / ${escapeHtml(candidate.architecture ?? '-')}`],
-    ['目标范围', escapeHtml((candidate.targets ?? []).join('、') || '-')],
-    ['大小', formatBytes(candidate.size)],
-    ['完整摘要', `<span class="font-monospace small text-break">${escapeHtml(candidate.finalSha256 ?? candidate.expectedSha256 ?? '接收完成后生成')}</span>`],
-    ['状态', `<span class="badge ${statusClass(candidate.status)}">${statusLabel(candidate.status)}</span>`],
-    ...(candidate.error ? [['错误信息', `<span class="text-danger text-break">${escapeHtml(candidate.error)}</span>`]] : [])
-  ];
-  $('#detail-fields').innerHTML = fields.map(([label, value]) => `<dt class="col-sm-3 col-lg-2">${label}</dt><dd class="col-sm-9 col-lg-10">${value}</dd>`).join('');
-  const completed = parts?.completedParts?.length ?? candidate.completedParts;
-  const count = parts?.chunkCount ?? candidate.chunkCount;
-  const progress = count === 0 ? 100 : Math.round((completed / count) * 100);
-  $('#detail-progress').style.width = `${progress}%`;
-  $('#detail-progress').textContent = `${progress}%（${completed}/${count}）`;
-  $('#receive-button').disabled = candidate.status === 'COMPLETED' || candidate.status === 'RECEIVING';
-  $('#complete-button').disabled = candidate.status === 'COMPLETED' || (parts?.missingParts?.length ?? candidate.missingParts) > 0;
-}
-
-async function loadDetail(candidateId) {
-  const [candidate, parts] = await Promise.all([api(`/api/v1/candidates/${encodeURIComponent(candidateId)}`), api(`/api/v1/candidates/${encodeURIComponent(candidateId)}/parts`)]);
-  renderDetail(candidate, parts);
-  return candidate;
-}
-
-async function openDetail(candidateId) {
-  try {
-    setView('detail');
-    await loadDetail(candidateId);
-    window.location.hash = `detail/${encodeURIComponent(candidateId)}`;
-  } catch (error) { showAlert(error.message, 'danger'); }
-}
-
-async function receiveCandidate() {
-  try {
-    await api(`/api/v1/candidates/${encodeURIComponent(state.selectedId)}/receive`, { method: 'POST', body: '{}' });
-    showAlert('接收任务已启动');
-    window.clearInterval(state.pollTimer);
-    state.pollTimer = window.setInterval(async () => {
-      try {
-        const candidate = await loadDetail(state.selectedId);
-        if (candidate?.status === 'COMPLETED' || candidate?.status === 'FAILED') window.clearInterval(state.pollTimer);
-      } catch { window.clearInterval(state.pollTimer); }
-    }, 1500);
-  } catch (error) { showAlert(error.message, 'danger'); }
-}
-
-async function completeCandidate() {
-  try {
-    await api(`/api/v1/candidates/${encodeURIComponent(state.selectedId)}/complete`, { method: 'POST', body: '{}' });
-    showAlert('候选文件已完成合并和摘要校验');
-    await loadDetail(state.selectedId);
-  } catch (error) { showAlert(error.message, 'danger'); }
-}
-
-$('#create-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const payload = {
-    sourceUrl: $('#source-url').value.trim(), fileName: $('#file-name').value.trim(), version: $('#version').value.trim(),
-    architecture: $('#architecture').value.trim() || null, targets: $('#targets').value.split(',').map((value) => value.trim()).filter(Boolean),
-    size: Number($('#size').value), sha256: $('#sha256').value.trim() || null
-  };
-  try {
-    const candidate = await api('/api/v1/candidates', { method: 'POST', body: JSON.stringify(payload) });
-    showAlert(`候选任务 ${candidate.candidateId} 已创建`);
-    await openDetail(candidate.candidateId);
-  } catch (error) { showAlert(error.message, 'danger'); }
-});
-
-document.querySelectorAll('[data-view]').forEach((element) => element.addEventListener('click', (event) => {
-  event.preventDefault();
-  if (element.dataset.view) { window.location.hash = element.dataset.view; setView(element.dataset.view); }
-}));
-$('#receive-button').addEventListener('click', receiveCandidate);
-$('#complete-button').addEventListener('click', completeCandidate);
-
-setView('candidates');
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
+function showAlert(message, type = 'success') { const alert = $('#alert'); alert.className = `alert alert-${type}`; alert.textContent = message; window.setTimeout(() => alert.classList.add('d-none'), 5000); }
+function statusLabel(status) { return { OPEN: '开放', CREATED: '待接收', RECEIVING: '接收中', PARTIAL: '待完成', FAILED: '失败', COMPLETED: '已完成' }[status] ?? status; }
+function statusClass(status) { return { OPEN: 'text-bg-primary', CREATED: 'text-bg-secondary', RECEIVING: 'text-bg-info', PARTIAL: 'text-bg-warning', FAILED: 'text-bg-danger', COMPLETED: 'text-bg-success' }[status] ?? 'text-bg-secondary'; }
+function formatBytes(value) { if (!Number.isFinite(Number(value))) return '-'; if (value < 1024) return `${value} B`; const units = ['KB', 'MB', 'GB', 'TB']; let amount = value; let index = -1; while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index += 1; } return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${units[index]}`; }
+async function api(path, options = {}) { const response = await fetch(path, { headers: { 'content-type': 'application/json', ...(options.headers ?? {}) }, ...options }); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body.error?.message ?? `请求失败（${response.status}）`); return body; }
+function setView(view) { const views = ['products', 'releases', 'release-detail', 'candidate-detail']; views.forEach((name) => $(`#view-${name}`).classList.toggle('d-none', name !== view)); document.querySelectorAll('[data-view]').forEach((link) => link.classList.toggle('active', link.dataset.view === view)); const title = { products: '软件产品', releases: '发布版本', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情' }[view] ?? '软件产品'; $('#page-title').textContent = title; $('#breadcrumb-title').textContent = title; if (view === 'products') loadProducts(); if (view === 'releases') loadReleases(); }
+function modal(name) { return bootstrap.Modal.getOrCreateInstance($(`#${name}-modal`)); }
+async function loadProducts() { const result = await api('/api/v1/products'); state.products = result.items; $('#product-rows').innerHTML = state.products.length ? state.products.map((item) => `<tr><td class="fw-semibold">${escapeHtml(item.name)}</td><td class="font-monospace small">${escapeHtml(item.productId)}</td><td><button class="btn btn-outline-primary btn-sm" data-product-releases="${escapeHtml(item.productId)}">查看版本</button></td></tr>`).join('') : '<tr><td colspan="3" class="text-center text-body-secondary py-4">暂无软件产品</td></tr>'; document.querySelectorAll('[data-product-releases]').forEach((button) => button.addEventListener('click', () => { setView('releases'); loadReleases(button.dataset.productReleases); })); }
+async function loadReleases(productId = null) { const result = await api(`/api/v1/releases${productId ? `?productId=${encodeURIComponent(productId)}` : ''}`); state.releases = result.items; $('#release-rows').innerHTML = state.releases.length ? state.releases.map((item) => `<tr><td>${escapeHtml(item.productName)}</td><td class="fw-semibold">${escapeHtml(item.version)}</td><td>${item.completedCandidateCount}/${item.candidateCount}</td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><button class="btn btn-outline-primary btn-sm" data-release="${escapeHtml(item.releaseId)}"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button></td></tr>`).join('') : '<tr><td colspan="5" class="text-center text-body-secondary py-4">暂无发布版本</td></tr>'; document.querySelectorAll('[data-release]').forEach((button) => button.addEventListener('click', () => openRelease(button.dataset.release))); }
+async function openRelease(releaseId) { state.releaseId = releaseId; const [release, rounds] = await Promise.all([api(`/api/v1/releases/${encodeURIComponent(releaseId)}`), api(`/api/v1/releases/${encodeURIComponent(releaseId)}/rounds`)]); $('#release-title').textContent = `${release.productName} / ${release.version}`; $('#release-fields').innerHTML = [['软件产品', escapeHtml(release.productName)], ['发布版本', escapeHtml(release.version)], ['状态', `<span class="badge ${statusClass(release.status)}">${statusLabel(release.status)}</span>`]].map(([label, value]) => `<dt class="col-sm-3 col-lg-2">${label}</dt><dd class="col-sm-9 col-lg-10">${value}</dd>`).join(''); $('#round-select').innerHTML = rounds.items.length ? rounds.items.map((round) => `<option value="${escapeHtml(round.roundId)}">第 ${round.roundNo} 轮 · ${round.completedCandidateCount}/${round.candidateCount} 已完成</option>`).join('') : '<option value="">暂无轮次</option>'; if (rounds.items.length) { state.roundId = rounds.items[0].roundId; await loadRound(); } else { state.roundId = null; renderRound(null, []); } setView('release-detail'); }
+async function loadRound() { if (!state.roundId) return; const [round, candidates] = await Promise.all([api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}`), api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/candidates`)]); renderRound(round, candidates.items); }
+function renderRound(round, candidates) { $('#round-summary').innerHTML = round ? `<div class="col-md-4"><div class="small-box text-bg-primary"><div class="inner"><h3>${round.roundNo}</h3><p>候选轮次</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-success"><div class="inner"><h3>${round.completedCandidateCount}/${round.candidateCount}</h3><p>已完成候选包</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-secondary"><div class="inner"><h3>${round.baseRoundId ? '继承' : '初始'}</h3><p>轮次来源</p></div></div></div>` : ''; $('#round-candidate-rows').innerHTML = candidates.length ? candidates.map((item) => `<tr><td>${escapeHtml(item.packageKey ?? item.fileName)}</td><td>${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td class="font-monospace small">${escapeHtml(item.finalSha256 ?? item.expectedSha256 ?? '-')}</td><td><span class="badge ${item.mappingSource === 'INHERITED' ? 'text-bg-info' : 'text-bg-secondary'}">${item.mappingSource === 'INHERITED' ? `继承${item.inheritedFromRoundId ? ` · ${escapeHtml(item.inheritedFromRoundId.slice(-8))}` : ''}` : '本轮新增'}</span></td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><button class="btn btn-outline-primary btn-sm" data-candidate="${escapeHtml(item.candidateId)}"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button></td></tr>`).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">本轮暂无候选包</td></tr>'; document.querySelectorAll('[data-candidate]').forEach((button) => button.addEventListener('click', () => openCandidate(button.dataset.candidate))); }
+async function openCandidate(candidateId) { state.candidateId = candidateId; const [candidate, parts] = await Promise.all([api(`/api/v1/candidates/${encodeURIComponent(candidateId)}`), api(`/api/v1/candidates/${encodeURIComponent(candidateId)}/parts`)]); renderCandidate(candidate, parts); setView('candidate-detail'); }
+function renderCandidate(candidate, parts) { $('#candidate-title').textContent = candidate.fileName; const fields = [['候选 ID', `<span class="font-monospace">${escapeHtml(candidate.candidateId)}</span>`], ['软件 / 发布版本', `${escapeHtml(candidate.productName ?? '-')} / ${escapeHtml(candidate.releaseVersion ?? candidate.version)}`], ['研发地址', `<span class="text-break">${escapeHtml(candidate.sourceUrl)}</span>`], ['包标识', escapeHtml(candidate.packageKey ?? '-')], ['版本 / 架构', `${escapeHtml(candidate.version)} / ${escapeHtml(candidate.architecture ?? '-')}`], ['大小', formatBytes(candidate.size)], ['MD5 / SHA-256', `<span class="font-monospace small text-break">${escapeHtml(candidate.expectedMd5 ?? '-')} / ${escapeHtml(candidate.finalSha256 ?? candidate.expectedSha256 ?? '接收完成后生成')}</span>`], ['状态', `<span class="badge ${statusClass(candidate.status)}">${statusLabel(candidate.status)}</span>`], ...(candidate.error ? [['错误信息', `<span class="text-danger text-break">${escapeHtml(candidate.error)}</span>`]] : [])]; $('#candidate-fields').innerHTML = fields.map(([label, value]) => `<dt class="col-sm-3 col-lg-2">${label}</dt><dd class="col-sm-9 col-lg-10">${value}</dd>`).join(''); const completed = parts.completedParts.length; const count = parts.chunkCount; const progress = count === 0 ? 0 : Math.round((completed / count) * 100); $('#detail-progress').style.width = `${progress}%`; $('#detail-progress').textContent = `${progress}%（${completed}/${count}）`; $('#receive-button').disabled = candidate.status === 'COMPLETED' || candidate.status === 'RECEIVING'; $('#complete-button').disabled = candidate.status === 'COMPLETED' || parts.missingParts.length > 0; }
+async function receiveCandidate() { try { await api(`/api/v1/candidates/${encodeURIComponent(state.candidateId)}/receive`, { method: 'POST', body: '{}' }); showAlert('接收任务已启动'); window.clearInterval(state.pollTimer); state.pollTimer = window.setInterval(async () => { try { const candidate = await api(`/api/v1/candidates/${encodeURIComponent(state.candidateId)}`); const parts = await api(`/api/v1/candidates/${encodeURIComponent(state.candidateId)}/parts`); renderCandidate(candidate, parts); if (candidate.status === 'COMPLETED' || candidate.status === 'FAILED') window.clearInterval(state.pollTimer); } catch { window.clearInterval(state.pollTimer); } }, 1500); } catch (error) { showAlert(error.message, 'danger'); } }
+async function completeCandidate() { try { await api(`/api/v1/candidates/${encodeURIComponent(state.candidateId)}/complete`, { method: 'POST', body: '{}' }); showAlert('候选包已完成合并和摘要校验'); await openCandidate(state.candidateId); } catch (error) { showAlert(error.message, 'danger'); } }
+document.querySelectorAll('[data-view]').forEach((element) => element.addEventListener('click', (event) => { event.preventDefault(); const view = element.dataset.view; if (view === 'release-detail' && state.releaseId) openRelease(state.releaseId); else { window.location.hash = view; setView(view); } }));
+document.querySelectorAll('[data-modal]').forEach((button) => button.addEventListener('click', async () => { if (button.dataset.modal === 'release') { await loadProducts(); $('#release-product').innerHTML = state.products.map((item) => `<option value="${escapeHtml(item.productId)}">${escapeHtml(item.name)}</option>`).join(''); } modal(button.dataset.modal).show(); }));
+$('#product-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/products', { method: 'POST', body: JSON.stringify({ name: $('#product-name').value.trim() }) }); modal('product').hide(); event.currentTarget.reset(); showAlert('软件产品已创建'); loadProducts(); } catch (error) { showAlert(error.message, 'danger'); } });
+$('#release-form').addEventListener('submit', async (event) => { event.preventDefault(); try { const release = await api(`/api/v1/products/${encodeURIComponent($('#release-product').value)}/releases`, { method: 'POST', body: JSON.stringify({ version: $('#release-version').value.trim() }) }); modal('release').hide(); event.currentTarget.reset(); showAlert('发布版本已创建'); openRelease(release.releaseId); } catch (error) { showAlert(error.message, 'danger'); } });
+$('#new-round-button').addEventListener('click', async () => { try { const round = await api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}/rounds`, { method: 'POST', body: JSON.stringify({ baseRoundId: state.roundId || null }) }); showAlert(`第 ${round.roundNo} 轮已创建${round.baseRoundId ? '，已继承上一轮候选包' : ''}`); await openRelease(state.releaseId); } catch (error) { showAlert(error.message, 'danger'); } });
+$('#new-package-button').addEventListener('click', () => { if (!state.roundId) { showAlert('请先创建候选轮次', 'warning'); return; } $('#package-form').reset(); modal('package').show(); });
+$('#package-form').addEventListener('submit', async (event) => { event.preventDefault(); try { const payload = { sourceUrl: $('#package-url').value.trim(), packageKey: $('#package-key').value.trim() || null, fileName: $('#package-file-name').value.trim() || null, version: $('#package-version').value.trim() || null, architecture: $('#package-architecture').value.trim() || null, size: $('#package-size').value === '' ? null : Number($('#package-size').value), md5: $('#package-md5').value.trim() || null, sha256: $('#package-sha256').value.trim() || null, targets: $('#package-targets').value.split(',').map((value) => value.trim()).filter(Boolean) }; const candidate = await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/candidates`, { method: 'POST', body: JSON.stringify(payload) }); modal('package').hide(); showAlert(`候选包 ${candidate.fileName} 已创建`); await loadRound(); await openCandidate(candidate.candidateId); } catch (error) { showAlert(error.message, 'danger'); } });
+$('#round-select').addEventListener('change', async (event) => { state.roundId = event.target.value; await loadRound(); });
+$('#receive-button').addEventListener('click', receiveCandidate); $('#complete-button').addEventListener('click', completeCandidate);
+setView('products');

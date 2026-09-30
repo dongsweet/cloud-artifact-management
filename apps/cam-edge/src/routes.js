@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, rm, rename } from 'node:fs/promises';
 import { once } from 'node:events';
 import { dirname } from 'node:path';
@@ -7,6 +7,12 @@ import { assembleChunks } from '../../../libs/cam-transfer/src/transfer.js';
 
 function error(reply, statusCode, code, message) {
   return reply.code(statusCode).send({ error: { code, message } });
+}
+
+async function md5File(path) {
+  const hash = createHash('md5');
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest('hex');
 }
 
 async function writeRequestPart(request, destination, expectedSize) {
@@ -40,6 +46,13 @@ async function writeRequestPart(request, destination, expectedSize) {
 function candidateResponse(candidate) {
   return {
     candidateId: candidate.candidate_id,
+    productId: candidate.product_id,
+    productName: candidate.product_name,
+    releaseId: candidate.release_id,
+    releaseVersion: candidate.release_version,
+    packageKey: candidate.package_key,
+    mappingSource: candidate.mapping_source,
+    inheritedFromRoundId: candidate.inherited_from_round_id,
     sourceUrl: candidate.source_url,
     fileName: candidate.file_name,
     version: candidate.version,
@@ -47,7 +60,10 @@ function candidateResponse(candidate) {
     targets: candidate.targets,
     size: candidate.expected_size,
     sha256: candidate.expected_sha256,
+    md5: candidate.expected_md5,
+    expectedMd5: candidate.expected_md5,
     expectedSha256: candidate.expected_sha256,
+    finalMd5: candidate.final_md5,
     finalSha256: candidate.final_sha256,
     sourceTag: candidate.source_tag,
     chunkSize: candidate.chunk_size,
@@ -63,6 +79,55 @@ function candidateResponse(candidate) {
 }
 
 export function registerCandidateRoutes(app, { store, receiver }) {
+  app.post('/api/v1/products', async (request, reply) => {
+    try { return reply.code(201).send(store.createProduct(request.body ?? {})); }
+    catch (err) { return error(reply, 400, 'invalid_product', err.message); }
+  });
+
+  app.get('/api/v1/products', async (_request, reply) => reply.send({ items: store.listProducts() }));
+
+  app.post('/api/v1/products/:productId/releases', async (request, reply) => {
+    try { return reply.code(201).send(store.createRelease(request.params.productId, request.body ?? {})); }
+    catch (err) { return error(reply, 400, 'invalid_release', err.message); }
+  });
+
+  app.get('/api/v1/releases', async (request, reply) => {
+    try { return reply.send({ items: store.listReleases(request.query?.productId ?? null) }); }
+    catch (err) { return error(reply, 400, 'invalid_release_query', err.message); }
+  });
+
+  app.get('/api/v1/releases/:releaseId', async (request, reply) => {
+    const release = store.getRelease(request.params.releaseId);
+    return release ? reply.send(release) : error(reply, 404, 'release_not_found', 'release not found');
+  });
+
+  app.post('/api/v1/releases/:releaseId/rounds', async (request, reply) => {
+    try { return reply.code(201).send(store.createRound(request.params.releaseId, request.body ?? {})); }
+    catch (err) { return error(reply, 400, 'invalid_round', err.message); }
+  });
+
+  app.get('/api/v1/releases/:releaseId/rounds', async (request, reply) => {
+    try { return reply.send({ items: store.listRounds(request.params.releaseId) }); }
+    catch (err) { return error(reply, 400, 'invalid_round_query', err.message); }
+  });
+
+  app.get('/api/v1/rounds/:roundId', async (request, reply) => {
+    const round = store.getRound(request.params.roundId);
+    return round ? reply.send(round) : error(reply, 404, 'round_not_found', 'round not found');
+  });
+
+  app.get('/api/v1/rounds/:roundId/candidates', async (request, reply) => {
+    try { return reply.send({ items: store.listRoundCandidates(request.params.roundId).map(candidateResponse) }); }
+    catch (err) { return error(reply, 400, 'invalid_round_candidates', err.message); }
+  });
+
+  app.post('/api/v1/rounds/:roundId/candidates', async (request, reply) => {
+    try {
+      const candidate = await store.create({ ...(request.body ?? {}), roundId: request.params.roundId });
+      return reply.code(201).send(candidateResponse(candidate));
+    } catch (err) { return error(reply, 400, 'invalid_candidate', err.message); }
+  });
+
   app.post('/api/v1/candidates', async (request, reply) => {
     try {
       const candidate = await store.create(request.body ?? {});
@@ -76,7 +141,8 @@ export function registerCandidateRoutes(app, { store, receiver }) {
     try {
       const limit = request.query?.limit === undefined ? 50 : Number(request.query.limit);
       const offset = request.query?.offset === undefined ? 0 : Number(request.query.offset);
-      return reply.send({ items: store.list({ limit, offset }).map(candidateResponse), limit, offset });
+      const releaseId = request.query?.releaseId ?? null;
+      return reply.send({ items: store.list({ limit, offset, releaseId }).map(candidateResponse), limit, offset });
     } catch (err) {
       return error(reply, 400, 'invalid_query', err.message);
     }
@@ -149,7 +215,7 @@ export function registerCandidateRoutes(app, { store, receiver }) {
     try {
       const manifest = { size: candidate.expected_size, sha256: candidate.expected_sha256 ?? '', transfer: { chunks: store.listParts(candidate.candidate_id).map((part) => ({ index: part.part_index, offset: part.offset, size: part.size, sha256: part.sha256 })) } };
       const assembled = await assembleChunks({ taskDir: store.candidateDir(candidate.candidate_id), manifest, outputPath: candidate.source_path });
-      const completed = store.complete(candidate.candidate_id, assembled.sha256);
+      const completed = store.complete(candidate.candidate_id, { finalSha256: assembled.sha256, finalMd5: candidate.expected_md5 ? await md5File(assembled.path) : null });
       return reply.send(candidateResponse(completed));
     } catch (err) {
       store.fail(candidate.candidate_id, err);

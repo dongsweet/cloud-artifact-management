@@ -398,6 +398,11 @@ transfer-bundle/
 | 服务 | 接口 | 作用 |
 |---|---|---|
 | `cam-edge` | `POST /api/v1/candidates` | 创建候选接收任务 |
+| `cam-edge` | `POST /api/v1/products` | 创建软件产品 |
+| `cam-edge` | `POST /api/v1/products/:productId/releases` | 创建产品发布版本 |
+| `cam-edge` | `POST /api/v1/releases/:releaseId/rounds` | 创建候选收集轮次，可继承基线轮次 |
+| `cam-edge` | `GET /api/v1/rounds/:roundId/candidates` | 查询轮次候选包清单及继承来源 |
+| `cam-edge` | `POST /api/v1/rounds/:roundId/candidates` | 在轮次中新增或替换候选包 |
 | `cam-edge` | `GET /api/v1/candidates/:id` | 查询候选元数据、状态和摘要 |
 | `cam-edge` | `GET /api/v1/candidates/:id/parts` | 查询候选分块进度 |
 | `cam-edge` | `PUT /api/v1/candidates/:id/parts/:partIndex` | 接收一个带 SHA-256 校验的候选分块 |
@@ -553,6 +558,12 @@ sequenceDiagram
 配置按安全区分开维护，至少包含：监听地址、内部 API 地址、数据卷路径、SQLite 参数、分块大小、并发下载数、带宽限制、重试策略、任务有效期、日志级别和远端证书指纹。配置文件不包含密钥。
 
 `cam-edge` 的 `CAM_SOURCE_ALLOWLIST` 用于限制研发文件来源，只允许配置的主机名或 IP；候选接收前会先校验该白名单，再通过 VPN/路由访问研发地址。部署时应将研发文件服务器地址写入该变量，例如 `172.22.5.177`，并确认 Docker 网段不能与研发网络重叠。
+
+候选数据模型采用四级关系：`products` 保存软件产品；`releases` 保存产品发布版本；`release_rounds` 保存同一发布版本的候选收集轮次；`candidates` 保存单个候选包快照和断点续传状态。`round_candidates` 是轮次到候选包的清单映射，记录 `OWNED` 或 `INHERITED` 以及继承来源轮次。
+
+创建第二轮时，服务在事务中复制基线轮次的 `round_candidates` 映射，不复制大文件和分块目录。更新某个包时创建新的候选记录并按 `package_key` 覆盖第二轮映射，其他包继续引用第一轮已完成的候选。轮次和候选快照不允许通过更新原记录的方式覆盖，后续审批、清单签名和跨网传输均绑定 `round_id`。
+
+外部交换区首期接口包括：`POST /api/v1/products`、`POST /api/v1/products/:productId/releases`、`POST /api/v1/releases/:releaseId/rounds`、`GET /api/v1/rounds/:roundId/candidates` 和 `POST /api/v1/rounds/:roundId/candidates`。候选包创建时 URL 必填；文件名可选并从 URL 路径推导；包版本可选并继承发布版本；文件大小可选，缺省时首次接收优先通过 `HEAD` 的 `Content-Length` 确定，不支持 `HEAD` 时通过单字节 Range 响应取得总大小；MD5/SHA-256 作为期望摘要保存，系统仍计算实际 SHA-256，并在固化时比较。
 
 每个服务提供本区可访问的健康检查：
 

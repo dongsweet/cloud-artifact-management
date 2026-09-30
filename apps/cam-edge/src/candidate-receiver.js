@@ -41,6 +41,18 @@ function parseAllowlist(value = process.env.CAM_SOURCE_ALLOWLIST ?? '') {
   return value.split(',').map((entry) => entry.trim().toLowerCase()).filter(Boolean);
 }
 
+async function resolveRemoteSize(url, fetchImpl) {
+  const head = await fetchImpl(url, { method: 'HEAD' });
+  const headLength = Number(head.headers.get('content-length'));
+  if (head.ok && Number.isSafeInteger(headLength) && headLength >= 0) return headLength;
+  const probe = await fetchImpl(url, { headers: { Range: 'bytes=0-0' } });
+  const contentRange = probe.headers.get('content-range') ?? '';
+  const match = /^bytes\s+0-0\/(\d+)$/.exec(contentRange);
+  if (probe.body?.cancel) await probe.body.cancel();
+  if (probe.status !== 206 || !match) throw new Error('source content length is unavailable; provide the file size');
+  return Number(match[1]);
+}
+
 export function createCandidateReceiver({ store, allowlist = parseAllowlist(), fetchImpl = globalThis.fetch }) {
   const running = new Map();
 
@@ -50,6 +62,9 @@ export function createCandidateReceiver({ store, allowlist = parseAllowlist(), f
       const candidate = store.get(candidateId);
       if (!candidate) throw new Error('candidate not found');
       if (!allowlisted(candidate.source_url, allowlist)) throw new Error('source host is not allowlisted');
+      if (candidate.expected_size === 0 && candidate.chunk_count === 0) {
+        store.setExpectedSize(candidateId, await resolveRemoteSize(candidate.source_url, fetchImpl));
+      }
       store.markReceiving(candidateId);
       for (const partIndex of store.missingParts(candidateId)) {
         const current = store.get(candidateId);
@@ -78,4 +93,4 @@ export function createCandidateReceiver({ store, allowlist = parseAllowlist(), f
   return { receive, running };
 }
 
-export { parseAllowlist, writeStreamToFile };
+export { parseAllowlist, resolveRemoteSize, writeStreamToFile };
