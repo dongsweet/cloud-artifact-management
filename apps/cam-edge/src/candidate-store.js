@@ -201,6 +201,34 @@ export class CandidateStore {
     return (productId ? this.db.prepare(sql).all(productId) : this.db.prepare(sql).all()).map(parseRelease);
   }
 
+  deleteRelease(releaseId) {
+    const release = this.getRelease(releaseId);
+    if (!release) return null;
+    if (release.status !== 'OPEN') {
+      const error = new Error('only open releases can be deleted');
+      error.code = 'release_not_open';
+      throw error;
+    }
+    if (release.candidateCount > 0) {
+      const error = new Error('release has candidate packages and cannot be deleted');
+      error.code = 'release_not_empty';
+      throw error;
+    }
+
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('UPDATE release_rounds SET base_round_id = NULL WHERE release_id = ?').run(releaseId);
+      this.db.prepare('DELETE FROM round_candidates WHERE round_id IN (SELECT round_id FROM release_rounds WHERE release_id = ?)').run(releaseId);
+      this.db.prepare('DELETE FROM release_rounds WHERE release_id = ?').run(releaseId);
+      this.db.prepare('DELETE FROM releases WHERE release_id = ?').run(releaseId);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return { releaseId, deleted: true };
+  }
+
   createRound(releaseId, { baseRoundId = null } = {}) {
     const release = this.getRelease(releaseId);
     if (!release) throw new Error('release not found');

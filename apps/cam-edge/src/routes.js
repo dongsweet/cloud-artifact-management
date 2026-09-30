@@ -101,6 +101,17 @@ export function registerCandidateRoutes(app, { store, receiver }) {
     return release ? reply.send(release) : error(reply, 404, 'release_not_found', 'release not found');
   });
 
+  app.delete('/api/v1/releases/:releaseId', async (request, reply) => {
+    if (!store.getRelease(request.params.releaseId)) return error(reply, 404, 'release_not_found', 'release not found');
+    try {
+      store.deleteRelease(request.params.releaseId);
+      return reply.code(204).send();
+    } catch (err) {
+      if (err.code === 'release_not_open' || err.code === 'release_not_empty') return error(reply, 409, err.code, err.message);
+      return error(reply, 400, 'invalid_release_delete', err.message);
+    }
+  });
+
   app.post('/api/v1/releases/:releaseId/rounds', async (request, reply) => {
     try { return reply.code(201).send(store.createRound(request.params.releaseId, request.body ?? {})); }
     catch (err) { return error(reply, 400, 'invalid_round', err.message); }

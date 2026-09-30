@@ -118,3 +118,27 @@ test('release rounds inherit unchanged candidate packages and replace only updat
   assert.equal(items.find((item) => item.packageKey === 'agent').mappingSource, 'OWNED');
   await app.close();
 });
+
+test('deletes empty open releases and protects releases with candidate packages', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-release-delete-'));
+  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: '删除测试产品' } });
+  const productId = product.json().productId;
+
+  const emptyRelease = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/releases`, payload: { version: 'draft' } });
+  const emptyReleaseId = emptyRelease.json().releaseId;
+  const emptyRound = await app.inject({ method: 'POST', url: `/api/v1/releases/${emptyReleaseId}/rounds`, payload: {} });
+  assert.equal(emptyRound.statusCode, 201);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/releases/${emptyReleaseId}` })).statusCode, 204);
+  assert.equal((await app.inject({ method: 'GET', url: `/api/v1/releases/${emptyReleaseId}` })).statusCode, 404);
+
+  const usedRelease = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/releases`, payload: { version: '8.0.6.2' } });
+  const usedReleaseId = usedRelease.json().releaseId;
+  const round = await app.inject({ method: 'POST', url: `/api/v1/releases/${usedReleaseId}/rounds`, payload: {} });
+  const candidate = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.json().roundId}/candidates`, payload: { sourceUrl: 'http://127.0.0.1/package.tar', size: 1 } });
+  assert.equal(candidate.statusCode, 201);
+  const blocked = await app.inject({ method: 'DELETE', url: `/api/v1/releases/${usedReleaseId}` });
+  assert.equal(blocked.statusCode, 409);
+  assert.equal(blocked.json().error.code, 'release_not_empty');
+  await app.close();
+});
