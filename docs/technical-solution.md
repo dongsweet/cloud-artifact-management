@@ -159,6 +159,43 @@ cloud-artifact-management/
 
 ## 5. 部署方案
 
+### 5.0 Hillstone 宿主机前置条件
+
+统一运维外部交换区使用的 Hillstone 镜像依赖 Linux 内核的 legacy netfilter 表。正式环境部署前必须确认宿主机可以加载以下模块：
+
+```text
+ip_tables
+iptable_filter
+iptable_nat
+iptable_mangle
+```
+
+部署包中的 `deploy/install-hillstone-route.sh` 会安装 `deploy/cam-hillstone-netfilter.conf` 到 `/etc/modules-load.d/`，立即执行 `modprobe` 加载模块，并启用动态路由服务。正式环境禁止只使用 nftables 映射替代这些模块，因为容器可能显示 healthy，但 Hillstone 客户端的 TUN 隧道仍不会进入在线状态。
+
+部署前检查：
+
+```bash
+uname -r
+test -c /dev/net/tun
+modprobe ip_tables
+modprobe iptable_filter
+modprobe iptable_nat
+modprobe iptable_mangle
+iptables-legacy -S
+```
+
+安装后验证：
+
+```bash
+systemctl is-enabled cam-hillstone-route.service
+systemctl is-active cam-hillstone-route.service
+docker compose --env-file .env ps hillstone-vpn
+docker exec cam-hillstone-vpn iptables -S
+docker exec cam-hillstone-vpn ip link show tun0
+```
+
+其中容器状态 healthy 只表示基础进程、NAT 和管理端口满足健康检查；是否真正在线必须以 Hillstone 管理界面的 VPN 状态和 `tun0` 状态为准。若 `tun0` 仍为 `DOWN`，先通过 noVNC 完成 VPN 登录，再检查研发地址连通性。
+
 ### 5.1 小规模合并部署
 
 环境规模不大时，首期按安全区部署虚拟机：
