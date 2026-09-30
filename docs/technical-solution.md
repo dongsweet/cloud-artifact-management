@@ -399,6 +399,7 @@ transfer-bundle/
 |---|---|---|
 | `cam-edge` | `POST /api/v1/candidates` | 创建候选接收任务 |
 | `cam-edge` | `POST /api/v1/products` | 创建软件产品 |
+| `cam-edge` | `DELETE /api/v1/products/:productId` | 删除没有发布版本的空软件产品 |
 | `cam-edge` | `POST /api/v1/products/:productId/releases` | 创建产品发布版本 |
 | `cam-edge` | `DELETE /api/v1/releases/:releaseId` | 删除没有候选包的开放发布版本 |
 | `cam-edge` | `POST /api/v1/releases/:releaseId/rounds` | 创建候选收集轮次，可继承基线轮次 |

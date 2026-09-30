@@ -86,6 +86,17 @@ export function registerCandidateRoutes(app, { store, receiver }) {
 
   app.get('/api/v1/products', async (_request, reply) => reply.send({ items: store.listProducts() }));
 
+  app.delete('/api/v1/products/:productId', async (request, reply) => {
+    if (!store.getProduct(request.params.productId)) return error(reply, 404, 'product_not_found', 'product not found');
+    try {
+      store.deleteProduct(request.params.productId);
+      return reply.code(204).send();
+    } catch (err) {
+      if (err.code === 'product_not_empty') return error(reply, 409, err.code, err.message);
+      return error(reply, 400, 'invalid_product_delete', err.message);
+    }
+  });
+
   app.post('/api/v1/products/:productId/releases', async (request, reply) => {
     try { return reply.code(201).send(store.createRelease(request.params.productId, request.body ?? {})); }
     catch (err) { return error(reply, 400, 'invalid_release', err.message); }

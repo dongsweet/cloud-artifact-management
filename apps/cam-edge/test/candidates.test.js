@@ -142,3 +142,23 @@ test('deletes empty open releases and protects releases with candidate packages'
   assert.equal(blocked.json().error.code, 'release_not_empty');
   await app.close();
 });
+
+test('deletes products without releases and protects products with releases', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-product-delete-'));
+  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const empty = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: '空产品' } });
+  const emptyProductId = empty.json().productId;
+  assert.equal(empty.json().releaseCount, 0);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/products/${emptyProductId}` })).statusCode, 204);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/v1/products' })).json().items.some((item) => item.productId === emptyProductId), false);
+
+  const used = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: '有版本产品' } });
+  const usedProductId = used.json().productId;
+  await app.inject({ method: 'POST', url: `/api/v1/products/${usedProductId}/releases`, payload: { version: '8.0.6.2' } });
+  const listed = (await app.inject({ method: 'GET', url: '/api/v1/products' })).json().items.find((item) => item.productId === usedProductId);
+  assert.equal(listed.releaseCount, 1);
+  const blocked = await app.inject({ method: 'DELETE', url: `/api/v1/products/${usedProductId}` });
+  assert.equal(blocked.statusCode, 409);
+  assert.equal(blocked.json().error.code, 'product_not_empty');
+  await app.close();
+});

@@ -34,7 +34,7 @@ function fileNameFromUrl(sourceUrl) {
 
 function parseProduct(row) {
   if (!row) return null;
-  return { productId: row.product_id, name: row.name, createdAt: row.created_at, updatedAt: row.updated_at };
+  return { productId: row.product_id, name: row.name, releaseCount: row.release_count ?? 0, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
 function parseRelease(row) {
@@ -168,8 +168,27 @@ export class CandidateStore {
     return this.getProduct(productId);
   }
 
-  getProduct(productId) { return parseProduct(this.db.prepare('SELECT * FROM products WHERE product_id = ?').get(productId)); }
-  listProducts() { return this.db.prepare('SELECT * FROM products ORDER BY name').all().map(parseProduct); }
+  getProduct(productId) {
+    return parseProduct(this.db.prepare(`SELECT p.*, (SELECT COUNT(*) FROM releases r WHERE r.product_id = p.product_id) AS release_count
+      FROM products p WHERE p.product_id = ?`).get(productId));
+  }
+
+  listProducts() {
+    return this.db.prepare(`SELECT p.*, (SELECT COUNT(*) FROM releases r WHERE r.product_id = p.product_id) AS release_count
+      FROM products p ORDER BY p.name`).all().map(parseProduct);
+  }
+
+  deleteProduct(productId) {
+    const product = this.getProduct(productId);
+    if (!product) return null;
+    if (product.releaseCount > 0) {
+      const error = new Error('product has releases and cannot be deleted');
+      error.code = 'product_not_empty';
+      throw error;
+    }
+    this.db.prepare('DELETE FROM products WHERE product_id = ?').run(productId);
+    return { productId, deleted: true };
+  }
 
   createRelease(productId, { version }) {
     const product = this.getProduct(productId);
