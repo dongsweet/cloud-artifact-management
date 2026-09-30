@@ -139,7 +139,6 @@ export class CandidateStore {
         FOREIGN KEY (candidate_id) REFERENCES candidates(candidate_id)
       );
       CREATE INDEX IF NOT EXISTS candidate_parts_status_idx ON candidate_parts(candidate_id, status);
-      CREATE INDEX IF NOT EXISTS candidates_release_idx ON candidates(release_id, created_at DESC);
     `);
     this.migrateCandidates();
   }
@@ -153,6 +152,7 @@ export class CandidateStore {
       ['final_sha256', 'ALTER TABLE candidates ADD COLUMN final_sha256 TEXT']
     ];
     for (const [column, statement] of migrations) if (!columns.has(column)) this.db.exec(statement);
+    this.db.exec('CREATE INDEX IF NOT EXISTS candidates_release_idx ON candidates(release_id, created_at DESC)');
   }
 
   createProduct({ name }) {
