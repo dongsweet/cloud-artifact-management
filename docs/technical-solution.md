@@ -56,6 +56,7 @@ flowchart TB
     DEV[研发内网文件地址]
 
     subgraph EDGE[统一运维外部交换区]
+        EVPN[Hillstone VPN 容器]
         EUI[外部区管理页面]
         EAPI[cam-edge API]
         EGET[候选制品接收器]
@@ -65,6 +66,7 @@ flowchart TB
         EFILES[(候选制品与验证文件卷)]
         EUI --> EAPI
         EAPI --> EGET
+        EVPN --> EGET
         EAPI --> EVERIFY
         EAPI --> EADAPTER
         EGET --> EDB
@@ -101,7 +103,7 @@ flowchart TB
         AAPI --> ACACHE
     end
 
-    DEV -. VPN / 可恢复获取 .-> EGET
+    DEV -. Hillstone VPN / 可恢复获取 .-> EVPN
     EADAPTER -. 受控审批消息 .-> GATE
     GATE -. 审批状态与传输授权 .-> CLOUD
     GATE -. 正式制品传输包 .-> CRECV
@@ -172,6 +174,12 @@ cloud-artifact-management/
 研发内网文件服务器、网闸、统一云管和云平台控制节点使用已有环境，不计入 CAM 新增虚拟机数量。政务外网、互联网等相互隔离的安全域必须分别部署 `cam-agent`，不能跨安全域共用同一接收服务器。
 
 每台虚拟机使用该安全区专属的 Docker Engine、Compose 文件、网络和数据卷。外部区和内网不共享 Docker volume；云中心只挂载本中心缓存卷。
+
+外部交换区的 `cam-edge` 与 Hillstone VPN 容器共享网络命名空间。Hillstone 容器负责 TUN 设备、VPN 会话和研发网段路由；`cam-edge` 不直接持有 VPN 凭据，也不直接访问外部代理端口。Hillstone 配置和运行数据使用独立持久化卷，管理端口只绑定目标虚拟机本地地址。
+
+在 Ubuntu 新内核环境中，Hillstone 镜像启动脚本需显式选择 `iptables-nft` 后端。容器入口先将通用 `iptables` 命令链接到该后端，再执行镜像入口脚本；不修改宿主机全局 iptables 选择。此设置用于兼容新内核的 netfilter 实现，并保留镜像要求的 IPv4 转发和 NAT 校验。
+
+宿主机到研发地址的路由由 `deploy/cam-hillstone-route.service` 管理。路由脚本等待 Compose 网络和容器出现，使用网络 ID 的前 12 位动态定位 Docker 网桥，再查询 Hillstone 容器在该网络中的 IP，最后执行 `ip route replace <目标> via <Hillstone IP> dev <Docker 网桥>`。网络重建或容器重建后由 `start`、`restart` 流程重新执行服务；网桥名和容器 IP 不写入固定配置。默认目标为研发文件服务器 `172.22.5.177/32`，避免与测试机其他 Docker 网络的 `172.22.0.0/16` 地址空间产生全网段路由覆盖。
 
 ### 5.2 后续拆分部署
 
@@ -347,7 +355,7 @@ transfer-bundle/
 
 ### 9.2 研发内网地址到外部交换区
 
-候选接收器通过受控 VPN 访问研发内网文件地址。若来源支持 HTTP Range，使用 `Range` 和稳定的 `ETag` 或来源摘要请求缺失区间；若来源支持 SFTP，使用远端文件大小、偏移读取和本地分块进度恢复。
+候选接收器通过统一运维外部交换区的 Hillstone VPN 容器访问研发内网文件地址。若来源支持 HTTP Range，使用 `Range` 和稳定的 `ETag` 或来源摘要请求缺失区间；若来源支持 SFTP，使用远端文件大小、偏移读取和本地分块进度恢复。
 
 下载前后都要确认来源对象的大小和版本标识。若研发侧更新同名文件，导致 `ETag`、大小或摘要变化，旧临时文件不能继续拼接，系统必须生成新的 `candidateId` 并从新对象重新开始。
 

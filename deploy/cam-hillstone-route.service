@@ -1,0 +1,12 @@
+[Unit]
+Description=Static routes for CAM Hillstone VPN network
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cam-hillstone-route
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,51 @@
 services:
+  hillstone-vpn:
+    image: ${HILLSTONE_IMAGE:-ghcrproxy.sweethome.vip/w101723/hillstone-connect@sha256:c6315f16ef13f804e0740e3e1b7158036cd7097ce41ff6e2629828b85babf9a8}
+    container_name: ${HILLSTONE_CONTAINER_NAME:-cam-hillstone-vpn}
+    restart: unless-stopped
+    security_opt:
+      - seccomp=unconfined
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SETUID
+      - SETGID
+      - CHOWN
+      - DAC_OVERRIDE
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "127.0.0.1:${HILLSTONE_VNC_PORT:-16080}:6080/tcp"
+      - "127.0.0.1:${HILLSTONE_SOCKS_PORT:-11080}:1080/tcp"
+      - "127.0.0.1:${HILLSTONE_WEB_PORT:-18080}:8080/tcp"
+    volumes:
+      - hillstone-config:/home/desktop/.config/HillstoneSecureConnect
+      - hillstone-data:/home/desktop/.local/share/HillstoneSecureConnect
+    tmpfs:
+      - /run
+      - /tmp
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    entrypoint:
+      - /usr/bin/tini
+      - "--"
+      - /bin/bash
+      - -lc
+      - |
+        ln -sf /usr/sbin/iptables-nft /usr/local/bin/iptables
+        exec /usr/local/bin/entrypoint.sh
+    networks:
+      default:
+        aliases:
+          - hillstone-vpn
+
   cam-edge-web:
     build:
       context: .
@@ -16,11 +63,17 @@ services:
       - cam-edge
       - cam-core
       - cam-agent
+    networks:
+      - default
     ports:
       - "8088:8080"
     restart: unless-stopped
 
   cam-edge:
+    network_mode: "service:hillstone-vpn"
+    depends_on:
+      hillstone-vpn:
+        condition: service_healthy
     build:
       context: .
       args:
@@ -37,8 +90,6 @@ services:
       PORT: 3101
       DATA_DIR: /data/edge
       CAM_SOURCE_ALLOWLIST: ${CAM_SOURCE_ALLOWLIST:-}
-    ports:
-      - "3101:3101"
     restart: unless-stopped
 
   cam-core:
@@ -56,8 +107,6 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 3102
-    ports:
-      - "3102:3102"
     restart: unless-stopped
 
   cam-agent:
@@ -75,11 +124,17 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 3103
-    ports:
-      - "3103:3103"
     restart: unless-stopped
 
 volumes:
+  hillstone-config:
+  hillstone-data:
   edge-data:
   core-data:
   agent-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${CAM_DOCKER_SUBNET:-172.25.0.0/16}

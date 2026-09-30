@@ -24,9 +24,27 @@ npm run start:agent  # 3103
 ```bash
 docker compose build
 docker compose up -d
-curl http://127.0.0.1:3101/health/live
+curl http://127.0.0.1:8088/health/live
 curl http://127.0.0.1:3102/health/live
 curl http://127.0.0.1:3103/health/live
+```
+
+外部交换区的 `cam-edge` 通过 `hillstone-vpn` 的网络命名空间访问研发内网。首次部署时，需要在 Hillstone 管理界面完成 VPN 登录：
+
+```text
+http://127.0.0.1:18080/       # Hillstone Web 管理入口（目标主机本地）
+http://127.0.0.1:16080/       # Hillstone noVNC 入口（目标主机本地）
+```
+
+登录完成并确认 VPN 隧道建立后，再启动或重试候选制品接收。Hillstone 配置和运行数据保存在 Compose 持久化卷中，VPN 凭据不写入 Git、镜像或 SQLite。
+
+在开发机浏览器访问测试机上的 Hillstone，可运行 `tools\hillstone-vpn.cmd start -Detach`。脚本通过 SSH 控制测试机上的 `cam-hillstone-vpn` 容器，刷新动态路由，并将测试机本地绑定的管理端口映射到开发机：默认 noVNC 为 `16081`、Web 管理入口为 `18081`、SOCKS5 为 `11081`。关闭映射和远端容器运行 `tools\hillstone-vpn.cmd stop`，重建容器并刷新路由运行 `tools\hillstone-vpn.cmd restart`，查看容器、路由和映射状态运行 `tools\hillstone-vpn.cmd status`，测试研发文件地址运行 `tools\hillstone-vpn.cmd target-test`。不带参数执行 `.cmd` 文件会进入交互菜单。如 SSH 用户、地址、端口或远端项目目录不同，可设置 `CAM_HILLSTONE_SSH_USER`、`CAM_HILLSTONE_SSH_HOST`、`CAM_HILLSTONE_SSH_PORT`、`CAM_HILLSTONE_REMOTE_DIR` 环境变量。
+
+测试机需要安装 `deploy/cam-hillstone-route.service`。该服务调用 `deploy/cam-hillstone-route.sh`，运行时动态查询 Compose 网络 ID、对应的 `br-xxxx` 网桥和 Hillstone 容器 IP，再安装研发文件网段路由。默认只安装 `172.22.5.177/32`，可通过 `CAM_HILLSTONE_ROUTE_TARGETS` 扩展目标；不把网桥名或容器 IP 固定写入配置。安装命令为：
+
+```bash
+cd cloud-artifact-management/deploy
+sudo sh ./install-hillstone-route.sh
 ```
 
 传输核心位于 `libs/cam-transfer`，包括清单生成、分块摘要、原子写入、合并校验和 SQLite 进度恢复。
