@@ -36,6 +36,7 @@ services:
       HOST: 0.0.0.0
       PORT: 3101
       DATA_DIR: /data/edge
+      CAM_SOURCE_ALLOWLIST: ${CAM_SOURCE_ALLOWLIST:-}
     ports:
       - "3101:3101"
     restart: unless-stopped

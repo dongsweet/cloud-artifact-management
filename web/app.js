@@ -82,7 +82,8 @@ function renderDetail(candidate, parts) {
     ['目标范围', escapeHtml((candidate.targets ?? []).join('、') || '-')],
     ['大小', formatBytes(candidate.size)],
     ['完整摘要', `<span class="font-monospace small text-break">${escapeHtml(candidate.finalSha256 ?? candidate.expectedSha256 ?? '接收完成后生成')}</span>`],
-    ['状态', `<span class="badge ${statusClass(candidate.status)}">${statusLabel(candidate.status)}</span>`]
+    ['状态', `<span class="badge ${statusClass(candidate.status)}">${statusLabel(candidate.status)}</span>`],
+    ...(candidate.error ? [['错误信息', `<span class="text-danger text-break">${escapeHtml(candidate.error)}</span>`]] : [])
   ];
   $('#detail-fields').innerHTML = fields.map(([label, value]) => `<dt class="col-sm-3 col-lg-2">${label}</dt><dd class="col-sm-9 col-lg-10">${value}</dd>`).join('');
   const completed = parts?.completedParts?.length ?? candidate.completedParts;
