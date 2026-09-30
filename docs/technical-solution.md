@@ -181,6 +181,8 @@ cloud-artifact-management/
 
 宿主机到研发地址的路由由 `deploy/cam-hillstone-route.service` 管理。路由脚本等待 Compose 网络和容器出现，使用网络 ID 的前 12 位动态定位 Docker 网桥，再查询 Hillstone 容器在该网络中的 IP，最后执行 `ip route replace <目标> via <Hillstone IP> dev <Docker 网桥>`。网络重建或容器重建后由 `start`、`restart` 流程重新执行服务；网桥名和容器 IP 不写入固定配置。默认目标为研发文件服务器 `172.22.5.177/32`，避免与测试机其他 Docker 网络的 `172.22.0.0/16` 地址空间产生全网段路由覆盖。
 
+CAM Compose 默认使用 `192.168.240.0/24` 作为专用 Docker 网络，避开测试机常见的 `172.20.0.0/16`、`172.21.0.0/16` 和 `172.22.0.0/16` 网段。部署时应通过 `CAM_DOCKER_SUBNET` 选择未被主机、VPN、云平台或其他 Docker 网络使用的地址段；不得把研发网段配置为 Docker 网络地址段。
+
 ### 5.2 后续拆分部署
 
 当候选接收、验证、正式制品保留量或云中心数量增长时，可按职责拆分：

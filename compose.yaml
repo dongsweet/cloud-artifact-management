@@ -137,4 +137,4 @@ networks:
   default:
     ipam:
       config:
-        - subnet: ${CAM_DOCKER_SUBNET:-172.25.0.0/16}
+        - subnet: ${CAM_DOCKER_SUBNET:-192.168.240.0/24}

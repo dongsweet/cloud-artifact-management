@@ -42,6 +42,8 @@ http://127.0.0.1:16080/       # Hillstone noVNC 入口（目标主机本地）
 
 测试机需要安装 `deploy/cam-hillstone-route.service`。该服务调用 `deploy/cam-hillstone-route.sh`，运行时动态查询 Compose 网络 ID、对应的 `br-xxxx` 网桥和 Hillstone 容器 IP，再安装研发文件网段路由。默认只安装 `172.22.5.177/32`，可通过 `CAM_HILLSTONE_ROUTE_TARGETS` 扩展目标；不把网桥名或容器 IP 固定写入配置。安装命令为：
 
+CAM 专用 Docker 网络默认使用 `192.168.240.0/24`，避开测试机已有的 `172.20.0.0/16`、`172.21.0.0/16` 和 `172.22.0.0/16`。如部署环境已有该网段，可在 `.env` 中设置 `CAM_DOCKER_SUBNET` 为其他未占用的专用网段。
+
 ```bash
 cd cloud-artifact-management/deploy
 sudo sh ./install-hillstone-route.sh
