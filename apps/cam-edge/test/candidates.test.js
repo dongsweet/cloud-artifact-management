@@ -66,6 +66,22 @@ test('cam-edge validates candidate metadata, preserves parts on conflict and sto
   await app.close();
 });
 
+test('candidate metadata can be corrected after a failed digest and candidate can be deleted', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-edit-delete-'));
+  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const created = await app.inject({ method: 'POST', url: '/api/v1/candidates', payload: { sourceUrl: 'http://127.0.0.1:39001/package.bin', fileName: 'package.bin', size: 4, md5: '0'.repeat(32) } });
+  const candidate = created.json();
+  const fixedMd5 = createHash('md5').update('data').digest('hex');
+  const updated = await app.inject({ method: 'PATCH', url: `/api/v1/candidates/${candidate.candidateId}`, payload: { md5: fixedMd5, architecture: 'x86_64' } });
+  assert.equal(updated.statusCode, 200);
+  assert.equal(updated.json().expectedMd5, fixedMd5);
+  assert.equal(updated.json().architecture, 'x86_64');
+  const removed = await app.inject({ method: 'DELETE', url: `/api/v1/candidates/${candidate.candidateId}` });
+  assert.equal(removed.statusCode, 204);
+  assert.equal((await app.inject({ method: 'GET', url: `/api/v1/candidates/${candidate.candidateId}` })).statusCode, 404);
+  await app.close();
+});
+
 test('cam-edge receives a candidate from an HTTP Range source and records its source tag', async () => {
   const payload = Buffer.from('range-source-payload');
   const source = createServer((request, response) => {
@@ -84,11 +100,45 @@ test('cam-edge receives a candidate from an HTTP Range source and records its so
   const candidate = created.json();
   assert.equal((await app.inject({ method: 'POST', url: '/api/v1/candidates/' + candidate.candidateId + '/receive' })).statusCode, 202);
   await app.candidateReceiver.running.get(candidate.candidateId);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/v1/candidates/' + candidate.candidateId })).json().status, 'COMPLETED');
   const completed = await app.inject({ method: 'POST', url: '/api/v1/candidates/' + candidate.candidateId + '/complete' });
   assert.equal(completed.statusCode, 200);
   assert.equal(completed.json().finalSha256, sha256(payload));
   assert.equal((await app.inject({ method: 'GET', url: '/api/v1/candidates/' + candidate.candidateId })).json().status, 'COMPLETED');
   await app.close();
+  await new Promise((resolve, reject) => source.close((error) => error ? reject(error) : resolve()));
+});
+
+test('cam-edge resumes partial candidate downloads after restart and finalizes automatically', async () => {
+  const payload = Buffer.from('recoverable-download');
+  const source = createServer((request, response) => {
+    const match = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range ?? '');
+    if (!match) return response.writeHead(416).end();
+    const start = Number(match[1]);
+    const end = Number(match[2]);
+    response.writeHead(206, { 'content-range': `bytes ${start}-${end}/${payload.length}`, etag: '"stable-source"' });
+    response.end(payload.subarray(start, end + 1));
+  });
+  await new Promise((resolve) => source.listen(0, '127.0.0.1', resolve));
+  const port = source.address().port;
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-resume-restart-'));
+  const first = await buildEdgeApp({ dataDir, defaultChunkSize: 5, allowlist: ['127.0.0.1'] });
+  const created = await first.inject({ method: 'POST', url: '/api/v1/candidates', payload: { sourceUrl: `http://127.0.0.1:${port}/release.bin`, fileName: 'release.bin', version: '2.0.0', size: payload.length, chunkSize: 5 } });
+  const candidate = created.json();
+  const firstPart = payload.subarray(0, 5);
+  await first.inject({ method: 'PUT', url: `/api/v1/candidates/${candidate.candidateId}/parts/0`, headers: { 'content-type': 'application/octet-stream', 'x-chunk-sha256': sha256(firstPart) }, payload: firstPart });
+  await first.close();
+
+  const reopened = await buildEdgeApp({ dataDir, defaultChunkSize: 5, allowlist: ['127.0.0.1'] });
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (reopened.candidateStore.get(candidate.candidateId).status === 'COMPLETED') break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const recovered = reopened.candidateStore.get(candidate.candidateId);
+  assert.equal(recovered.status, 'COMPLETED');
+  assert.equal(recovered.completed_parts, 4);
+  assert.equal(recovered.final_sha256, sha256(payload));
+  await reopened.close();
   await new Promise((resolve, reject) => source.close((error) => error ? reject(error) : resolve()));
 });
 

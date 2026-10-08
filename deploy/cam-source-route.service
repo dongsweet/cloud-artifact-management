@@ -1,0 +1,13 @@
+[Unit]
+Description=Specific routes to CAM development artifact sources
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/cam-source-route
+ExecStart=/usr/local/sbin/cam-source-route
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -4,14 +4,14 @@ import { openDatabase } from '../../../libs/cam-sqlite/src/database.js';
 import { DEFAULT_CHUNK_SIZE } from '../../../libs/cam-transfer/src/transfer.js';
 import { CandidateStore } from './candidate-store.js';
 import { createCandidateReceiver } from './candidate-receiver.js';
-import { registerCandidateRoutes } from './routes.js';
+import { finalizeCandidate, registerCandidateRoutes } from './routes.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/edge' : join(process.cwd(), 'data', 'edge'));
 
 export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSize = Number(process.env.CHUNK_SIZE ?? DEFAULT_CHUNK_SIZE), allowlist } = {}) {
   const db = await openDatabase(join(dataDir, 'edge.sqlite'));
   const store = new CandidateStore({ db, dataDir, defaultChunkSize });
-  const receiver = createCandidateReceiver({ store, allowlist });
+  const receiver = createCandidateReceiver({ store, allowlist, finalize: (candidateId) => finalizeCandidate(store, candidateId) });
   const app = await buildServer({
     service: 'cam-edge',
     configure: async (server) => {
@@ -21,6 +21,7 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   });
   app.decorate('candidateStore', store);
   app.decorate('candidateReceiver', receiver);
+  queueMicrotask(() => receiver.resumePending());
   return app;
 }
 

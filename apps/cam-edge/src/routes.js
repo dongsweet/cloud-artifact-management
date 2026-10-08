@@ -78,6 +78,18 @@ function candidateResponse(candidate) {
   };
 }
 
+export async function finalizeCandidate(store, candidateId) {
+  const candidate = store.get(candidateId);
+  if (!candidate) throw new Error('candidate not found');
+  if (candidate.status === 'COMPLETED') return candidate;
+  const missing = store.missingParts(candidate.candidate_id);
+  if (missing.length > 0) throw new Error(`candidate has missing parts: ${missing.join(',')}`);
+  store.markAssembling(candidateId);
+  const manifest = { size: candidate.expected_size, sha256: candidate.expected_sha256 ?? '', transfer: { chunks: store.listParts(candidate.candidate_id).map((part) => ({ index: part.part_index, offset: part.offset, size: part.size, sha256: part.sha256 })) } };
+  const assembled = await assembleChunks({ taskDir: store.candidateDir(candidate.candidate_id), manifest, outputPath: candidate.source_path });
+  return store.complete(candidate.candidate_id, { finalSha256: assembled.sha256, finalMd5: candidate.expected_md5 ? await md5File(assembled.path) : null });
+}
+
 export function registerCandidateRoutes(app, { store, receiver }) {
   app.post('/api/v1/products', async (request, reply) => {
     try { return reply.code(201).send(store.createProduct(request.body ?? {})); }
@@ -175,10 +187,25 @@ export function registerCandidateRoutes(app, { store, receiver }) {
     return candidate ? reply.send(candidateResponse(candidate)) : error(reply, 404, 'candidate_not_found', 'candidate not found');
   });
 
+  app.patch('/api/v1/candidates/:candidateId', async (request, reply) => {
+    try { return reply.send(candidateResponse(store.updateCandidate(request.params.candidateId, request.body ?? {}))); }
+    catch (err) { return error(reply, err.code === 'candidate_not_editable' || err.code === 'candidate_has_parts' ? 409 : 400, err.code ?? 'invalid_candidate', err.message); }
+  });
+
+  app.delete('/api/v1/candidates/:candidateId', async (request, reply) => {
+    try {
+      const deleted = store.deleteCandidate(request.params.candidateId);
+      if (!deleted) return error(reply, 404, 'candidate_not_found', 'candidate not found');
+      await rm(deleted.dataDir, { recursive: true, force: true });
+      return reply.code(204).send();
+    } catch (err) { return error(reply, err.code === 'candidate_busy' ? 409 : 400, err.code ?? 'candidate_delete_failed', err.message); }
+  });
+
   app.get('/api/v1/candidates/:candidateId/parts', async (request, reply) => {
     const candidate = store.get(request.params.candidateId);
     if (!candidate) return error(reply, 404, 'candidate_not_found', 'candidate not found');
-    return reply.send({ candidateId: candidate.candidate_id, status: candidate.status, chunkCount: candidate.chunk_count, completedParts: store.listParts(candidate.candidate_id), missingParts: store.missingParts(candidate.candidate_id) });
+    const transfer = receiver.progress.get(candidate.candidate_id) ?? null;
+    return reply.send({ candidateId: candidate.candidate_id, status: candidate.status, chunkCount: candidate.chunk_count, completedParts: store.listParts(candidate.candidate_id), missingParts: store.missingParts(candidate.candidate_id), transfer });
   });
 
   app.put('/api/v1/candidates/:candidateId/parts/:partIndex', async (request, reply) => {
@@ -228,18 +255,23 @@ export function registerCandidateRoutes(app, { store, receiver }) {
     return reply.code(202).send({ candidateId: candidate.candidate_id, status: 'RECEIVING' });
   });
 
+  app.post('/api/v1/candidates/:candidateId/cancel-receive', async (request, reply) => {
+    const candidate = store.get(request.params.candidateId);
+    if (!candidate) return error(reply, 404, 'candidate_not_found', 'candidate not found');
+    if (candidate.status === 'COMPLETED') return error(reply, 409, 'candidate_completed', 'candidate is already completed');
+    receiver.cancel(candidate.candidate_id);
+    return reply.send(candidateResponse(store.markPartial(candidate.candidate_id)));
+  });
+
   app.post('/api/v1/candidates/:candidateId/complete', async (request, reply) => {
     const candidate = store.get(request.params.candidateId);
     if (!candidate) return error(reply, 404, 'candidate_not_found', 'candidate not found');
     if (candidate.status === 'COMPLETED') return reply.send(candidateResponse(candidate));
-    const missing = store.missingParts(candidate.candidate_id);
-    if (missing.length > 0) return error(reply, 409, 'parts_missing', `candidate has missing parts: ${missing.join(',')}`);
     try {
-      const manifest = { size: candidate.expected_size, sha256: candidate.expected_sha256 ?? '', transfer: { chunks: store.listParts(candidate.candidate_id).map((part) => ({ index: part.part_index, offset: part.offset, size: part.size, sha256: part.sha256 })) } };
-      const assembled = await assembleChunks({ taskDir: store.candidateDir(candidate.candidate_id), manifest, outputPath: candidate.source_path });
-      const completed = store.complete(candidate.candidate_id, { finalSha256: assembled.sha256, finalMd5: candidate.expected_md5 ? await md5File(assembled.path) : null });
+      const completed = await finalizeCandidate(store, candidate.candidate_id);
       return reply.send(candidateResponse(completed));
     } catch (err) {
+      if (store.missingParts(candidate.candidate_id)?.length > 0) return error(reply, 409, 'parts_missing', err.message);
       store.fail(candidate.candidate_id, err);
       return error(reply, 422, 'candidate_integrity_failed', err.message);
     }

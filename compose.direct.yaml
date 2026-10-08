@@ -1,43 +1,6 @@
+# Direct-connect test deployment. This file intentionally omits Hillstone and
+# runs cam-edge on the ordinary CAM Docker network.
 services:
-  hillstone-vpn:
-    image: ${HILLSTONE_IMAGE:-ghcrproxy.sweethome.vip/w101723/hillstone-connect@sha256:c6315f16ef13f804e0740e3e1b7158036cd7097ce41ff6e2629828b85babf9a8}
-    container_name: ${HILLSTONE_CONTAINER_NAME:-cam-hillstone-vpn}
-    restart: unless-stopped
-    security_opt:
-      - seccomp=unconfined
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-      - SETUID
-      - SETGID
-      - CHOWN
-      - DAC_OVERRIDE
-    sysctls:
-      net.ipv4.ip_forward: "1"
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    ports:
-      - "127.0.0.1:${HILLSTONE_VNC_PORT:-16080}:6080/tcp"
-      - "127.0.0.1:${HILLSTONE_SOCKS_PORT:-11080}:1080/tcp"
-      - "127.0.0.1:${HILLSTONE_WEB_PORT:-18080}:8080/tcp"
-    volumes:
-      - hillstone-config:/home/desktop/.config/HillstoneSecureConnect
-      - hillstone-data:/home/desktop/.local/share/HillstoneSecureConnect
-    tmpfs:
-      - /run
-      - /tmp
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    networks:
-      default:
-        aliases:
-          - hillstone-vpn
-
   cam-edge-web:
     build:
       context: .
@@ -50,7 +13,7 @@ services:
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev
       - /data:size=16m,mode=0700,uid=10001,gid=10001
-      - /config:size=4m,mode=0700,uid=10001,gid=10001
+      - /config:size=4m,mode=0700,nosuid,nodev
     depends_on:
       - cam-edge
       - cam-core
@@ -62,10 +25,6 @@ services:
     restart: unless-stopped
 
   cam-edge:
-    network_mode: "service:hillstone-vpn"
-    depends_on:
-      hillstone-vpn:
-        condition: service_healthy
     build:
       context: .
       args:
@@ -82,6 +41,8 @@ services:
       PORT: 3101
       DATA_DIR: /data/edge
       CAM_SOURCE_ALLOWLIST: ${CAM_SOURCE_ALLOWLIST:-}
+    networks:
+      - default
     restart: unless-stopped
 
   cam-core:
@@ -99,6 +60,8 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 3102
+    networks:
+      - default
     restart: unless-stopped
 
   cam-agent:
@@ -116,15 +79,9 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 3103
+    networks:
+      - default
     restart: unless-stopped
-
-volumes:
-  hillstone-config:
-    name: ${CAM_HILLSTONE_CONFIG_VOLUME:-cloud-artifact-management_hillstone-config}
-    external: true
-  hillstone-data:
-    name: ${CAM_HILLSTONE_DATA_VOLUME:-cloud-artifact-management_hillstone-data}
-    external: true
 
 networks:
   default:

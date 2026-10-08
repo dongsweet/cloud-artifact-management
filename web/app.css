@@ -13,6 +13,14 @@
 .small-box .small-box-icon { font-size: 3rem; opacity: .25; }
 .card { border: 1px solid var(--cam-border); box-shadow: 0 0.1rem 0.35rem rgb(20 32 44 / 5%); }
 .card-title { font-weight: 600; }
+.cam-card-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.cam-card-header > :last-child { margin-left: auto; }
+.cam-card-header .round-select { width: auto; min-width: 12rem; }
+@media (max-width: 575.98px) {
+  .cam-card-header { align-items: flex-start; flex-wrap: wrap; }
+  .cam-card-header > :last-child { margin-left: 0; }
+  .cam-card-header .round-select { width: 100%; }
+}
 .table th { white-space: nowrap; font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: #5d6975; }
 .file-name { max-width: 16rem; }
 .compact-progress { min-width: 5.5rem; height: .45rem; }

@@ -369,8 +369,54 @@ export class CandidateStore {
     return this.get(candidateId);
   }
 
+  updateCandidate(candidateId, { sourceUrl, fileName, packageKey, version, architecture, targets, size, md5, sha256, expectedMd5, expectedSha256 } = {}) {
+    const candidate = this.get(candidateId);
+    if (!candidate) throw new Error('candidate not found');
+    if (['RECEIVING', 'ASSEMBLING', 'COMPLETED'].includes(candidate.status)) { const error = new Error('candidate cannot be edited in its current status'); error.code = 'candidate_not_editable'; throw error; }
+    const parts = this.listParts(candidateId);
+    const nextUrl = sourceUrl === undefined ? candidate.source_url : this.resolveSourceUrl(sourceUrl);
+    const nextName = fileName === undefined || fileName === null || fileName === '' ? candidate.file_name : safeFileName(fileName);
+    const nextSize = size === undefined || size === null || size === '' ? candidate.expected_size : size;
+    if (!Number.isSafeInteger(nextSize) || nextSize < 0) throw new Error('size must be a non-negative safe integer');
+    if (parts.length > 0 && (nextUrl !== candidate.source_url || nextName !== candidate.file_name || nextSize !== candidate.expected_size)) { const error = new Error('cannot change source, file name or size after receiving parts'); error.code = 'candidate_has_parts'; throw error; }
+    const nextMd5 = md5 !== undefined || expectedMd5 !== undefined ? (md5 ?? expectedMd5) : candidate.expected_md5;
+    const nextSha256 = sha256 !== undefined || expectedSha256 !== undefined ? (sha256 ?? expectedSha256) : candidate.expected_sha256;
+    if (nextMd5 !== null && !MD5_PATTERN.test(nextMd5)) throw new Error('md5 must be a 32-character hexadecimal digest');
+    if (nextSha256 !== null && !SHA256_PATTERN.test(nextSha256)) throw new Error('sha256 must be a 64-character hexadecimal digest');
+    const nextVersion = version === undefined || version === null || version === '' ? candidate.version : safeText(version, 'version', { max: 128 });
+    const nextPackageKey = packageKey ? safeText(packageKey, 'packageKey', { max: 255 }) : candidate.package_key;
+    const nextArchitecture = architecture === undefined ? candidate.architecture : (architecture ? safeText(architecture, 'architecture', { max: 64 }) : null);
+    const nextTargets = targets === undefined ? candidate.targets : targets;
+    if (!Array.isArray(nextTargets) || nextTargets.some((target) => typeof target !== 'string' || target.length > 128)) throw new Error('targets must be an array of strings');
+    const nextChunkCount = nextSize === candidate.expected_size ? candidate.chunk_count : calculateChunkCount(nextSize, candidate.chunk_size);
+    const nextStatus = parts.length > 0 ? 'PARTIAL' : 'CREATED';
+    const sourcePath = join(this.candidateDir(candidateId), 'source', nextName);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare(`UPDATE candidates SET source_url = ?, file_name = ?, version = ?, architecture = ?, targets_json = ?, expected_size = ?, expected_md5 = ?, expected_sha256 = ?, chunk_count = ?, source_path = ?, status = ?, error_message = NULL, updated_at = ? WHERE candidate_id = ?`).run(nextUrl, nextName, nextVersion, nextArchitecture, JSON.stringify(nextTargets), nextSize, nextMd5, nextSha256, nextChunkCount, sourcePath, nextStatus, now(), candidateId);
+      if (nextPackageKey && nextPackageKey !== candidate.package_key) this.db.prepare('UPDATE round_candidates SET package_key = ? WHERE candidate_id = ?').run(nextPackageKey, candidateId);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.get(candidateId);
+  }
+
+  deleteCandidate(candidateId) {
+    const candidate = this.get(candidateId);
+    if (!candidate) return null;
+    if (['RECEIVING', 'ASSEMBLING'].includes(candidate.status)) { const error = new Error('candidate is receiving and cannot be deleted'); error.code = 'candidate_busy'; throw error; }
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('DELETE FROM round_candidates WHERE candidate_id = ?').run(candidateId);
+      this.db.prepare('DELETE FROM candidate_parts WHERE candidate_id = ?').run(candidateId);
+      this.db.prepare('DELETE FROM candidates WHERE candidate_id = ?').run(candidateId);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return { candidateId, deleted: true, dataDir: this.candidateDir(candidateId) };
+  }
+
   get(candidateId) {
     const row = this.db.prepare(`SELECT c.*, r.version AS release_version, r.product_id, p.name AS product_name,
+      (SELECT rc.package_key FROM round_candidates rc WHERE rc.candidate_id = c.candidate_id ORDER BY rc.created_at LIMIT 1) AS package_key,
       (SELECT COUNT(*) FROM candidate_parts p2 WHERE p2.candidate_id = c.candidate_id AND p2.status = 'COMPLETED') AS completed_parts,
       (c.chunk_count - (SELECT COUNT(*) FROM candidate_parts p2 WHERE p2.candidate_id = c.candidate_id AND p2.status = 'COMPLETED')) AS missing_parts
       FROM candidates c LEFT JOIN releases r ON r.release_id = c.release_id LEFT JOIN products p ON p.product_id = r.product_id
@@ -384,6 +430,7 @@ export class CandidateStore {
     const filter = releaseId ? 'WHERE c.release_id = ?' : '';
     const args = releaseId ? [releaseId, limit, offset] : [limit, offset];
     const rows = this.db.prepare(`SELECT c.*, r.version AS release_version, r.product_id, p.name AS product_name,
+      (SELECT rc.package_key FROM round_candidates rc WHERE rc.candidate_id = c.candidate_id ORDER BY rc.created_at LIMIT 1) AS package_key,
       (SELECT COUNT(*) FROM candidate_parts p2 WHERE p2.candidate_id = c.candidate_id AND p2.status = 'COMPLETED') AS completed_parts,
       (c.chunk_count - (SELECT COUNT(*) FROM candidate_parts p2 WHERE p2.candidate_id = c.candidate_id AND p2.status = 'COMPLETED')) AS missing_parts
       FROM candidates c LEFT JOIN releases r ON r.release_id = c.release_id LEFT JOIN products p ON p.product_id = r.product_id
@@ -418,6 +465,22 @@ export class CandidateStore {
     this.db.prepare('UPDATE candidates SET status = ?, error_message = NULL, updated_at = ? WHERE candidate_id = ?').run('RECEIVING', now(), candidateId);
   }
 
+  markPartial(candidateId) {
+    const candidate = this.get(candidateId);
+    if (!candidate) throw new Error('candidate not found');
+    if (candidate.status === 'COMPLETED') return candidate;
+    this.db.prepare('UPDATE candidates SET status = ?, updated_at = ? WHERE candidate_id = ?').run('PARTIAL', now(), candidateId);
+    return this.get(candidateId);
+  }
+
+  markAssembling(candidateId) {
+    const candidate = this.get(candidateId);
+    if (!candidate) throw new Error('candidate not found');
+    if (candidate.status === 'COMPLETED') return candidate;
+    this.db.prepare('UPDATE candidates SET status = ?, updated_at = ?, error_message = NULL WHERE candidate_id = ?').run('ASSEMBLING', now(), candidateId);
+    return this.get(candidateId);
+  }
+
   setSourceTag(candidateId, sourceTag) { this.db.prepare('UPDATE candidates SET source_tag = ?, updated_at = ? WHERE candidate_id = ? AND source_tag IS NULL').run(sourceTag, now(), candidateId); }
 
   recordPart({ candidateId, partIndex, size, sha256 }) {
@@ -432,7 +495,7 @@ export class CandidateStore {
     const timestamp = now();
     this.db.prepare(`INSERT INTO candidate_parts (candidate_id, part_index, offset, size, sha256, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(candidate_id, part_index) DO UPDATE SET offset=excluded.offset, size=excluded.size, sha256=excluded.sha256, status=excluded.status, updated_at=excluded.updated_at`).run(candidateId, partIndex, expected.offset, size, sha256, 'COMPLETED', timestamp);
-    this.db.prepare('UPDATE candidates SET status = ?, updated_at = ?, error_message = NULL WHERE candidate_id = ?').run('PARTIAL', timestamp, candidateId);
+    this.db.prepare('UPDATE candidates SET status = ?, updated_at = ?, error_message = NULL WHERE candidate_id = ?').run(candidate.status === 'RECEIVING' ? 'RECEIVING' : 'PARTIAL', timestamp, candidateId);
   }
 
   complete(candidateId, { finalSha256, finalMd5 = null } = {}) {
