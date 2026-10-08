@@ -4,6 +4,7 @@ import { mkdir, rm, rename } from 'node:fs/promises';
 import { once } from 'node:events';
 import { dirname } from 'node:path';
 import { assembleChunks } from '../../../libs/cam-transfer/src/transfer.js';
+import { previewCandidateWorkbook } from './candidate-import.js';
 
 function error(reply, statusCode, code, message) {
   return reply.code(statusCode).send({ error: { code, message } });
@@ -74,7 +75,8 @@ function candidateResponse(candidate) {
     createdAt: candidate.created_at,
     updatedAt: candidate.updated_at,
     completedAt: candidate.completed_at,
-    error: candidate.error_message
+    error: candidate.error_message,
+    metadata: candidate.metadata ?? {}
   };
 }
 
@@ -160,6 +162,46 @@ export function registerCandidateRoutes(app, { store, receiver }) {
       const candidate = await store.create({ ...(request.body ?? {}), roundId: request.params.roundId });
       return reply.code(201).send(candidateResponse(candidate));
     } catch (err) { return error(reply, 400, 'invalid_candidate', err.message); }
+  });
+
+  app.post('/api/v1/rounds/:roundId/import-preview', async (request, reply) => {
+    const round = store.getRound(request.params.roundId);
+    if (!round) return error(reply, 404, 'round_not_found', 'round not found');
+    try {
+      const preview = await previewCandidateWorkbook(request.body, {
+        sheetName: request.query?.sheet ?? null,
+        mapping: request.query?.mapping ? JSON.parse(request.query.mapping) : {},
+        store,
+        roundId: request.params.roundId
+      });
+      return reply.send({ roundId: request.params.roundId, ...preview });
+    } catch (err) {
+      return error(reply, 400, 'invalid_import_workbook', err.message);
+    }
+  });
+
+  app.post('/api/v1/rounds/:roundId/import', async (request, reply) => {
+    const round = store.getRound(request.params.roundId);
+    if (!round) return error(reply, 404, 'round_not_found', 'round not found');
+    const items = Array.isArray(request.body?.items) ? request.body.items : [];
+    if (items.length === 0 || items.length > 1000) return error(reply, 400, 'invalid_import_items', '导入项目数量必须为 1 到 1000');
+    const existing = new Set(store.listRoundCandidates(request.params.roundId).map((candidate) => candidate.package_key.toLowerCase()));
+    const results = [];
+    const errors = [];
+    for (const [index, item] of items.entries()) {
+      try {
+        const packageKey = String(item.packageKey ?? '').trim();
+        if (!packageKey) throw new Error('包标识不能为空');
+        if (existing.has(packageKey.toLowerCase())) throw new Error(`包标识已存在：${packageKey}`);
+        const candidate = await store.create({ ...item, roundId: request.params.roundId });
+        existing.add(packageKey.toLowerCase());
+        results.push(candidateResponse(candidate));
+      } catch (err) {
+        errors.push({ index, rowNumber: Number(item.importRowNumber) || index + 1, message: err.message });
+      }
+    }
+    if (results.length === 0) return error(reply, 400, 'import_failed', errors.map((item) => `第 ${item.index + 1} 行：${item.message}`).join('；'));
+    return reply.code(201).send({ roundId: request.params.roundId, imported: results.length, skipped: errors.length, items: results, errors });
   });
 
   app.post('/api/v1/candidates', async (request, reply) => {

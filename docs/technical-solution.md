@@ -27,6 +27,8 @@ CAM 采用 JavaScript 全栈实现，服务端、管理页面和共享库统一�
 | 模块系统 | ECMAScript Modules | `package.json` 设置 `type: module`；禁止混用未审计的 CommonJS 运行时包装层 |
 | 管理页面 | AdminLTE 4 + Bootstrap 5 | 静态资源随镜像发布，不使用 CDN |
 | 页面脚本 | 原生 JavaScript ES Modules | 不引入 Vue、React、Angular 或大型状��管理框架 |
+| Excel 清单读取 | `read-excel-file@9.3.12` | 仅在 `cam-edge` 服务端解析 `.xlsx`；固定版本并审计全部传递依赖，限制上传大小和行数 |
+| Excel 清单读取 | `read-excel-file` | 仅在 `cam-edge` 服务端解析 `.xlsx`；固定版本并审计全部传递依赖，限制上传大小和行数 |
 | 数据库 | Node.js 内置 `node:sqlite` | 每个安全区使用独立 SQLite 文件，不共享数据库文件 |
 | 制品文件 | 宿主机本地持久化目录 | 元数据和文件分离；正式制品不可覆盖 |
 | 容器 | Docker Engine + Docker Compose | 使用内部镜像仓库；不首期引入 Kubernetes |
@@ -466,6 +468,10 @@ transfer-bundle/
 | `cam-edge` | `POST /api/v1/releases/:releaseId/rounds` | 创建候选收集轮次，可继承基线轮次 |
 | `cam-edge` | `GET /api/v1/rounds/:roundId/candidates` | 查询轮次候选包清单及继承来源 |
 | `cam-edge` | `POST /api/v1/rounds/:roundId/candidates` | 在轮次中新增或替换候选包 |
+| `cam-edge` | `POST /api/v1/rounds/:roundId/import-preview` | 解析 Excel 并返回列映射、逐行校验和候选预览，不创建任务 |
+| `cam-edge` | `POST /api/v1/rounds/:roundId/import` | 将用户确认的候选行创建到指定轮次；重复包标识不覆盖已有映射 |
+| `cam-edge` | `POST /api/v1/rounds/:roundId/import-preview` | 解析 Excel 并返回列映射、逐行校验和候选预览，不创建任务 |
+| `cam-edge` | `POST /api/v1/rounds/:roundId/import` | 将用户确认的候选行创建到指定轮次；重复包标识不覆盖已有映射 |
 | `cam-edge` | `GET /api/v1/candidates/:id` | 查询候选元数据、状态和摘要 |
 | `cam-edge` | `GET /api/v1/candidates/:id/parts` | 查询候选分块进度 |
 | `cam-edge` | `PUT /api/v1/candidates/:id/parts/:partIndex` | 接收一个带 SHA-256 校验的候选分块 |
@@ -627,6 +633,10 @@ sequenceDiagram
 创建第二轮时，服务在事务中复制基线轮次的 `round_candidates` 映射，不复制大文件和分块目录。更新某个包时创建新的候选记录并按 `package_key` 覆盖第二轮映射，其他包继续引用第一轮已完成的候选。轮次和候选快照不允许通过更新原记录的方式覆盖，后续审批、清单签名和跨网传输均绑定 `round_id`。
 
 外部交换区首期接口包括：`POST /api/v1/products`、`POST /api/v1/products/:productId/releases`、`POST /api/v1/releases/:releaseId/rounds`、`GET /api/v1/rounds/:roundId/candidates` 和 `POST /api/v1/rounds/:roundId/candidates`。候选包创建时 URL 必填；文件名可选并从 URL 路径推导；包版本可选并继承发布版本；文件大小可选，缺省时首次接收优先通过 `HEAD` 的 `Content-Length` 确定，不支持 `HEAD` 时通过单字节 Range 响应取得总大小；MD5/SHA-256 作为期望摘要保存，系统仍计算实际 SHA-256，并在固化时比较。
+
+Excel 导入限定为当前选定的发布版本和候选轮次，不自动创建产品、版本或轮次。`.xlsx` 文件先在服务端解析并预览，用户可选择工作表及修正字段映射；说明行和表头位置可变化，常见列名支持别名，描述性列可沿用上一行。下载地址不继承，必须是 HTTP(S)；文件名可从地址解析；MD5/SHA-256 标签和空白会清洗。类似 `5.96 GB` 的显示大小只作为源信息保存，不转换为精确字节数。适用产品、用途、类别、部署文档和备注作为候选元数据保存，适用产品不映射到发布目标范围。分卷表中的分卷地址不得作为完整候选包导入。预览逐行报告问题，重复包标识不会覆盖当前轮次已有候选；确认导入只创建候选记录，不自动开始下载。
+
+Excel 导入限定为当前选定的发布版本和候选轮次，不自动创建产品、版本或轮次。`.xlsx` 文件先在服务端解析并预览，用户可选择工作表及修正字段映射；说明行和表头位置可变化，常见列名支持别名，描述性列可沿用上一行。下载地址不继承，必须是 HTTP(S)；文件名可从地址解析；MD5/SHA-256 标签和空白会清洗。类似 `5.96 GB` 的显示大小只作为源信息保存，不转换为精确字节数。适用产品、用途、类别、部署文档和备注作为候选元数据保存，适用产品不映射到发布目标范围。分卷表中的分卷地址不得作为完整候选包导入。预览逐行报告问题，重复包标识不会覆盖当前轮次已有候选；确认导入只创建候选记录，不自动开始下载。
 
 每个服务提供本区可访问的健康检查：
 

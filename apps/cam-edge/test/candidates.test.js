@@ -229,3 +229,23 @@ test('deletes products without releases and protects products with releases', as
   assert.equal(blocked.json().error.code, 'product_not_empty');
   await app.close();
 });
+
+test('candidate import creates only selected row metadata and refuses package key replacement', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-import-'));
+  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: '导入测试产品' } });
+  const release = await app.inject({ method: 'POST', url: `/api/v1/products/${product.json().productId}/releases`, payload: { version: '8.0.6.2' } });
+  const round = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.json().releaseId}/rounds`, payload: {} });
+  const roundId = round.json().roundId;
+  const payload = { items: [{ packageKey: '系统包 / x86_64', sourceUrl: 'http://127.0.0.1/system.tar.gz', fileName: 'system.tar.gz', architecture: 'x86_64', size: 0, sourceMetadata: { applicableProducts: ['Stack', 'SVM'], displaySize: '5.96 GB', sourceSheet: '完整部署包', sourceRow: 3 } }] };
+  const imported = await app.inject({ method: 'POST', url: `/api/v1/rounds/${roundId}/import`, payload });
+  assert.equal(imported.statusCode, 201);
+  assert.equal(imported.json().imported, 1);
+  assert.equal(imported.json().items[0].metadata.displaySize, '5.96 GB');
+  assert.equal(imported.json().items[0].status, 'CREATED');
+  const duplicate = await app.inject({ method: 'POST', url: `/api/v1/rounds/${roundId}/import`, payload });
+  assert.equal(duplicate.statusCode, 400);
+  assert.match(duplicate.json().error.message, /包标识已存在/);
+  assert.equal((await app.inject({ method: 'GET', url: `/api/v1/rounds/${roundId}/candidates` })).json().items.length, 1);
+  await app.close();
+});

@@ -54,7 +54,7 @@ function parseRelease(row) {
 
 function parseCandidate(row) {
   if (!row) return null;
-  return { ...row, targets: JSON.parse(row.targets_json), completedParts: row.completed_parts, missingParts: row.missing_parts };
+  return { ...row, targets: JSON.parse(row.targets_json), metadata: row.metadata_json ? JSON.parse(row.metadata_json) : {}, completedParts: row.completed_parts, missingParts: row.missing_parts };
 }
 
 export class CandidateStore {
@@ -101,6 +101,7 @@ export class CandidateStore {
         updated_at TEXT NOT NULL,
         completed_at TEXT,
         error_message TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
         FOREIGN KEY (release_id) REFERENCES releases(release_id)
       );
       CREATE TABLE IF NOT EXISTS release_rounds (
@@ -149,7 +150,8 @@ export class CandidateStore {
       ['release_id', 'ALTER TABLE candidates ADD COLUMN release_id TEXT'],
       ['expected_md5', 'ALTER TABLE candidates ADD COLUMN expected_md5 TEXT'],
       ['final_md5', 'ALTER TABLE candidates ADD COLUMN final_md5 TEXT'],
-      ['final_sha256', 'ALTER TABLE candidates ADD COLUMN final_sha256 TEXT']
+      ['final_sha256', 'ALTER TABLE candidates ADD COLUMN final_sha256 TEXT'],
+      ['metadata_json', "ALTER TABLE candidates ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"]
     ];
     for (const [column, statement] of migrations) if (!columns.has(column)) this.db.exec(statement);
     this.db.exec('CREATE INDEX IF NOT EXISTS candidates_release_idx ON candidates(release_id, created_at DESC)');
@@ -332,7 +334,7 @@ export class CandidateStore {
     } catch (error) { throw new Error(`invalid sourceUrl: ${error.message}`); }
   }
 
-  async create({ releaseId = null, roundId = null, packageKey = null, sourceUrl, fileName = null, version = null, architecture = null, targets = [], size = null, md5 = null, sha256 = null, expectedMd5 = null, expectedSha256 = null, chunkSize = this.defaultChunkSize }) {
+  async create({ releaseId = null, roundId = null, packageKey = null, sourceUrl, fileName = null, version = null, architecture = null, targets = [], size = null, md5 = null, sha256 = null, expectedMd5 = null, expectedSha256 = null, chunkSize = this.defaultChunkSize, sourceMetadata = null, metadata = null }) {
     const normalizedUrl = this.resolveSourceUrl(sourceUrl);
     const round = roundId ? this.getRound(roundId) : null;
     if (roundId && !round) throw new Error('round not found');
@@ -353,6 +355,9 @@ export class CandidateStore {
     const expectedSize = size === null || size === undefined || size === '' ? 0 : size;
     if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) throw new Error('size must be a non-negative safe integer');
     if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0 || chunkSize > 512 * 1024 * 1024) throw new Error('chunkSize must be between 1 and 512 MiB');
+    const candidateMetadata = metadata ?? sourceMetadata ?? {};
+    if (!candidateMetadata || typeof candidateMetadata !== 'object' || Array.isArray(candidateMetadata)) throw new Error('metadata must be an object');
+    if (Buffer.byteLength(JSON.stringify(candidateMetadata)) > 16 * 1024) throw new Error('metadata must be 16 KiB or smaller');
     const candidateId = id('CAND');
     const chunkCount = calculateChunkCount(expectedSize, chunkSize);
     const candidateDir = join(this.dataDir, 'candidates', candidateId);
@@ -362,14 +367,14 @@ export class CandidateStore {
     const sourcePath = join(sourceDir, safeName);
     const timestamp = now();
     this.db.prepare(`INSERT INTO candidates
-      (candidate_id, release_id, source_url, file_name, version, architecture, targets_json, expected_size, expected_md5, expected_sha256, chunk_size, chunk_count, status, source_path, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(candidateId, effectiveReleaseId, normalizedUrl, safeName, packageVersion, safeArchitecture, JSON.stringify(normalizedTargets), expectedSize, expectedMd5Value, expectedSha256Value, chunkSize, chunkCount, 'CREATED', sourcePath, timestamp, timestamp);
+      (candidate_id, release_id, source_url, file_name, version, architecture, targets_json, expected_size, expected_md5, expected_sha256, chunk_size, chunk_count, status, source_path, created_at, updated_at, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(candidateId, effectiveReleaseId, normalizedUrl, safeName, packageVersion, safeArchitecture, JSON.stringify(normalizedTargets), expectedSize, expectedMd5Value, expectedSha256Value, chunkSize, chunkCount, 'CREATED', sourcePath, timestamp, timestamp, JSON.stringify(candidateMetadata));
     if (roundId) this.attachCandidateToRound(roundId, effectivePackageKey, candidateId);
     return this.get(candidateId);
   }
 
-  updateCandidate(candidateId, { sourceUrl, fileName, packageKey, version, architecture, targets, size, md5, sha256, expectedMd5, expectedSha256 } = {}) {
+  updateCandidate(candidateId, { sourceUrl, fileName, packageKey, version, architecture, targets, size, md5, sha256, expectedMd5, expectedSha256, metadata, sourceMetadata } = {}) {
     const candidate = this.get(candidateId);
     if (!candidate) throw new Error('candidate not found');
     if (['RECEIVING', 'ASSEMBLING', 'COMPLETED'].includes(candidate.status)) { const error = new Error('candidate cannot be edited in its current status'); error.code = 'candidate_not_editable'; throw error; }
@@ -389,11 +394,14 @@ export class CandidateStore {
     const nextTargets = targets === undefined ? candidate.targets : targets;
     if (!Array.isArray(nextTargets) || nextTargets.some((target) => typeof target !== 'string' || target.length > 128)) throw new Error('targets must be an array of strings');
     const nextChunkCount = nextSize === candidate.expected_size ? candidate.chunk_count : calculateChunkCount(nextSize, candidate.chunk_size);
+    const nextMetadata = metadata ?? sourceMetadata ?? candidate.metadata ?? {};
+    if (!nextMetadata || typeof nextMetadata !== 'object' || Array.isArray(nextMetadata)) throw new Error('metadata must be an object');
+    if (Buffer.byteLength(JSON.stringify(nextMetadata)) > 16 * 1024) throw new Error('metadata must be 16 KiB or smaller');
     const nextStatus = parts.length > 0 ? 'PARTIAL' : 'CREATED';
     const sourcePath = join(this.candidateDir(candidateId), 'source', nextName);
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare(`UPDATE candidates SET source_url = ?, file_name = ?, version = ?, architecture = ?, targets_json = ?, expected_size = ?, expected_md5 = ?, expected_sha256 = ?, chunk_count = ?, source_path = ?, status = ?, error_message = NULL, updated_at = ? WHERE candidate_id = ?`).run(nextUrl, nextName, nextVersion, nextArchitecture, JSON.stringify(nextTargets), nextSize, nextMd5, nextSha256, nextChunkCount, sourcePath, nextStatus, now(), candidateId);
+      this.db.prepare(`UPDATE candidates SET source_url = ?, file_name = ?, version = ?, architecture = ?, targets_json = ?, expected_size = ?, expected_md5 = ?, expected_sha256 = ?, chunk_count = ?, source_path = ?, status = ?, metadata_json = ?, error_message = NULL, updated_at = ? WHERE candidate_id = ?`).run(nextUrl, nextName, nextVersion, nextArchitecture, JSON.stringify(nextTargets), nextSize, nextMd5, nextSha256, nextChunkCount, sourcePath, nextStatus, JSON.stringify(nextMetadata), now(), candidateId);
       if (nextPackageKey && nextPackageKey !== candidate.package_key) this.db.prepare('UPDATE round_candidates SET package_key = ? WHERE candidate_id = ?').run(nextPackageKey, candidateId);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }

@@ -1,4 +1,4 @@
-const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, routeGeneration: 0 };
+const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, routeGeneration: 0, importFile: null, importPreview: null };
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
 
@@ -274,6 +274,16 @@ async function loadCandidateDetail(generation = state.routeGeneration) {
 function renderCandidate(candidate, parts) {
   $('#candidate-title').textContent = candidate.fileName;
   const fields = [['候选 ID', `<span class="font-monospace">${escapeHtml(candidate.candidateId)}</span>`], ['软件 / 发布版本', `${escapeHtml(candidate.productName ?? '-')} / ${escapeHtml(candidate.releaseVersion ?? candidate.version)}`], ['研发地址', `<span class="text-break">${escapeHtml(candidate.sourceUrl)}</span>`], ['包标识', escapeHtml(candidate.packageKey ?? '-')], ['版本 / 架构', `${escapeHtml(candidate.version)} / ${escapeHtml(candidate.architecture ?? '-')}`], ['大小', formatBytes(candidate.size)], ['MD5 / SHA-256', `<span class="font-monospace small text-break">${escapeHtml(candidate.expectedMd5 ?? '-')} / ${escapeHtml(candidate.finalSha256 ?? candidate.expectedSha256 ?? '接收完成后生成')}</span>`], ['状态', `<span class="badge ${statusClass(candidate.status)}">${statusLabel(candidate.status)}</span>`], ...(candidate.error ? [['错误信息', `<span class="text-danger text-break">${escapeHtml(candidate.error)}</span>`]] : [])];
+  const metadata = candidate.metadata ?? {};
+  if (metadata.type || metadata.deploymentPackage || metadata.purpose || metadata.applicableProducts?.length || metadata.displaySize || metadata.documentationUrl || metadata.notes) {
+    const imported = [
+      ['类型', metadata.type], ['部署包', metadata.deploymentPackage], ['用途', metadata.purpose],
+      ['适用产品', metadata.applicableProducts?.join('、')], ['表格大小说明', metadata.displaySize],
+      ['部署文档', metadata.documentationUrl], ['备注', metadata.notes],
+      ['导入来源', metadata.sourceSheet ? `${metadata.sourceSheet} 第 ${metadata.sourceRow} 行` : null]
+    ].filter(([, value]) => value);
+    fields.push(...imported.map(([label, value]) => [label, escapeHtml(value)]));
+  }
   $('#candidate-fields').innerHTML = fields.map(([label, value]) => `<dt class="col-sm-3 col-lg-2">${label}</dt><dd class="col-sm-9 col-lg-10">${value}</dd>`).join('');
   const completed = parts.completedParts.length;
   const count = parts.chunkCount;
@@ -341,6 +351,100 @@ function openCandidateEditor() {
   $('#package-md5').value = candidate.expectedMd5 ?? ''; $('#package-sha256').value = candidate.expectedSha256 ?? '';
   $('#package-targets').value = (candidate.targets ?? []).join(',');
   modal('package').show();
+}
+
+function resetImportDialog() {
+  state.importFile = null;
+  state.importPreview = null;
+  $('#import-file').value = '';
+  $('#import-sheet').innerHTML = '';
+  $('#import-sheet').disabled = true;
+  $('#import-preview-button').disabled = true;
+  $('#import-confirm-button').disabled = true;
+  $('#import-summary').textContent = '';
+  $('#import-mapping').classList.add('d-none');
+  $('#import-preview-rows').innerHTML = '<tr><td colspan="7" class="text-center text-body-secondary py-4">请选择 Excel 文件并读取预览</td></tr>';
+}
+
+async function readImportPreview() {
+  if (!state.importFile || !state.roundId) return;
+  const button = $('#import-preview-button');
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>读取中';
+  try {
+    const params = new URLSearchParams();
+    if ($('#import-sheet').value) params.set('sheet', $('#import-sheet').value);
+    const columnMapping = {};
+    document.querySelectorAll('[data-import-mapping]').forEach((select) => { columnMapping[select.dataset.importMapping] = select.value === '' ? null : Number(select.value); });
+    if (Object.keys(columnMapping).length) params.set('mapping', JSON.stringify(columnMapping));
+    const preview = await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/import-preview${params.toString() ? `?${params}` : ''}`, { method: 'POST', headers: { 'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, body: await state.importFile.arrayBuffer() });
+    state.importPreview = preview;
+    const currentSheet = $('#import-sheet').value;
+    $('#import-sheet').innerHTML = preview.sheets.map((sheet) => `<option value="${escapeHtml(sheet.name)}">${escapeHtml(sheet.name)}（表头第 ${sheet.headerRow} 行，识别 ${sheet.recognizedColumns} 列）</option>`).join('');
+    $('#import-sheet').disabled = false;
+    $('#import-sheet').value = preview.sheet || currentSheet;
+    renderImportMapping(preview);
+    renderImportPreview(preview);
+  } catch (error) {
+    showAlert(error.message, 'danger');
+  } finally {
+    button.disabled = !state.importFile;
+    button.innerHTML = '读取预览';
+  }
+}
+
+function renderImportMapping(preview) {
+  const fields = [
+    ['sourceUrl', '下载地址', true], ['fileName', '文件名', false], ['packageKey', '包标识', false], ['deploymentPackage', '部署包名称', false],
+    ['architecture', '架构', false], ['digest', '摘要', false], ['displaySize', '大小说明', false],
+    ['type', '类型', false], ['applicableProducts', '所属产品', false], ['purpose', '用途', false],
+    ['documentationUrl', '部署文档', false], ['notes', '备注', false], ['targets', '目标范围', false]
+  ];
+  $('#import-mapping').innerHTML = fields.map(([field, label, required]) => {
+    const selected = preview.mapping[field];
+    const options = `<option value="">${required ? '请选择列' : '不映射'}</option>${preview.columns.map((column) => `<option value="${column.index}" ${column.index === selected ? 'selected' : ''}>${escapeHtml(column.title)}</option>`).join('')}`;
+    return `<div class="col-6 col-md-4 col-lg-3"><label class="form-label small mb-1" for="import-map-${field}">${label}</label><select id="import-map-${field}" class="form-select form-select-sm" data-import-mapping="${field}">${options}</select></div>`;
+  }).join('');
+  $('#import-mapping').classList.remove('d-none');
+}
+
+function renderImportPreview(preview) {
+  const valid = preview.rows.filter((row) => row.errors.length === 0);
+  const invalid = preview.rows.length - valid.length;
+  $('#import-summary').innerHTML = `工作表：<strong>${escapeHtml(preview.sheet)}</strong>；识别 ${preview.rows.length} 行，其中 <span class="text-success">${valid.length} 行可导入</span>，<span class="text-danger">${invalid} 行需处理</span>${preview.truncated ? '；超过 1000 行的内容已截断' : ''}`;
+  $('#import-preview-rows').innerHTML = preview.rows.length ? preview.rows.map((row, index) => {
+    const ok = row.errors.length === 0;
+    const result = ok ? [`<span class="text-success">可导入</span>`, ...row.warnings.map((warning) => `<div class="text-warning small">${escapeHtml(warning)}</div>`)].join('') : `<span class="text-danger">${escapeHtml(row.errors.join('；'))}</span>`;
+    const digest = row.candidate.md5 ? `MD5 ${row.candidate.md5}` : row.candidate.sha256 ? `SHA-256 ${row.candidate.sha256}` : '-';
+    return `<tr class="${ok ? '' : 'table-danger'}"><td>${ok ? `<input type="checkbox" class="form-check-input import-row-select" data-import-index="${index}" checked>` : ''}</td><td>${row.rowNumber}</td><td><input class="form-control form-control-sm import-package-key" data-import-index="${index}" value="${escapeHtml(row.candidate.packageKey)}" ${ok ? '' : 'disabled'}></td><td class="text-break">${escapeHtml(row.candidate.fileName)}</td><td>${escapeHtml(row.candidate.architecture ?? '-')}</td><td class="font-monospace small text-break">${escapeHtml(digest)}</td><td>${result}</td></tr>`;
+  }).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">没有可识别的数据行</td></tr>';
+  $('#import-confirm-button').disabled = valid.length === 0;
+  $('#import-select-all').checked = valid.length > 0;
+  document.querySelectorAll('.import-package-key').forEach((input) => input.addEventListener('input', () => { const row = state.importPreview.rows[Number(input.dataset.importIndex)]; if (row) row.candidate.packageKey = input.value; }));
+}
+
+async function confirmImport() {
+  if (!state.importPreview || !state.roundId) return;
+  const selected = [...document.querySelectorAll('.import-row-select:checked')].map((input) => {
+    const row = state.importPreview.rows[Number(input.dataset.importIndex)];
+    return { ...row.candidate, importRowNumber: row.rowNumber };
+  });
+  if (!selected.length) { showAlert('请至少选择一行有效记录', 'warning'); return; }
+  const button = $('#import-confirm-button');
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>导入中';
+  try {
+    const result = await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/import`, { method: 'POST', body: JSON.stringify({ items: selected }) });
+    modal('import').hide();
+    const skipped = result.errors?.length ? `；跳过：${result.errors.map((item) => `第 ${item.rowNumber} 行 ${item.message}`).join('；')}` : '';
+    showAlert(`已导入 ${result.imported} 个候选包${skipped}`);
+    await loadRound(state.routeGeneration);
+  } catch (error) {
+    showAlert(error.message, 'danger');
+  } finally {
+    button.disabled = false;
+    button.textContent = '导入选中候选包';
+  }
 }
 
 async function deleteCandidate() {
@@ -439,6 +543,27 @@ $('#new-package-button').addEventListener('click', () => {
   $('#package-submit-button').textContent = '确定';
   modal('package').show();
 });
+
+$('#import-packages-button').addEventListener('click', () => {
+  if (!state.roundId) { showAlert('请先创建候选轮次', 'warning'); return; }
+  resetImportDialog();
+  modal('import').show();
+});
+$('#import-file').addEventListener('change', (event) => {
+  state.importFile = event.target.files?.[0] ?? null;
+  state.importPreview = null;
+  $('#import-preview-button').disabled = !state.importFile;
+  $('#import-sheet').disabled = true;
+  $('#import-confirm-button').disabled = true;
+  $('#import-summary').textContent = '';
+  $('#import-mapping').classList.add('d-none');
+  $('#import-preview-rows').innerHTML = '<tr><td colspan="7" class="text-center text-body-secondary py-4">请读取预览</td></tr>';
+});
+$('#import-preview-button').addEventListener('click', readImportPreview);
+$('#import-sheet').addEventListener('change', readImportPreview);
+$('#import-confirm-button').addEventListener('click', confirmImport);
+$('#import-select-all').addEventListener('change', (event) => document.querySelectorAll('.import-row-select').forEach((checkbox) => { checkbox.checked = event.target.checked; }));
+$('#import-modal').addEventListener('hidden.bs.modal', resetImportDialog);
 
 $('#package-form').addEventListener('submit', async (event) => {
   event.preventDefault();
