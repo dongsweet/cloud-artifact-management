@@ -72,9 +72,10 @@ test('candidate metadata can be corrected after a failed digest and candidate ca
   const created = await app.inject({ method: 'POST', url: '/api/v1/candidates', payload: { sourceUrl: 'http://127.0.0.1:39001/package.bin', fileName: 'package.bin', size: 4, md5: '0'.repeat(32) } });
   const candidate = created.json();
   const fixedMd5 = createHash('md5').update('data').digest('hex');
-  const updated = await app.inject({ method: 'PATCH', url: `/api/v1/candidates/${candidate.candidateId}`, payload: { md5: fixedMd5, architecture: 'x86_64' } });
+  const updated = await app.inject({ method: 'PATCH', url: `/api/v1/candidates/${candidate.candidateId}`, payload: { md5: fixedMd5, sha256: null, architecture: 'x86_64' } });
   assert.equal(updated.statusCode, 200);
   assert.equal(updated.json().expectedMd5, fixedMd5);
+  assert.equal(updated.json().expectedSha256, null);
   assert.equal(updated.json().architecture, 'x86_64');
   const removed = await app.inject({ method: 'DELETE', url: `/api/v1/candidates/${candidate.candidateId}` });
   assert.equal(removed.statusCode, 204);

@@ -333,6 +333,7 @@ function openCandidateEditor() {
   const candidate = state.currentCandidate;
   if (!candidate) return;
   $('#package-modal-title').textContent = '编辑候选包';
+  $('#package-submit-button').textContent = '确定';
   $('#package-form').dataset.editingCandidate = candidate.candidateId;
   $('#package-url').value = candidate.sourceUrl ?? ''; $('#package-file-name').value = candidate.fileName ?? '';
   $('#package-key').value = candidate.packageKey ?? ''; $('#package-version').value = candidate.version ?? '';
@@ -435,6 +436,7 @@ $('#new-package-button').addEventListener('click', () => {
   $('#package-form').reset();
   delete $('#package-form').dataset.editingCandidate;
   $('#package-modal-title').textContent = '添加候选包';
+  $('#package-submit-button').textContent = '确定';
   modal('package').show();
 });
 
@@ -445,7 +447,7 @@ $('#package-form').addEventListener('submit', async (event) => {
     const payload = { sourceUrl: $('#package-url').value.trim(), packageKey: $('#package-key').value.trim() || null, fileName: $('#package-file-name').value.trim() || null, version: $('#package-version').value.trim() || null, architecture: $('#package-architecture').value.trim() || null, size: $('#package-size').value === '' ? null : Number($('#package-size').value), md5: $('#package-md5').value.trim() || null, sha256: $('#package-sha256').value.trim() || null, targets: $('#package-targets').value.split(',').map((value) => value.trim()).filter(Boolean) };
     if (form.dataset.editingCandidate) {
       const candidate = await api(`/api/v1/candidates/${encodeURIComponent(form.dataset.editingCandidate)}`, { method: 'PATCH', body: JSON.stringify(payload) });
-      modal('package').hide(); form.reset(); delete form.dataset.editingCandidate; $('#package-modal-title').textContent = '添加候选包';
+      modal('package').hide(); form.reset(); delete form.dataset.editingCandidate; $('#package-modal-title').textContent = '添加候选包'; $('#package-submit-button').textContent = '确定';
       showAlert(`候选包 ${candidate.fileName} 已更新`); await loadCandidateDetail();
       return;
     }

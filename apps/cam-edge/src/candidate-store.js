@@ -379,8 +379,8 @@ export class CandidateStore {
     const nextSize = size === undefined || size === null || size === '' ? candidate.expected_size : size;
     if (!Number.isSafeInteger(nextSize) || nextSize < 0) throw new Error('size must be a non-negative safe integer');
     if (parts.length > 0 && (nextUrl !== candidate.source_url || nextName !== candidate.file_name || nextSize !== candidate.expected_size)) { const error = new Error('cannot change source, file name or size after receiving parts'); error.code = 'candidate_has_parts'; throw error; }
-    const nextMd5 = md5 !== undefined || expectedMd5 !== undefined ? (md5 ?? expectedMd5) : candidate.expected_md5;
-    const nextSha256 = sha256 !== undefined || expectedSha256 !== undefined ? (sha256 ?? expectedSha256) : candidate.expected_sha256;
+    const nextMd5 = md5 !== undefined ? md5 : expectedMd5 !== undefined ? expectedMd5 : candidate.expected_md5;
+    const nextSha256 = sha256 !== undefined ? sha256 : expectedSha256 !== undefined ? expectedSha256 : candidate.expected_sha256;
     if (nextMd5 !== null && !MD5_PATTERN.test(nextMd5)) throw new Error('md5 must be a 32-character hexadecimal digest');
     if (nextSha256 !== null && !SHA256_PATTERN.test(nextSha256)) throw new Error('sha256 must be a 64-character hexadecimal digest');
     const nextVersion = version === undefined || version === null || version === '' ? candidate.version : safeText(version, 'version', { max: 128 });
