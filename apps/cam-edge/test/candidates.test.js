@@ -159,6 +159,58 @@ test('cam-edge resumes partial candidate downloads after restart and finalizes a
   await new Promise((resolve, reject) => source.close((error) => error ? reject(error) : resolve()));
 });
 
+test('round batch receive is persisted and limits concurrent downloads', async () => {
+  const payload = Buffer.from('scheduled-package');
+  let activeRequests = 0;
+  let maxActiveRequests = 0;
+  const source = createServer(async (request, response) => {
+    const match = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range ?? '');
+    if (!match) return response.writeHead(416).end();
+    activeRequests += 1;
+    maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const start = Number(match[1]);
+    const end = Number(match[2]);
+    response.writeHead(206, { 'content-range': `bytes ${start}-${end}/${payload.length}`, etag: '"batch-source"' });
+    response.end(payload.subarray(start, end + 1), () => { activeRequests -= 1; });
+  });
+  await new Promise((resolve) => source.listen(0, '127.0.0.1', resolve));
+  const port = source.address().port;
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-batch-'));
+  const app = await buildEdgeApp({ dataDir, defaultChunkSize: payload.length, allowlist: ['127.0.0.1'] });
+  const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Batch test' } });
+  const release = await app.inject({ method: 'POST', url: `/api/v1/products/${product.json().productId}/releases`, payload: { version: '1.0.0' } });
+  const round = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.json().releaseId}/rounds`, payload: {} });
+  const candidateIds = [];
+  for (let index = 0; index < 3; index += 1) {
+    const created = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.json().roundId}/candidates`, payload: { packageKey: `package-${index}`, sourceUrl: `http://127.0.0.1:${port}/package-${index}.bin`, size: payload.length } });
+    candidateIds.push(created.json().candidateId);
+  }
+  const batch = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.json().roundId}/receive-batch`, payload: {} });
+  assert.equal(batch.statusCode, 202);
+  assert.equal(batch.json().enqueued, 3);
+  assert.equal(batch.json().concurrency, 2);
+  assert.equal(batch.json().items.filter((item) => item.status === 'QUEUED').length, 1);
+  const queuedId = batch.json().items.find((item) => item.status === 'QUEUED').candidate_id;
+  await app.inject({ method: 'POST', url: `/api/v1/candidates/${queuedId}/cancel-receive` });
+  assert.equal(app.receiveScheduler.list().find((item) => item.candidate_id === queuedId).status, 'PAUSED');
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (app.receiveScheduler.list().filter((item) => item.status === 'COMPLETED').length === 2) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(maxActiveRequests <= 2, true);
+  assert.equal(app.receiveScheduler.list().find((item) => item.candidate_id === queuedId).status, 'PAUSED');
+  await app.inject({ method: 'POST', url: `/api/v1/candidates/${queuedId}/receive` });
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (app.receiveScheduler.list().every((item) => item.status === 'COMPLETED')) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(app.receiveScheduler.list().filter((item) => item.status === 'COMPLETED').length, 3);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/v1/receive-queue' })).json().items.length, 3);
+  await app.close();
+  await new Promise((resolve, reject) => source.close((error) => error ? reject(error) : resolve()));
+});
+
 test('release rounds inherit unchanged candidate packages and replace only updated package mappings', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-rounds-'));
   const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });

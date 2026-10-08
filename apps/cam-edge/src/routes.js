@@ -92,7 +92,7 @@ export async function finalizeCandidate(store, candidateId) {
   return store.complete(candidate.candidate_id, { finalSha256: assembled.sha256, finalMd5: candidate.expected_md5 ? await md5File(assembled.path) : null });
 }
 
-export function registerCandidateRoutes(app, { store, receiver }) {
+export function registerCandidateRoutes(app, { store, receiver, scheduler }) {
   app.post('/api/v1/products', async (request, reply) => {
     try { return reply.code(201).send(store.createProduct(request.body ?? {})); }
     catch (err) { return error(reply, 400, 'invalid_product', err.message); }
@@ -224,6 +224,24 @@ export function registerCandidateRoutes(app, { store, receiver }) {
     }
   });
 
+  app.get('/api/v1/receive-queue', async (_request, reply) => reply.send({ concurrency: scheduler.concurrency, items: scheduler.list() }));
+
+  app.post('/api/v1/rounds/:roundId/receive-batch', async (request, reply) => {
+    try {
+      const roundIds = store.roundCandidateIds(request.params.roundId);
+      const requested = request.body?.candidateIds;
+      if (requested !== undefined && (!Array.isArray(requested) || requested.some((id) => typeof id !== 'string'))) {
+        return error(reply, 400, 'invalid_candidate_ids', 'candidateIds must be an array of candidate IDs');
+      }
+      const candidateIds = requested ?? roundIds;
+      if (candidateIds.some((id) => !roundIds.includes(id))) return error(reply, 400, 'candidate_not_in_round', 'all selected candidates must belong to the specified round');
+      const items = scheduler.enqueue(candidateIds);
+      return reply.code(202).send({ roundId: request.params.roundId, enqueued: items.filter(Boolean).length, concurrency: scheduler.concurrency, items: scheduler.list() });
+    } catch (err) {
+      return error(reply, 400, 'receive_batch_failed', err.message);
+    }
+  });
+
   app.get('/api/v1/candidates/:candidateId', async (request, reply) => {
     const candidate = store.get(request.params.candidateId);
     return candidate ? reply.send(candidateResponse(candidate)) : error(reply, 404, 'candidate_not_found', 'candidate not found');
@@ -293,16 +311,22 @@ export function registerCandidateRoutes(app, { store, receiver }) {
     const candidate = store.get(request.params.candidateId);
     if (!candidate) return error(reply, 404, 'candidate_not_found', 'candidate not found');
     if (candidate.status === 'COMPLETED') return reply.send(candidateResponse(candidate));
-    if (!receiver.running.has(candidate.candidate_id)) receiver.receive(candidate.candidate_id).catch(() => {});
-    return reply.code(202).send({ candidateId: candidate.candidate_id, status: 'RECEIVING' });
+    try {
+      const job = scheduler.resume(candidate.candidate_id);
+      return reply.code(202).send({ candidateId: candidate.candidate_id, status: job?.status ?? candidate.status, queue: job });
+    } catch (err) { return error(reply, 400, 'receive_enqueue_failed', err.message); }
   });
 
   app.post('/api/v1/candidates/:candidateId/cancel-receive', async (request, reply) => {
     const candidate = store.get(request.params.candidateId);
     if (!candidate) return error(reply, 404, 'candidate_not_found', 'candidate not found');
     if (candidate.status === 'COMPLETED') return error(reply, 409, 'candidate_completed', 'candidate is already completed');
-    receiver.cancel(candidate.candidate_id);
-    return reply.send(candidateResponse(store.markPartial(candidate.candidate_id)));
+    const job = scheduler.pause(candidate.candidate_id);
+    if (!job) {
+      receiver.cancel(candidate.candidate_id);
+      store.markPartial(candidate.candidate_id);
+    }
+    return reply.send({ ...candidateResponse(store.get(candidate.candidate_id)), queue: scheduler.list().find((item) => item.candidate_id === candidate.candidate_id) ?? job });
   });
 
   app.post('/api/v1/candidates/:candidateId/complete', async (request, reply) => {

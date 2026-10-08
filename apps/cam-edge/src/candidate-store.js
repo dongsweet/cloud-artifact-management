@@ -140,6 +140,16 @@ export class CandidateStore {
         FOREIGN KEY (candidate_id) REFERENCES candidates(candidate_id)
       );
       CREATE INDEX IF NOT EXISTS candidate_parts_status_idx ON candidate_parts(candidate_id, status);
+      CREATE TABLE IF NOT EXISTS receive_queue (
+        candidate_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT,
+        queued_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (candidate_id) REFERENCES candidates(candidate_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS receive_queue_order_idx ON receive_queue(status, queued_at);
     `);
     this.migrateCandidates();
   }
@@ -444,6 +454,60 @@ export class CandidateStore {
       FROM candidates c LEFT JOIN releases r ON r.release_id = c.release_id LEFT JOIN products p ON p.product_id = r.product_id
       ${filter} ORDER BY c.created_at DESC LIMIT ? OFFSET ?`).all(...args);
     return rows.map(parseCandidate);
+  }
+
+  enqueueReceive(candidateId) {
+    const candidate = this.get(candidateId);
+    if (!candidate) throw new Error('candidate not found');
+    if (candidate.status === 'COMPLETED') return this.getReceiveJob(candidateId);
+    const timestamp = now();
+    this.db.prepare(`INSERT INTO receive_queue (candidate_id, status, attempts, error_message, queued_at, updated_at)
+      VALUES (?, 'QUEUED', 0, NULL, ?, ?)
+      ON CONFLICT(candidate_id) DO UPDATE SET status = 'QUEUED', error_message = NULL, queued_at = excluded.queued_at, updated_at = excluded.updated_at
+      WHERE receive_queue.status IN ('PAUSED', 'FAILED', 'CANCELLED')`).run(candidateId, timestamp, timestamp);
+    return this.getReceiveJob(candidateId);
+  }
+
+  getReceiveJob(candidateId) {
+    return this.db.prepare('SELECT * FROM receive_queue WHERE candidate_id = ?').get(candidateId) ?? null;
+  }
+
+  listReceiveQueue() {
+    return this.db.prepare(`SELECT q.*, c.file_name, c.version, c.expected_size, c.status AS candidate_status,
+      (SELECT COUNT(*) FROM candidate_parts p WHERE p.candidate_id = c.candidate_id AND p.status = 'COMPLETED') AS completed_parts,
+      c.chunk_count AS total_parts
+      FROM receive_queue q JOIN candidates c ON c.candidate_id = q.candidate_id
+      ORDER BY CASE q.status WHEN 'RUNNING' THEN 0 WHEN 'QUEUED' THEN 1 ELSE 2 END, q.queued_at`).all();
+  }
+
+  claimReceiveJob(candidateId) {
+    const timestamp = now();
+    const result = this.db.prepare(`UPDATE receive_queue SET status = 'RUNNING', attempts = attempts + 1, error_message = NULL, updated_at = ?
+      WHERE candidate_id = ? AND status = 'QUEUED'`).run(timestamp, candidateId);
+    return result.changes === 1;
+  }
+
+  nextReceiveJobs(limit) {
+    return this.db.prepare("SELECT candidate_id FROM receive_queue WHERE status = 'QUEUED' ORDER BY queued_at, candidate_id LIMIT ?").all(limit).map((row) => row.candidate_id);
+  }
+
+  updateReceiveJob(candidateId, status, errorMessage = null) {
+    this.db.prepare('UPDATE receive_queue SET status = ?, error_message = ?, updated_at = ? WHERE candidate_id = ?')
+      .run(status, errorMessage ? String(errorMessage).slice(0, 1000) : null, now(), candidateId);
+    return this.getReceiveJob(candidateId);
+  }
+
+  recoverReceiveQueue() {
+    this.db.prepare("UPDATE receive_queue SET status = 'QUEUED', updated_at = ? WHERE status = 'RUNNING'").run(now());
+    this.db.prepare(`INSERT INTO receive_queue (candidate_id, status, attempts, queued_at, updated_at)
+      SELECT candidate_id, 'QUEUED', 0, ?, ? FROM candidates c
+      WHERE c.status IN ('RECEIVING', 'PARTIAL', 'ASSEMBLING')
+        AND NOT EXISTS (SELECT 1 FROM receive_queue q WHERE q.candidate_id = c.candidate_id)`).run(now(), now());
+  }
+
+  roundCandidateIds(roundId) {
+    if (!this.getRound(roundId)) throw new Error('round not found');
+    return this.db.prepare('SELECT candidate_id FROM round_candidates WHERE round_id = ? ORDER BY package_key').all(roundId).map((row) => row.candidate_id);
   }
 
   setExpectedSize(candidateId, size) {
