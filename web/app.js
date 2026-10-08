@@ -460,7 +460,11 @@ async function confirmImport() {
 async function deleteCandidate() {
   const candidate = state.currentCandidate;
   if (!candidate || !window.confirm(`确定删除候选包“${candidate.fileName}”吗？`)) return;
-  try { await api(`/api/v1/candidates/${encodeURIComponent(candidate.candidateId)}`, { method: 'DELETE' }); showAlert('候选包已删除'); navigate('candidates', paramsForState()); }
+  try {
+    await api(`/api/v1/candidates/${encodeURIComponent(candidate.candidateId)}`, { method: 'DELETE' });
+    showAlert('候选包已删除');
+    navigate(state.roundId ? 'release-detail' : 'candidates', paramsForState());
+  }
   catch (error) { showAlert(error.message, 'danger'); }
 }
 
