@@ -122,7 +122,7 @@ async function loadProducts(generation = state.routeGeneration) {
 
 async function deleteProduct(productId) {
   const product = state.products.find((item) => item.productId === productId);
-  if (!product || !window.confirm(`确定删除软件产品“${product.name}”吗？`)) return;
+  if (!product || !await confirmAction({ title: '删除软件产品', message: `确定删除软件产品“${product.name}”吗？`, detail: '仅允许删除没有发布版本的产品。此操作不可恢复。' })) return;
   try { await api(`/api/v1/products/${encodeURIComponent(productId)}`, { method: 'DELETE' }); showAlert('软件产品已删除'); await loadProducts(); }
   catch (error) { showAlert(error.message, 'danger'); }
 }
@@ -148,7 +148,7 @@ async function loadReleases(generation = state.routeGeneration) {
 
 async function deleteRelease(releaseId) {
   const release = state.releases.find((item) => item.releaseId === releaseId);
-  if (!release || !window.confirm(`确定删除发布版本“${release.productName} ${release.version}”吗？`)) return;
+  if (!release || !await confirmAction({ title: '删除发布版本', message: `确定删除发布版本“${release.productName} ${release.version}”吗？`, detail: '仅允许删除没有候选包的开放版本。此操作不可恢复。' })) return;
   try { await api(`/api/v1/releases/${encodeURIComponent(releaseId)}`, { method: 'DELETE' }); showAlert('发布版本已删除'); await loadReleases(); }
   catch (error) { showAlert(error.message, 'danger'); }
 }
@@ -285,7 +285,7 @@ async function batchReceiveRound() {
 }
 
 async function detachRoundCandidate(candidateId) {
-  if (!state.roundId || !window.confirm('确定从当前候选轮次移除这个候选包吗？候选记录及已下载文件会保留。')) return;
+  if (!state.roundId || !await confirmAction({ title: '从本轮移除候选包', message: '确定从当前候选轮次移除这个候选包吗？', detail: '只解除当前轮次的引用，候选记录和已下载文件会保留，可被其他轮次继续使用。', confirmText: '从本轮移除', variant: 'warning' })) return;
   try {
     await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/candidates/${encodeURIComponent(candidateId)}`, { method: 'DELETE' });
     showAlert('候选包已从当前轮次移除');
@@ -492,7 +492,7 @@ async function confirmImport() {
 
 async function deleteCandidate() {
   const candidate = state.currentCandidate;
-  if (!candidate || !window.confirm(`确定删除候选包“${candidate.fileName}”吗？`)) return;
+  if (!candidate || !await confirmAction({ title: '永久删除候选包', message: `确定永久删除候选包“${candidate.fileName}”吗？`, detail: '这会删除候选记录、本机已下载文件，并解除它在所有候选轮次中的引用。此操作不可恢复。' })) return;
   try {
     await api(`/api/v1/candidates/${encodeURIComponent(candidate.candidateId)}`, { method: 'DELETE' });
     showAlert('候选包已删除');
@@ -502,7 +502,7 @@ async function deleteCandidate() {
 }
 
 async function deleteCandidateById(candidateId) {
-  if (!window.confirm('确定删除这个候选包吗？')) return;
+  if (!await confirmAction({ title: '永久删除候选包', message: '确定永久删除这个候选包吗？', detail: '这会删除候选记录、本机已下载文件，并解除它在所有候选轮次中的引用。此操作不可恢复。' })) return;
   try { await api(`/api/v1/candidates/${encodeURIComponent(candidateId)}`, { method: 'DELETE' }); showAlert('候选包已删除'); await loadCandidates(); }
   catch (error) { showAlert(error.message, 'danger'); }
 }
@@ -528,6 +528,36 @@ async function renderRoute() {
 }
 
 function modal(name) { return bootstrap.Modal.getOrCreateInstance($(`#${name}-modal`)); }
+
+let confirmationResolver = null;
+
+function confirmAction({ title = '请确认操作', message, detail = '', confirmText = '确定', variant = 'danger' }) {
+  $('#confirm-modal-title').textContent = title;
+  $('#confirm-modal-message').textContent = message;
+  $('#confirm-modal-detail').textContent = detail;
+  $('#confirm-modal-detail').classList.toggle('d-none', !detail);
+  const button = $('#confirm-modal-submit');
+  button.textContent = confirmText;
+  button.className = `btn btn-${variant}`;
+  return new Promise((resolve) => {
+    if (confirmationResolver) confirmationResolver(false);
+    confirmationResolver = resolve;
+    modal('confirm').show();
+  });
+}
+
+function resolveConfirmation(confirmed) {
+  if (!confirmationResolver) return;
+  const resolve = confirmationResolver;
+  confirmationResolver = null;
+  resolve(confirmed);
+}
+
+$('#confirm-modal-submit').addEventListener('click', () => {
+  resolveConfirmation(true);
+  modal('confirm').hide();
+});
+$('#confirm-modal').addEventListener('hidden.bs.modal', () => resolveConfirmation(false));
 
 document.querySelectorAll('[data-route]').forEach((element) => element.addEventListener('click', (event) => {
   event.preventDefault();
