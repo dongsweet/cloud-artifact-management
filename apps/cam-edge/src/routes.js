@@ -164,6 +164,14 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler }) {
     } catch (err) { return error(reply, 400, 'invalid_candidate', err.message); }
   });
 
+  app.delete('/api/v1/rounds/:roundId/candidates/:candidateId', async (request, reply) => {
+    try {
+      const removed = store.detachCandidateFromRound(request.params.roundId, request.params.candidateId);
+      if (!removed) return error(reply, 404, 'round_candidate_not_found', 'candidate is not attached to this round');
+      return reply.code(204).send();
+    } catch (err) { return error(reply, 400, 'invalid_round_candidate_delete', err.message); }
+  });
+
   app.post('/api/v1/rounds/:roundId/import-preview', async (request, reply) => {
     const round = store.getRound(request.params.roundId);
     if (!round) return error(reply, 404, 'round_not_found', 'round not found');

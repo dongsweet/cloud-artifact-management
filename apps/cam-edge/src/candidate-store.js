@@ -335,6 +335,16 @@ export class CandidateStore {
     return this.getRound(roundId);
   }
 
+  detachCandidateFromRound(roundId, candidateId) {
+    const round = this.getRound(roundId);
+    if (!round) throw new Error('round not found');
+    const mapping = this.db.prepare(`SELECT package_key, candidate_id, source, inherited_from_round_id
+      FROM round_candidates WHERE round_id = ? AND candidate_id = ?`).get(roundId, candidateId);
+    if (!mapping) return null;
+    this.db.prepare('DELETE FROM round_candidates WHERE round_id = ? AND candidate_id = ?').run(roundId, candidateId);
+    return { roundId, candidateId, packageKey: mapping.package_key, source: mapping.source, inheritedFromRoundId: mapping.inherited_from_round_id };
+  }
+
   resolveSourceUrl(sourceUrl) {
     if (typeof sourceUrl !== 'string' || sourceUrl.length === 0 || sourceUrl.length > 2048) throw new Error('sourceUrl is required');
     try {

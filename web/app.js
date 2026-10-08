@@ -254,8 +254,18 @@ async function loadRound(generation = state.routeGeneration) {
 
 function renderRound(round, candidates) {
   $('#round-summary').innerHTML = round ? `<div class="col-md-4"><div class="small-box text-bg-primary"><div class="inner"><h3>${round.roundNo}</h3><p>候选轮次</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-success"><div class="inner"><h3>${round.completedCandidateCount}/${round.candidateCount}</h3><p>已完成候选包</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-secondary"><div class="inner"><h3>${round.baseRoundId ? '继承' : '初始'}</h3><p>轮次来源</p></div></div></div>` : '';
-  $('#round-candidate-rows').innerHTML = candidates.length ? candidates.map((item) => `<tr><td>${escapeHtml(item.packageKey ?? item.fileName)}</td><td>${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td class="font-monospace small">${escapeHtml(item.finalSha256 ?? item.expectedSha256 ?? '-')}</td><td><span class="badge ${item.mappingSource === 'INHERITED' ? 'text-bg-info' : 'text-bg-secondary'}">${item.mappingSource === 'INHERITED' ? `继承${item.inheritedFromRoundId ? ` · ${escapeHtml(item.inheritedFromRoundId.slice(-8))}` : ''}` : '本轮新增'}</span></td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><button class="btn btn-outline-primary btn-sm" data-candidate="${escapeHtml(item.candidateId)}"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button></td></tr>`).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">本轮暂无候选包</td></tr>';
+  $('#round-candidate-rows').innerHTML = candidates.length ? candidates.map((item) => `<tr><td>${escapeHtml(item.packageKey ?? item.fileName)}</td><td>${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td class="font-monospace small">${escapeHtml(item.finalSha256 ?? item.expectedSha256 ?? '-')}</td><td><span class="badge ${item.mappingSource === 'INHERITED' ? 'text-bg-info' : 'text-bg-secondary'}">${item.mappingSource === 'INHERITED' ? `继承${item.inheritedFromRoundId ? ` · ${escapeHtml(item.inheritedFromRoundId.slice(-8))}` : ''}` : '本轮新增'}</span></td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><div class="d-flex gap-1"><button class="btn btn-outline-primary btn-sm" data-candidate="${escapeHtml(item.candidateId)}" title="查看候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button><button class="btn btn-outline-danger btn-sm" data-round-candidate-delete="${escapeHtml(item.candidateId)}" title="从本轮移除（保留候选记录）"><i class="bi bi-x-lg"></i><span class="visually-hidden">从本轮移除</span></button></div></td></tr>`).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">本轮暂无候选包</td></tr>';
   document.querySelectorAll('[data-candidate]').forEach((button) => button.addEventListener('click', () => navigate('candidate-detail', { candidateId: button.dataset.candidate, ...paramsForState() })));
+  document.querySelectorAll('[data-round-candidate-delete]').forEach((button) => button.addEventListener('click', () => detachRoundCandidate(button.dataset.roundCandidateDelete)));
+}
+
+async function detachRoundCandidate(candidateId) {
+  if (!state.roundId || !window.confirm('确定从当前候选轮次移除这个候选包吗？候选记录及已下载文件会保留。')) return;
+  try {
+    await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/candidates/${encodeURIComponent(candidateId)}`, { method: 'DELETE' });
+    showAlert('候选包已从当前轮次移除');
+    await loadRound(state.routeGeneration);
+  } catch (error) { showAlert(error.message, 'danger'); }
 }
 
 async function loadCandidateDetail(generation = state.routeGeneration) {

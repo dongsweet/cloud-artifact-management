@@ -211,6 +211,22 @@ test('round batch receive is persisted and limits concurrent downloads', async (
   await new Promise((resolve, reject) => source.close((error) => error ? reject(error) : resolve()));
 });
 
+test('round candidate removal detaches only the current round mapping', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-round-remove-'));
+  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Round remove test' } });
+  const release = await app.inject({ method: 'POST', url: `/api/v1/products/${product.json().productId}/releases`, payload: { version: '1.0.0' } });
+  const round = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.json().releaseId}/rounds`, payload: {} });
+  const created = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.json().roundId}/candidates`, payload: { packageKey: 'base', sourceUrl: 'http://127.0.0.1/base.bin', size: 1 } });
+  const candidateId = created.json().candidateId;
+  const removed = await app.inject({ method: 'DELETE', url: `/api/v1/rounds/${round.json().roundId}/candidates/${candidateId}` });
+  assert.equal(removed.statusCode, 204);
+  assert.deepEqual((await app.inject({ method: 'GET', url: `/api/v1/rounds/${round.json().roundId}/candidates` })).json().items, []);
+  assert.equal((await app.inject({ method: 'GET', url: `/api/v1/candidates/${candidateId}` })).statusCode, 200);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/rounds/${round.json().roundId}/candidates/${candidateId}` })).statusCode, 404);
+  await app.close();
+});
+
 test('release rounds inherit unchanged candidate packages and replace only updated package mappings', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-rounds-'));
   const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
