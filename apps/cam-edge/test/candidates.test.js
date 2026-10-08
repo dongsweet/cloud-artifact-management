@@ -83,6 +83,22 @@ test('candidate metadata can be corrected after a failed digest and candidate ca
   await app.close();
 });
 
+test('candidate digest mismatch reports both expected and actual MD5 values', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-digest-details-'));
+  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 16, allowlist: ['127.0.0.1'] });
+  const payload = Buffer.from('actual-package');
+  const expectedMd5 = '0'.repeat(32);
+  const actualMd5 = createHash('md5').update(payload).digest('hex');
+  const created = await app.inject({ method: 'POST', url: '/api/v1/candidates', payload: { sourceUrl: 'http://127.0.0.1/package.bin', fileName: 'package.bin', size: payload.length, md5: expectedMd5, chunkSize: 16 } });
+  const candidate = created.json();
+  await app.inject({ method: 'PUT', url: `/api/v1/candidates/${candidate.candidateId}/parts/0`, headers: { 'content-type': 'application/octet-stream', 'x-chunk-sha256': sha256(payload) }, payload });
+  const completed = await app.inject({ method: 'POST', url: `/api/v1/candidates/${candidate.candidateId}/complete` });
+  assert.equal(completed.statusCode, 422);
+  assert.match(completed.json().error.message, new RegExp(`expected: ${expectedMd5}`));
+  assert.match(completed.json().error.message, new RegExp(`actual: ${actualMd5}`));
+  await app.close();
+});
+
 test('cam-edge receives a candidate from an HTTP Range source and records its source tag', async () => {
   const payload = Buffer.from('range-source-payload');
   const source = createServer((request, response) => {

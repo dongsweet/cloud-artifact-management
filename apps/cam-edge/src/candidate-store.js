@@ -506,8 +506,8 @@ export class CandidateStore {
     if (missing.length > 0) throw new Error(`candidate has missing parts: ${missing.join(',')}`);
     if (!SHA256_PATTERN.test(finalSha256)) throw new Error('final sha256 is invalid');
     if (finalMd5 !== null && !MD5_PATTERN.test(finalMd5)) throw new Error('final md5 is invalid');
-    if (candidate.expected_sha256 && candidate.expected_sha256.toLowerCase() !== finalSha256.toLowerCase()) throw new Error('assembled file SHA-256 does not match expected digest');
-    if (candidate.expected_md5 && (!finalMd5 || candidate.expected_md5.toLowerCase() !== finalMd5.toLowerCase())) throw new Error('assembled file MD5 does not match expected digest');
+    if (candidate.expected_sha256 && candidate.expected_sha256.toLowerCase() !== finalSha256.toLowerCase()) throw new Error(`assembled file SHA-256 does not match expected digest (expected: ${candidate.expected_sha256}; actual: ${finalSha256})`);
+    if (candidate.expected_md5 && (!finalMd5 || candidate.expected_md5.toLowerCase() !== finalMd5.toLowerCase())) throw new Error(`assembled file MD5 does not match expected digest (expected: ${candidate.expected_md5}; actual: ${finalMd5 ?? 'unavailable'})`);
     const timestamp = now();
     this.db.prepare('UPDATE candidates SET status = ?, final_md5 = ?, final_sha256 = ?, completed_at = ?, updated_at = ?, error_message = NULL WHERE candidate_id = ?').run('COMPLETED', finalMd5, finalSha256, timestamp, timestamp, candidateId);
     return this.get(candidateId);
