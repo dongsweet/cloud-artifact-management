@@ -1,4 +1,4 @@
-const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, routeGeneration: 0, importFile: null, importPreview: null };
+const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, routeGeneration: 0, importFile: null, importPreview: null };
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
 
@@ -11,6 +11,8 @@ function showAlert(message, type = 'success') {
 
 function statusLabel(status) { return { OPEN: '开放', CREATED: '待接收', RECEIVING: '接收中', PARTIAL: '待完成', ASSEMBLING: '组装校验中', FAILED: '失败', COMPLETED: '已完成' }[status] ?? status; }
 function statusClass(status) { return { OPEN: 'text-bg-primary', CREATED: 'text-bg-secondary', RECEIVING: 'text-bg-info', PARTIAL: 'text-bg-warning', ASSEMBLING: 'text-bg-primary', FAILED: 'text-bg-danger', COMPLETED: 'text-bg-success' }[status] ?? 'text-bg-secondary'; }
+function queueLabel(status) { return { QUEUED: '排队中', RUNNING: '调度中', PAUSED: '已暂停', FAILED: '调度失败', CANCELLED: '已取消', COMPLETED: '已完成' }[status] ?? status; }
+function queueClass(status) { return { QUEUED: 'text-bg-secondary', RUNNING: 'text-bg-info', PAUSED: 'text-bg-warning', FAILED: 'text-bg-danger', CANCELLED: 'text-bg-secondary', COMPLETED: 'text-bg-success' }[status] ?? 'text-bg-secondary'; }
 function formatBytes(value) { if (!Number.isFinite(Number(value))) return '-'; if (value < 1024) return `${value} B`; const units = ['KB', 'MB', 'GB', 'TB']; let amount = value; let index = -1; while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index += 1; } return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${units[index]}`; }
 
 async function api(path, options = {}) {
@@ -171,7 +173,7 @@ async function loadRounds(generation = state.routeGeneration) {
   const roundsByRelease = await Promise.all(selectedReleases.map((release) => getRounds(release.releaseId)));
   if (generation !== state.routeGeneration) return;
   const rounds = roundsByRelease.flat();
-  $('#round-rows').innerHTML = rounds.length ? rounds.map((round) => `<tr><td>${escapeHtml(round.productName)}</td><td>${escapeHtml(round.version)}</td><td class="fw-semibold">第 ${round.roundNo} 轮</td><td>${round.completedCandidateCount}/${round.candidateCount}</td><td><span class="badge ${statusClass(round.status)}">${statusLabel(round.status)}</span></td><td>${new Date(round.createdAt).toLocaleString()}</td><td><button class="btn btn-outline-primary btn-sm" data-round-candidates="${escapeHtml(round.roundId)}" data-product="${escapeHtml(round.productId)}" data-release="${escapeHtml(round.releaseId)}" title="查看轮次详情和候选包"><i class="bi bi-box-seam"></i><span class="visually-hidden">查看轮次详情和候选包</span></button></td></tr>`).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">暂无候选轮次</td></tr>';
+  $('#round-rows').innerHTML = rounds.length ? rounds.map((round) => `<tr><td>${escapeHtml(round.productName)}</td><td>${escapeHtml(round.version)}</td><td class="fw-semibold">第 ${round.roundNo} 轮</td><td>${round.completedCandidateCount}/${round.candidateCount}</td><td><span class="badge ${statusClass(round.status)}">${statusLabel(round.status)}</span></td><td>${new Date(round.createdAt).toLocaleString()}</td><td><button class="btn btn-outline-primary btn-sm" data-round-candidates="${escapeHtml(round.roundId)}" data-product="${escapeHtml(round.productId)}" data-release="${escapeHtml(round.releaseId)}" title="查看轮次详情和候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看轮次详情和候选包</span></button></td></tr>`).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">暂无候选轮次</td></tr>';
   document.querySelectorAll('[data-round-candidates]').forEach((button) => button.addEventListener('click', () => navigate('release-detail', { productId: button.dataset.product, releaseId: button.dataset.release, roundId: button.dataset.roundCandidates })));
 }
 
@@ -254,9 +256,32 @@ async function loadRound(generation = state.routeGeneration) {
 
 function renderRound(round, candidates) {
   $('#round-summary').innerHTML = round ? `<div class="col-md-4"><div class="small-box text-bg-primary"><div class="inner"><h3>${round.roundNo}</h3><p>候选轮次</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-success"><div class="inner"><h3>${round.completedCandidateCount}/${round.candidateCount}</h3><p>已完成候选包</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-secondary"><div class="inner"><h3>${round.baseRoundId ? '继承' : '初始'}</h3><p>轮次来源</p></div></div></div>` : '';
-  $('#round-candidate-rows').innerHTML = candidates.length ? candidates.map((item) => `<tr><td>${escapeHtml(item.packageKey ?? item.fileName)}</td><td>${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td class="font-monospace small">${escapeHtml(item.finalSha256 ?? item.expectedSha256 ?? '-')}</td><td><span class="badge ${item.mappingSource === 'INHERITED' ? 'text-bg-info' : 'text-bg-secondary'}">${item.mappingSource === 'INHERITED' ? `继承${item.inheritedFromRoundId ? ` · ${escapeHtml(item.inheritedFromRoundId.slice(-8))}` : ''}` : '本轮新增'}</span></td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><div class="d-flex gap-1"><button class="btn btn-outline-primary btn-sm" data-candidate="${escapeHtml(item.candidateId)}" title="查看候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button><button class="btn btn-outline-danger btn-sm" data-round-candidate-delete="${escapeHtml(item.candidateId)}" title="从本轮移除（保留候选记录）"><i class="bi bi-x-lg"></i><span class="visually-hidden">从本轮移除</span></button></div></td></tr>`).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">本轮暂无候选包</td></tr>';
+  $('#round-candidate-rows').innerHTML = candidates.length ? candidates.map((item) => `<tr><td>${escapeHtml(item.packageKey ?? item.fileName)}</td><td>${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td class="font-monospace small">${escapeHtml(item.finalSha256 ?? item.expectedSha256 ?? '-')}</td><td><span class="badge ${item.mappingSource === 'INHERITED' ? 'text-bg-info' : 'text-bg-secondary'}">${item.mappingSource === 'INHERITED' ? `继承${item.inheritedFromRoundId ? ` · ${escapeHtml(item.inheritedFromRoundId.slice(-8))}` : ''}` : '本轮新增'}</span></td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><div class="d-flex gap-1"><button class="btn btn-outline-primary btn-sm" data-candidate="${escapeHtml(item.candidateId)}" title="查看候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button><button class="btn btn-outline-danger btn-sm" data-round-candidate-delete="${escapeHtml(item.candidateId)}" title="从本轮移除（保留候选记录）"><i class="bi bi-trash"></i><span class="visually-hidden">从本轮移除</span></button></div></td></tr>`).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">本轮暂无候选包</td></tr>';
   document.querySelectorAll('[data-candidate]').forEach((button) => button.addEventListener('click', () => navigate('candidate-detail', { candidateId: button.dataset.candidate, ...paramsForState() })));
   document.querySelectorAll('[data-round-candidate-delete]').forEach((button) => button.addEventListener('click', () => detachRoundCandidate(button.dataset.roundCandidateDelete)));
+  updateRoundQueue(round, candidates);
+}
+
+async function updateRoundQueue(round, candidates) {
+  if (!round) return;
+  try {
+    const queue = (await api('/api/v1/receive-queue')).items.filter((item) => candidates.some((candidate) => candidate.candidateId === item.candidate_id));
+    const completed = queue.filter((item) => item.status === 'COMPLETED').length;
+    const active = queue.filter((item) => item.status === 'RUNNING').length;
+    $('#round-queue-summary').textContent = queue.length ? `后台队列：${completed}/${queue.length} 已完成，${active} 个下载中` : '后台队列：尚未提交';
+    $('#batch-receive-button').disabled = !candidates.some((candidate) => candidate.status !== 'COMPLETED');
+  } catch { $('#round-queue-summary').textContent = '后台队列状态暂不可用'; }
+}
+
+async function batchReceiveRound() {
+  if (!state.roundId) return;
+  const button = $('#batch-receive-button');
+  button.disabled = true;
+  try {
+    const result = await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/receive-batch`, { method: 'POST', body: '{}' });
+    showAlert(`已加入后台下载队列：${result.enqueued} 个候选包`);
+    await loadRound(state.routeGeneration);
+  } catch (error) { showAlert(error.message, 'danger'); button.disabled = false; }
 }
 
 async function detachRoundCandidate(candidateId) {
@@ -332,6 +357,14 @@ function startCandidatePolling() {
       if (['COMPLETED', 'FAILED', 'PARTIAL'].includes(candidate.status)) window.clearInterval(state.pollTimer);
     } catch { window.clearInterval(state.pollTimer); }
   }, 1000);
+}
+
+function startRoundQueuePolling() {
+  window.clearInterval(state.queueTimer);
+  state.queueTimer = window.setInterval(() => {
+    if (state.view !== 'release-detail' || !state.roundId) return window.clearInterval(state.queueTimer);
+    loadRound(state.routeGeneration).catch(() => {});
+  }, 2000);
 }
 
 async function pauseCandidate() {
@@ -478,6 +511,7 @@ async function renderRoute() {
   const generation = ++state.routeGeneration;
   const route = routeContext();
   Object.assign(state, route);
+  window.clearInterval(state.queueTimer);
   renderShell(state.view);
   try {
     if (state.view === 'products') await loadProducts(generation);
@@ -487,6 +521,7 @@ async function renderRoute() {
     if (state.view === 'release-detail') await loadReleaseDetail(generation);
     if (state.view === 'candidate-detail') await loadCandidateDetail(generation);
     if (generation === state.routeGeneration) renderBreadcrumb();
+    if (state.view === 'release-detail' && generation === state.routeGeneration) startRoundQueuePolling();
   } catch (error) {
     if (generation === state.routeGeneration) showAlert(error.message, 'danger');
   }
@@ -507,6 +542,7 @@ $('#candidate-product-filter').addEventListener('change', (event) => navigate('c
 $('#candidate-release-filter').addEventListener('change', (event) => navigate('candidates', { productId: state.productId, releaseId: event.target.value }));
 $('#candidate-round-filter').addEventListener('change', (event) => navigate('candidates', { productId: state.productId, releaseId: state.releaseId, roundId: event.target.value }));
 $('#round-select').addEventListener('change', (event) => navigate('release-detail', { releaseId: state.releaseId, roundId: event.target.value }));
+$('#batch-receive-button').addEventListener('click', batchReceiveRound);
 $('#candidate-back-button').addEventListener('click', () => navigate('candidates', paramsForState()));
 $('#release-back-button').addEventListener('click', () => navigate('releases', { productId: state.productId }));
 $('#receive-button').addEventListener('click', receiveCandidate);
