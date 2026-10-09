@@ -1,4 +1,4 @@
-import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView } from './account-ui.js';
+import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js';
 const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null };
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
@@ -10,8 +10,8 @@ function showAlert(message, type = 'success') {
   window.setTimeout(() => alert.classList.add('d-none'), 5000);
 }
 
-function statusLabel(status) { return { OPEN: '开放', CREATED: '待接收', RECEIVING: '接收中', PARTIAL: '待完成', ASSEMBLING: '组装校验中', FAILED: '失败', COMPLETED: '已完成' }[status] ?? status; }
-function statusClass(status) { return { OPEN: 'text-bg-primary', CREATED: 'text-bg-secondary', RECEIVING: 'text-bg-info', PARTIAL: 'text-bg-warning', ASSEMBLING: 'text-bg-primary', FAILED: 'text-bg-danger', COMPLETED: 'text-bg-success' }[status] ?? 'text-bg-secondary'; }
+function statusLabel(status) { return { OPEN: '开放', CREATED: '待接收', RECEIVING: '接收中', PARTIAL: '待完成', ASSEMBLING: '组装校验中', FAILED: '失败', COMPLETED: '已完成', DRAFT: '固化草稿', PENDING_APPROVAL: '待审批', APPROVED: '已固化', REJECTED: '已拒绝' }[status] ?? status; }
+function statusClass(status) { return { OPEN: 'text-bg-primary', CREATED: 'text-bg-secondary', RECEIVING: 'text-bg-info', PARTIAL: 'text-bg-warning', ASSEMBLING: 'text-bg-primary', FAILED: 'text-bg-danger', COMPLETED: 'text-bg-success', DRAFT: 'text-bg-secondary', PENDING_APPROVAL: 'text-bg-warning', APPROVED: 'text-bg-success', REJECTED: 'text-bg-danger' }[status] ?? 'text-bg-secondary'; }
 function queueLabel(status) { return { QUEUED: '排队中', RUNNING: '调度中', PAUSED: '已暂停', FAILED: '调度失败', CANCELLED: '已取消', COMPLETED: '已完成' }[status] ?? status; }
 function queueClass(status) { return { QUEUED: 'text-bg-secondary', RUNNING: 'text-bg-info', PAUSED: 'text-bg-warning', FAILED: 'text-bg-danger', CANCELLED: 'text-bg-secondary', COMPLETED: 'text-bg-success' }[status] ?? 'text-bg-secondary'; }
 function formatBytes(value) { if (!Number.isFinite(Number(value))) return '-'; if (value < 1024) return `${value} B`; const units = ['KB', 'MB', 'GB', 'TB']; let amount = value; let index = -1; while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index += 1; } return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${units[index]}`; }
@@ -254,6 +254,52 @@ async function loadRound(generation = state.routeGeneration) {
   state.releaseId = round.releaseId;
   state.currentRound = round;
   renderRound(round, candidates.items);
+  await loadRoundFreeze(round, candidates.items);
+}
+
+async function loadRoundFreeze(round, candidates) {
+  const panel = $('#round-freeze-panel');
+  const response = await api(`/api/v1/rounds/${encodeURIComponent(round.roundId)}/freezes`);
+  const freeze = response.item;
+  state.currentFreeze = freeze;
+  const complete = candidates.length > 0 && candidates.every((item) => item.status === 'COMPLETED' && item.finalSha256);
+  const canSubmit = hasRole('VALIDATOR');
+  const canApprove = hasRole('RELEASE_APPLICANT');
+  const locked = ['PENDING_APPROVAL', 'APPROVED'].includes(freeze?.status);
+  for (const selector of ['#new-package-button', '#import-packages-button', '#batch-receive-button']) $(selector).disabled = locked;
+  document.querySelectorAll('[data-round-candidate-delete]').forEach((button) => { button.disabled = locked; button.title = locked ? '轮次审批或固化期间不可修改' : button.title; });
+  let html = '';
+  if (!freeze) {
+    html = `<div class="alert alert-light border d-flex justify-content-between align-items-center gap-2 mb-0"><span>本轮尚未提交验证报告。${complete ? '所有候选包均已完成，可以申请固化。' : '需先完成本轮全部候选包接收。'}</span>${canSubmit ? `<button id="freeze-start" class="btn btn-outline-primary btn-sm" ${complete ? '' : 'disabled'}><i class="bi bi-file-earmark-check me-1"></i>提交验证报告</button>` : ''}</div>`;
+  } else {
+    html = `<div class="card card-outline ${freeze.status === 'APPROVED' ? 'card-success' : freeze.status === 'REJECTED' ? 'card-danger' : 'card-primary'} mb-0"><div class="card-header d-flex justify-content-between align-items-center"><strong>验证报告与版本固化</strong><span class="badge ${statusClass(freeze.status)}">${statusLabel(freeze.status)}</span></div><div class="card-body"><div class="row g-2"><div class="col-lg-4"><strong>报告：</strong>${escapeHtml(freeze.reportTitle)}</div><div class="col-lg-4"><strong>结论：</strong>${freeze.conclusion === 'PASS' ? '通过' : '有条件通过'}</div><div class="col-lg-4"><strong>提交时间：</strong>${escapeHtml(freeze.submittedAt ?? freeze.createdAt)}</div><div class="col-12"><strong>清单摘要：</strong><code class="text-break">${escapeHtml(freeze.manifestSha256)}</code></div>${freeze.decisionReference ? `<div class="col-12"><strong>审批编号：</strong>${escapeHtml(freeze.decisionReference)}</div>` : ''}${freeze.decisionComment ? `<div class="col-12"><strong>审批意见：</strong>${escapeHtml(freeze.decisionComment)}</div>` : ''}${freeze.reportFileName ? `<div class="col-12"><a href="/api/v1/freezes/${encodeURIComponent(freeze.freezeId)}/report-file" target="_blank" rel="noopener">下载验证报告 PDF</a></div>` : ''}</div>${freeze.status === 'DRAFT' && canSubmit ? '<button id="freeze-resume" class="btn btn-outline-primary btn-sm mt-3">继续上传并提交</button>' : ''}${freeze.status === 'REJECTED' && canSubmit ? '<button id="freeze-start" class="btn btn-outline-primary btn-sm mt-3">重新提交验证报告</button>' : ''}${freeze.status === 'PENDING_APPROVAL' && canApprove ? `<div class="border-top mt-3 pt-3"><div class="row g-2"><div class="col-md-4"><input id="freeze-reference" class="form-control form-control-sm" maxlength="200" placeholder="云管工单编号（可选）"></div><div class="col-md-8"><input id="freeze-comment" class="form-control form-control-sm" maxlength="2000" placeholder="审批意见；拒绝时必填"></div></div><div class="d-flex justify-content-end gap-2 mt-2"><button id="freeze-reject" class="btn btn-outline-danger btn-sm">拒绝</button><button id="freeze-approve" class="btn btn-success btn-sm">审批通过并固化</button></div></div>` : ''}</div></div>`;
+  }
+  panel.innerHTML = html;
+  $('#freeze-start')?.addEventListener('click', () => openFreezeForm());
+  $('#freeze-resume')?.addEventListener('click', () => openFreezeForm(freeze));
+  $('#freeze-approve')?.addEventListener('click', () => decideFreeze('APPROVE'));
+  $('#freeze-reject')?.addEventListener('click', () => decideFreeze('REJECT'));
+}
+
+function openFreezeForm(draft = null) {
+  state.freezeDraftId = draft?.freezeId ?? null;
+  $('#freeze-metadata-fields').classList.toggle('d-none', Boolean(draft));
+  $('#freeze-title').required = !draft;
+  $('#freeze-environment').required = !draft;
+  $('#freeze-report').value = '';
+  $('#freeze-report').required = true;
+  modal('freeze').show();
+}
+
+async function decideFreeze(decision) {
+  const comment = $('#freeze-comment')?.value.trim() ?? '';
+  if (decision === 'REJECT' && !comment) return showAlert('拒绝申请时必须填写审批意见', 'warning');
+  if (decision === 'APPROVE' && !await confirmAction({ title: '确认固化该候选轮次', message: '审批通过后，这份清单将成为该轮正式固化基线，轮次内容会保持锁定。', confirmText: '审批通过并固化', variant: 'success' })) return;
+  try {
+    await api(`/api/v1/freezes/${encodeURIComponent(state.currentFreeze.freezeId)}/decision`, { method: 'POST', body: JSON.stringify({ decision, reference: $('#freeze-reference')?.value.trim(), comment }) });
+    showAlert(decision === 'APPROVE' ? '已审批通过，本轮清单已固化' : '申请已拒绝，验证人员可重新提交');
+    await loadRound(state.routeGeneration);
+  } catch (error) { showAlert(error.message, 'danger'); }
 }
 
 function renderRound(round, candidates) {
@@ -600,6 +646,27 @@ $('#candidate-release-filter').addEventListener('change', (event) => navigate('c
 $('#candidate-round-filter').addEventListener('change', (event) => navigate('candidates', { productId: state.productId, releaseId: state.releaseId, roundId: event.target.value }));
 $('#round-select').addEventListener('change', (event) => navigate('release-detail', { releaseId: state.releaseId, roundId: event.target.value }));
 $('#batch-receive-button').addEventListener('click', batchReceiveRound);
+$('#freeze-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = $('#freeze-submit');
+  const file = $('#freeze-report').files[0];
+  if (!file) return showAlert('请选择 PDF 验证报告', 'warning');
+  if (file.size > 20 * 1024 * 1024) return showAlert('验证报告不能超过 20 MiB', 'warning');
+  button.disabled = true;
+  try {
+    let freezeId = state.freezeDraftId;
+    if (!freezeId) {
+      const draft = await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/freezes`, { method: 'POST', body: JSON.stringify({ reportTitle: $('#freeze-title').value.trim(), conclusion: $('#freeze-conclusion').value, environment: $('#freeze-environment').value.trim() }) });
+      freezeId = draft.freezeId;
+    }
+    await api(`/api/v1/freezes/${encodeURIComponent(freezeId)}/report`, { method: 'PUT', headers: { 'content-type': 'application/pdf', 'x-report-filename': encodeURIComponent(file.name) }, body: file });
+    await api(`/api/v1/freezes/${encodeURIComponent(freezeId)}/submit`, { method: 'POST', body: '{}' });
+    modal('freeze').hide();
+    showAlert('验证报告已提交审批，本轮候选清单已锁定');
+    await loadRound(state.routeGeneration);
+  } catch (error) { showAlert(error.message, 'danger'); }
+  finally { button.disabled = false; }
+});
 $('#candidate-back-button').addEventListener('click', () => navigate(state.roundId ? 'release-detail' : 'candidates', paramsForState()));
 $('#release-back-button').addEventListener('click', () => navigate('releases', { productId: state.productId }));
 $('#receive-button').addEventListener('click', receiveCandidate);

@@ -127,7 +127,59 @@ export async function finalizeCandidate(store, candidateId) {
   return store.complete(candidate.candidate_id, { finalSha256: assembled.sha256, finalMd5: candidate.expected_md5 ? await md5File(assembled.path) : null });
 }
 
-export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth }) {
+export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes }) {
+  app.get('/api/v1/rounds/:roundId/freezes', async (request, reply) => {
+    if (!store.getRound(request.params.roundId)) return error(reply, 404, 'round_not_found', 'round not found');
+    return reply.send({ item: freezes.latest(request.params.roundId) });
+  });
+
+  app.post('/api/v1/rounds/:roundId/freezes', { bodyLimit: 16 * 1024 }, async (request, reply) => {
+    try {
+      const actor = principal(request);
+      return reply.code(201).send(freezes.createDraft(request.params.roundId, request.body ?? {}, actor.principalId));
+    } catch (err) {
+      const status = err.code === 'round_not_found' ? 404 : err.code === 'round_locked' ? 409 : 400;
+      return error(reply, status, err.code ?? 'freeze_create_failed', err.message);
+    }
+  });
+
+  app.put('/api/v1/freezes/:freezeId/report', { bodyLimit: 20 * 1024 * 1024 }, async (request, reply) => {
+    try {
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of request.raw) {
+        size += chunk.length;
+        if (size > 20 * 1024 * 1024) return error(reply, 413, 'report_too_large', 'PDF 报告不能超过 20 MiB');
+        chunks.push(Buffer.from(chunk));
+      }
+      let fileName;
+      try { fileName = decodeURIComponent(request.headers['x-report-filename'] ?? ''); } catch { throw new Error('报告文件名编码无效'); }
+      const updated = await freezes.saveReport(request.params.freezeId, fileName, Buffer.concat(chunks), principal(request).principalId);
+      return reply.send(updated);
+    } catch (err) {
+      const status = err.code === 'freeze_not_found' ? 404 : err.code === 'freeze_not_editable' ? 409 : err.code === 'freeze_owner_required' ? 403 : 400;
+      return error(reply, status, err.code ?? 'report_upload_failed', err.message);
+    }
+  });
+
+  app.post('/api/v1/freezes/:freezeId/submit', async (request, reply) => {
+    try { return reply.send(freezes.submit(request.params.freezeId, principal(request).principalId)); }
+    catch (err) { return error(reply, err.code === 'freeze_not_found' ? 404 : err.code === 'freeze_owner_required' ? 403 : ['freeze_not_draft', 'round_locked', 'manifest_changed'].includes(err.code) ? 409 : 400, err.code ?? 'freeze_submit_failed', err.message); }
+  });
+
+  app.post('/api/v1/freezes/:freezeId/decision', { bodyLimit: 8192 }, async (request, reply) => {
+    try { return reply.send(freezes.decide(request.params.freezeId, request.body ?? {}, principal(request).principalId)); }
+    catch (err) { return error(reply, err.code === 'freeze_not_found' ? 404 : err.code === 'self_approval_forbidden' || err.code === 'freeze_not_pending' ? 409 : 400, err.code ?? 'freeze_decision_failed', err.message); }
+  });
+
+  app.get('/api/v1/freezes/:freezeId/report-file', async (request, reply) => {
+    const freeze = freezes.get(request.params.freezeId);
+    const path = freezes.reportPath(request.params.freezeId);
+    if (!freeze || !path) return error(reply, 404, 'report_not_found', 'verification report not found');
+    const { createReadStream } = await import('node:fs');
+    return reply.type('application/pdf').header('Content-Disposition', `attachment; filename="${encodeURIComponent(freeze.reportFileName)}"`).send(createReadStream(path));
+  });
+
   const usableRecipient = (grant) => {
     if (grant?.principalType !== 'LOCAL_USER') return true;
     const user = auth.getUser(grant.principalId);
@@ -369,6 +421,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.post('/api/v1/rounds/:roundId/candidates', async (request, reply) => {
     try {
+      if (freezes.locked(request.params.roundId)) return error(reply, 409, 'round_locked', '该轮次正在审批或已固化，不能修改候选包');
       const candidate = await store.create({ ...(request.body ?? {}), roundId: request.params.roundId });
       return reply.code(201).send(candidateResponse(candidate));
     } catch (err) { return error(reply, 400, 'invalid_candidate', err.message); }
@@ -376,6 +429,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.delete('/api/v1/rounds/:roundId/candidates/:candidateId', async (request, reply) => {
     try {
+      if (freezes.locked(request.params.roundId)) return error(reply, 409, 'round_locked', '该轮次正在审批或已固化，不能修改候选包');
       const removed = store.detachCandidateFromRound(request.params.roundId, request.params.candidateId);
       if (!removed) return error(reply, 404, 'round_candidate_not_found', 'candidate is not attached to this round');
       return reply.code(204).send();
@@ -399,6 +453,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
 
   app.post('/api/v1/rounds/:roundId/import', async (request, reply) => {
+    if (freezes.locked(request.params.roundId)) return error(reply, 409, 'round_locked', '该轮次正在审批或已固化，不能导入候选包');
     const round = store.getRound(request.params.roundId);
     if (!round) return error(reply, 404, 'round_not_found', 'round not found');
     const items = Array.isArray(request.body?.items) ? request.body.items : [];
@@ -472,6 +527,8 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.delete('/api/v1/candidates/:candidateId', async (request, reply) => {
     try {
+      const linkedRounds = downloadGrants.db.prepare('SELECT round_id FROM round_candidates WHERE candidate_id = ?').all(request.params.candidateId);
+      if (linkedRounds.some(({ round_id: roundId }) => freezes.locked(roundId))) return error(reply, 409, 'round_locked', '候选包属于正在审批或已固化的轮次，不能删除');
       if (downloadGrants.db.prepare('SELECT 1 FROM download_grant_items WHERE candidate_id = ? LIMIT 1').get(request.params.candidateId)) return error(reply, 409, 'candidate_in_download_audit', '该候选包已关联下载授权和审计记录，暂不能永久删除；可以移出候选轮次');
       const deleted = store.deleteCandidate(request.params.candidateId);
       if (!deleted) return error(reply, 404, 'candidate_not_found', 'candidate not found');

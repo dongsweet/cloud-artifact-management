@@ -31,6 +31,10 @@ export function registerAuth(app, { auth, principalProvider, secureCookies = pro
     if (path.startsWith('/api/v1/users') || path === '/api/v1/auth-events') required = ['EDGE_ADMIN', ...(writing ? [] : ['EDGE_AUDITOR'])];
     else if (path === '/api/v1/validators') required = ['VALIDATOR'];
     else if (path.startsWith('/api/v1/download-grants')) required = writing ? ['VALIDATOR'] : ['VALIDATOR', 'EDGE_AUDITOR'];
+    else if (/^\/api\/v1\/rounds\/[^/]+\/freezes$/.test(path)) required = writing ? ['VALIDATOR'] : ['VALIDATOR', 'RELEASE_APPLICANT', 'EDGE_AUDITOR'];
+    else if (/^\/api\/v1\/freezes\/[^/]+\/(report|submit)$/.test(path)) required = ['VALIDATOR'];
+    else if (/^\/api\/v1\/freezes\/[^/]+\/decision$/.test(path)) required = ['RELEASE_APPLICANT'];
+    else if (/^\/api\/v1\/freezes\/[^/]+\/report-file$/.test(path)) required = ['VALIDATOR', 'RELEASE_APPLICANT', 'EDGE_AUDITOR'];
     else required = writing ? ['CANDIDATE_RECEIVER'] : ['CANDIDATE_RECEIVER', 'VALIDATOR', 'RELEASE_APPLICANT', 'EDGE_AUDITOR'];
     if (!required.some((role) => actor.roles?.includes(role))) return fail(reply, 403, 'permission_denied', '当前账号没有此操作权限');
     if (writing) auth.event('API_MUTATION', actor.id, { method: request.method, route: request.routeOptions.url }, request.ip);
