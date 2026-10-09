@@ -10,7 +10,7 @@ import { DownloadGrantStore } from './download-grant-store.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/edge' : join(process.cwd(), 'data', 'edge'));
 
-export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSize = Number(process.env.CHUNK_SIZE ?? DEFAULT_CHUNK_SIZE), allowlist } = {}) {
+export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSize = Number(process.env.CHUNK_SIZE ?? DEFAULT_CHUNK_SIZE), allowlist, principalProvider = null } = {}) {
   const db = await openDatabase(join(dataDir, 'edge.sqlite'));
   const store = new CandidateStore({ db, dataDir, defaultChunkSize });
   const receiver = createCandidateReceiver({ store, allowlist, finalize: (candidateId) => finalizeCandidate(store, candidateId) });
@@ -19,6 +19,9 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   const app = await buildServer({
     service: 'cam-edge',
     configure: async (server) => {
+      if (principalProvider) server.addHook('preHandler', async (request) => {
+        request.principal = await principalProvider(request);
+      });
       registerCandidateRoutes(server, { store, receiver, scheduler, downloadGrants });
       server.addHook('onClose', async () => db.close());
     }

@@ -1,7 +1,17 @@
 import Fastify from 'fastify';
 
 export async function buildServer({ service, configure, bodyLimit = Number(process.env.BODY_LIMIT ?? 25 * 1024 * 1024) } = {}) {
-  const app = Fastify({ logger: true, bodyLimit });
+  const app = Fastify({
+    logger: {
+      serializers: {
+        req(request) {
+          const url = typeof request.url === 'string' ? request.url.replace(/([?&]token=)[^&]+/gi, '$1[REDACTED]') : request.url;
+          return { method: request.method, url, host: request.host, remoteAddress: request.ip };
+        }
+      }
+    },
+    bodyLimit
+  });
   app.addContentTypeParser('application/octet-stream', (_request, _payload, done) => done());
   app.addContentTypeParser('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', { parseAs: 'buffer' }, (_request, payload, done) => done(null, payload));
   app.get('/health/live', async () => ({ service, status: 'ok' }));

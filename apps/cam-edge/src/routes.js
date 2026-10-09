@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, rm, rename } from 'node:fs/promises';
+import { mkdir, rm, rename, stat } from 'node:fs/promises';
 import { once } from 'node:events';
 import { dirname } from 'node:path';
 import { assembleChunks } from '../../../libs/cam-transfer/src/transfer.js';
@@ -8,6 +8,54 @@ import { previewCandidateWorkbook } from './candidate-import.js';
 
 function error(reply, statusCode, code, message) {
   return reply.code(statusCode).send({ error: { code, message } });
+}
+
+function principal(request) {
+  if (request.principal && typeof request.principal.id === 'string') {
+    return { principalId: request.principal.id, principalType: request.principal.type ?? 'AUTHENTICATED' };
+  }
+  if (process.env.CAM_ALLOW_DEV_PRINCIPAL !== 'true') {
+    const error = new Error('authenticated principal is required');
+    error.code = 'principal_required';
+    throw error;
+  }
+  const principalId = request.headers['x-cam-principal-id'];
+  if (typeof principalId !== 'string' || !principalId.trim()) {
+    const error = new Error('authenticated principal is required');
+    error.code = 'principal_required';
+    throw error;
+  }
+  const principalType = typeof request.headers['x-cam-principal-type'] === 'string'
+    ? request.headers['x-cam-principal-type']
+    : 'LOCAL_PENDING';
+  return { principalId: principalId.trim(), principalType: principalType.trim() || 'LOCAL_PENDING' };
+}
+
+function bearerToken(request) {
+  const authorization = request.headers.authorization;
+  if (typeof authorization === 'string' && /^Bearer\s+\S+$/i.test(authorization)) return authorization.replace(/^Bearer\s+/i, '');
+  const queryToken = request.query?.token;
+  return typeof queryToken === 'string' ? queryToken : null;
+}
+
+function downloadActor(request, grant) {
+  try {
+    return principal(request);
+  } catch (err) {
+    if (err.code === 'principal_required' && grant) return { principalId: grant.principalId, principalType: 'DOWNLOAD_TOKEN' };
+    throw err;
+  }
+}
+
+function parseRange(value, size) {
+  if (!value) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value);
+  if (!match || (!match[1] && !match[2])) return 'invalid';
+  let start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
+  let end = match[2] ? Number(match[2]) : size - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= size) return 'invalid';
+  end = Math.min(end, size - 1);
+  return { start, end };
 }
 
 async function md5File(path) {
@@ -93,7 +141,125 @@ export async function finalizeCandidate(store, candidateId) {
   return store.complete(candidate.candidate_id, { finalSha256: assembled.sha256, finalMd5: candidate.expected_md5 ? await md5File(assembled.path) : null });
 }
 
-export function registerCandidateRoutes(app, { store, receiver, scheduler }) {
+export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants }) {
+  app.post('/api/v1/download-grants', async (request, reply) => {
+    if (!downloadGrants) return error(reply, 503, 'download_grants_unavailable', 'download grants are not configured');
+    try {
+      const actor = principal(request);
+      const body = request.body ?? {};
+      const grant = downloadGrants.createGrant({
+        candidateIds: body.candidateIds,
+        principalId: actor.principalId,
+        principalType: actor.principalType,
+        createdBy: actor.principalId,
+        expiresAt: body.expiresAt,
+        maxTotalSessions: body.maxTotalSessions,
+        maxSessionsPerFile: body.maxSessionsPerFile
+      });
+      const origin = `${request.protocol}://${request.headers.host}`;
+      return reply.code(201).send({
+        ...grant,
+        items: grant.items.map((item) => ({ ...item, downloadUrl: `${origin}/api/v1/downloads/${encodeURIComponent(item.candidateId)}/content?token=${encodeURIComponent(grant.token)}` }))
+      });
+    } catch (err) {
+      const status = err.code === 'principal_required' ? 401 : 400;
+      return error(reply, status, err.code ?? 'download_grant_failed', err.message);
+    }
+  });
+
+  app.get('/api/v1/download-grants/:grantId', async (request, reply) => {
+    try {
+      const actor = principal(request);
+      const grant = downloadGrants.getGrant(request.params.grantId);
+      if (!grant || grant.createdBy !== actor.principalId) return error(reply, 404, 'download_grant_not_found', 'download grant not found');
+      return reply.send(grant);
+    } catch (err) {
+      return error(reply, err.code === 'principal_required' ? 401 : 400, err.code ?? 'download_grant_query_failed', err.message);
+    }
+  });
+
+  app.get('/api/v1/download-grants/:grantId/manifest', async (request, reply) => {
+    try {
+      const token = bearerToken(request);
+      const grant = token ? downloadGrants.getGrantByToken(token) : null;
+      if (!grant || grant.grantId !== request.params.grantId || grant.revokedAt || Date.parse(grant.expiresAt) <= Date.now()) return error(reply, 401, 'download_grant_invalid', 'download grant is invalid, expired or revoked');
+      return reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer').send({
+        grantId: grant.grantId,
+        expiresAt: grant.expiresAt,
+        remainingTotalSessions: grant.remainingTotalSessions,
+        items: grant.items.map((item) => ({ ...item, downloadUrl: `/api/v1/downloads/${encodeURIComponent(item.candidateId)}/content?token=${encodeURIComponent(token)}` }))
+      });
+    } catch (err) {
+      return error(reply, 400, err.code ?? 'download_manifest_failed', err.message);
+    }
+  });
+
+  app.delete('/api/v1/download-grants/:grantId', async (request, reply) => {
+    try {
+      const actor = principal(request);
+      const grant = downloadGrants.getGrant(request.params.grantId);
+      if (!grant || grant.createdBy !== actor.principalId) return error(reply, 404, 'download_grant_not_found', 'download grant not found');
+      return reply.send(downloadGrants.revokeGrant(grant.grantId, actor.principalId));
+    } catch (err) {
+      return error(reply, err.code === 'principal_required' ? 401 : 400, err.code ?? 'download_grant_revoke_failed', err.message);
+    }
+  });
+
+  app.post('/api/v1/downloads/:candidateId/session', async (request, reply) => {
+    try {
+      const token = bearerToken(request);
+      if (!token) return error(reply, 401, 'download_token_required', 'Bearer download token is required');
+      const grant = downloadGrants.getGrantByToken(token);
+      const actor = downloadActor(request, grant);
+      const session = downloadGrants.beginSession({ token, candidateId: request.params.candidateId, sessionId: request.body?.sessionId ?? null, downloadedBy: actor.principalId, sourceAddress: request.ip, userAgent: request.headers['user-agent'] ?? null });
+      return reply.header('Cache-Control', 'no-store').send(session);
+    } catch (err) {
+      const status = err.code === 'principal_required' ? 401 : /invalid, expired|outside|limit reached|already completed/.test(err.message) ? 403 : 400;
+      return error(reply, status, err.code ?? 'download_session_failed', err.message);
+    }
+  });
+
+  app.get('/api/v1/downloads/:candidateId/content', async (request, reply) => {
+    let sessionId = request.headers['x-cam-download-session'];
+    let session;
+    try {
+      const token = bearerToken(request);
+      if (!token) return error(reply, 401, 'download_token_required', 'Bearer download token is required');
+      const grant = downloadGrants.getGrantByToken(token);
+      const actor = downloadActor(request, grant);
+      const candidate = store.get(request.params.candidateId);
+      if (!candidate || candidate.status !== 'COMPLETED') return error(reply, 404, 'candidate_file_not_found', 'completed candidate file not found');
+      session = downloadGrants.beginSession({ token, candidateId: candidate.candidate_id, sessionId: typeof sessionId === 'string' ? sessionId : null, downloadedBy: actor.principalId, sourceAddress: request.ip, userAgent: request.headers['user-agent'] ?? null });
+      sessionId = session.sessionId;
+      const file = await stat(candidate.source_path);
+      const range = parseRange(request.headers.range, file.size);
+      if (range === 'invalid') return reply.code(416).header('Content-Range', `bytes */${file.size}`).send();
+      const start = range?.start ?? 0;
+      const end = range?.end ?? file.size - 1;
+      const length = end - start + 1;
+      const stream = createReadStream(candidate.source_path, { start, end });
+      stream.on('error', (err) => { downloadGrants.recordSessionProgress(sessionId, { bytesSent: start, status: 'FAILED', errorMessage: err.message, principalId: actor.principalId }); });
+      stream.on('end', () => { downloadGrants.recordSessionProgress(sessionId, { bytesSent: end + 1, status: end + 1 >= file.size ? 'COMPLETED' : 'INTERRUPTED', principalId: actor.principalId }); });
+      return reply
+        .code(range ? 206 : 200)
+        .header('Accept-Ranges', 'bytes')
+        .header('Content-Length', length)
+        .header('Content-Type', 'application/octet-stream')
+        .header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(candidate.file_name)}`)
+        .header('Cache-Control', 'no-store')
+        .header('Referrer-Policy', 'no-referrer')
+        .header('X-CAM-Download-Session', sessionId)
+        .header('X-CAM-SHA256', candidate.final_sha256 ?? '')
+        .header('X-CAM-MD5', candidate.final_md5 ?? '')
+        .header('Content-Range', range ? `bytes ${start}-${end}/${file.size}` : undefined)
+        .send(stream);
+    } catch (err) {
+      if (sessionId) downloadGrants.recordSessionProgress(sessionId, { bytesSent: 0, status: 'FAILED', errorMessage: err.message });
+      const status = err.code === 'principal_required' ? 401 : /invalid, expired|outside|limit reached|already completed/.test(err.message) ? 403 : 404;
+      return error(reply, status, err.code ?? 'download_failed', err.message);
+    }
+  });
+
   app.post('/api/v1/products', async (request, reply) => {
     try { return reply.code(201).send(store.createProduct(request.body ?? {})); }
     catch (err) { return error(reply, 400, 'invalid_product', err.message); }
