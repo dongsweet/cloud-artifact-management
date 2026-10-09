@@ -6,6 +6,7 @@ import { CandidateStore } from './candidate-store.js';
 import { createCandidateReceiver } from './candidate-receiver.js';
 import { createReceiveScheduler } from './receive-scheduler.js';
 import { finalizeCandidate, registerCandidateRoutes } from './routes.js';
+import { DownloadGrantStore } from './download-grant-store.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/edge' : join(process.cwd(), 'data', 'edge'));
 
@@ -14,16 +15,18 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   const store = new CandidateStore({ db, dataDir, defaultChunkSize });
   const receiver = createCandidateReceiver({ store, allowlist, finalize: (candidateId) => finalizeCandidate(store, candidateId) });
   const scheduler = createReceiveScheduler({ store, receiver });
+  const downloadGrants = new DownloadGrantStore({ db, candidateStore: store });
   const app = await buildServer({
     service: 'cam-edge',
     configure: async (server) => {
-      registerCandidateRoutes(server, { store, receiver, scheduler });
+      registerCandidateRoutes(server, { store, receiver, scheduler, downloadGrants });
       server.addHook('onClose', async () => db.close());
     }
   });
   app.decorate('candidateStore', store);
   app.decorate('candidateReceiver', receiver);
   app.decorate('receiveScheduler', scheduler);
+  app.decorate('downloadGrantStore', downloadGrants);
   queueMicrotask(() => scheduler.start());
   return app;
 }

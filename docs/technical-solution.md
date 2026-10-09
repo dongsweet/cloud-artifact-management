@@ -477,6 +477,12 @@ transfer-bundle/
 | `cam-edge` | `PUT /api/v1/candidates/:id/parts/:partIndex` | 接收一个带 SHA-256 校验的候选分块 |
 | `cam-edge` | `POST /api/v1/candidates/:id/receive` | 按研发地址和 HTTP Range 异步接收候选文件 |
 | `cam-edge` | `POST /api/v1/candidates/:id/complete` | 合并分块、校验完整摘要并固化候选文件 |
+| `cam-edge` | `POST /api/v1/download-grants` | 为已完成候选包创建浏览器或测试服务器下载授权，并导出授权清单 |
+| `cam-edge` | `GET /api/v1/download-grants/:grantId` | 查询下载授权、有效期、剩余次数和下载汇总 |
+| `cam-edge` | `DELETE /api/v1/download-grants/:grantId` | 撤销下载授权并阻止后续下载 |
+| `cam-edge` | `POST /api/v1/downloads/:candidateId/session` | 用授权 Token 建立或恢复一个下载会话 |
+| `cam-edge` | `GET /api/v1/downloads/:candidateId/content` | 在授权范围内下载候选文件，支持 HTTP Range |
+| `cam-edge` | `GET /api/v1/download-grants/:grantId/manifest` | 导出测试服务器批量下载所需的 JSON 清单 |
 | `cam-edge` | `POST /api/v1/releases/:id/submit-approval` | 提交验证通过的正式发布申请 |
 | `cam-core` | `POST /api/v1/gate/receipts` | 登记网闸接收回执 |
 | `cam-core` | `GET /api/v1/distribution-tasks/:id/manifest` | 向云中心提供清单和授权 |
@@ -486,6 +492,21 @@ transfer-bundle/
 | `cam-agent` | `GET /api/v1/cache/:artifactId` | 向本中心控制节点提供 READY 制品信息 |
 
 接口必须执行输入大小限制、路径规范化、鉴权、幂等键检查和审计。下载接口只允许访问任务授权的分块，禁止把路径参数直接拼接到文件系统路径。
+
+### 10.1.1 候选包验证下载
+
+验证交付支持两种入口，并由同一个受控下载服务读取已完成候选包：
+
+- **浏览器下载：**验证人员登录外部交换区门户后，在验证任务或候选包详情中下载单个文件或轮次清单。下载权限由登录身份和角色决定，记录实际账号。
+- **测试服务器下载：**授权人员创建有范围、有期限和次数上限的下载授权，导出 `download-links.json`。清单列出候选 ID、原始文件名、大小、实测 SHA-256/MD5、下载 URL 和授权 Token。测试服务器脚本通过 `Authorization: Bearer` 请求下载，支持 `Range` 断点续传。
+
+Token 是 bearer secret。只在创建授权时显示一次；数据库仅保存 SHA-256 摘要。下载地址清单本身按凭据文件保护，避免提交代码库、工单附件或普通共享目录。反向代理和应用日志不得记录 `Authorization` 请求头或 Token；响应设置 `Cache-Control: no-store`、`Referrer-Policy: no-referrer`。Token 仅能访问授权清单中的候选包，不能通过改 URL 扩大范围。
+
+每个授权同时配置有效期、总下载会话上限、单文件会话上限及可选总字节上限。一个新的下载会话才扣次数；同一会话内的 Range 请求、网络重试和续传复用 `sessionId`，不重复扣次。授权会话支持撤销；授权过期或撤销后，已有会话也不得继续获取新数据。并发创建会话必须在 SQLite 事务内检查并预留次数，避免并发请求超过上限。
+
+下载会话记录创建者、授权关联账号、实际调用账号、候选 ID、来源地址、User-Agent、开始/结束时间、Range 范围、累计字节、状态和错误。账号尚未接入时数据模型保留 `principal_id`、`principal_type`、`created_by` 和 `downloaded_by`；生产下载 API 必须在身份认证接入后启用，禁止信任客户端自报的账号字段。首期可将 principal 适配器实现为明确拒绝匿名身份的接口，以便后续接入外部区本地账号，而不改变授权表和下载记录结构。
+
+下载成功后客户端应使用清单内实测 SHA-256 校验文件。服务端不改变原始文件内容；批量清单与验证说明是独立元数据，不将多个软件包重新压缩为另一个制品。
 
 ### 10.2 云管审批联动
 
@@ -598,6 +619,8 @@ sequenceDiagram
 ### 11.3 审计和日志
 
 审计事件至少记录操作者、角色、来源地址、动作、对象 ID、请求 ID、结果、错误、时间、清单摘要和前后状态摘要。审计记录追加写入，不允许页面直接修改或删除。
+
+下载授权至少拆分为 `download_grants`（Token 摘要、范围、创建账号、期限、次数和撤销状态）、`download_grant_items`（授权与候选包关联及单包额度）、`download_sessions`（下载/续传会话及字节进度）和追加写入的 `download_events`（创建、开始、续传、完成、失败、撤销等事件）。Token 原文不得落库或进入审计日志。审计保留策略应覆盖授权和候选制品的留存期限。
 
 运行日志与审计日志分离：运行日志用于故障排查，审计日志用于责任追踪。日志中不得出现完整密钥、访问令牌、VPN 凭据或制品敏感内容。
 
