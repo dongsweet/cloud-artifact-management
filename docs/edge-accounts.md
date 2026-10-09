@@ -93,10 +93,10 @@ Token 接口不要求人员登录 Cookie 或 Cookie CSRF，而是校验 Token �
 | 接口 | 约束 |
 |---|---|
 | `GET /api/v1/download-grants/:id/manifest` | 用 Token 获取授权文件清单，不恢复其他授权 |
-| `POST /api/v1/downloads/:candidateId/session` | 开始或恢复会话；每个新会话扣一次，恢复同一会话不重复扣 |
-| `GET /api/v1/downloads/:candidateId/content` | 接受 Bearer 或链接 Token、单区间 Range、`X-CAM-Download-Session` |
+| `POST /api/v1/downloads/:candidateId/session` | 开始或恢复会话；只有产生有效文件传输的新逻辑会话计一次，恢复同一会话不重复扣 |
+| `GET /api/v1/downloads/:candidateId/content` | 接受 Bearer 或链接 Token、单区间 Range、`X-CAM-Download-Session`；HEAD 探测不创建会话 |
 
-测试服务器建议使用 Bearer 请求头，避免 Token 链接留在命令历史。首次响应保存 `X-CAM-Download-Session`；中断后用本地已有字节长度作为 Range 起点并传回同一会话 ID。普通下载工具仅加 `-C -` 而不复用会话 ID，会消耗新的下载次数。
+测试服务器建议使用 Bearer 请求头，避免 Token 链接留在命令历史。首次响应保存 `X-CAM-Download-Session`；中断后用本地已有字节长度作为 Range 起点并传回同一会话 ID。浏览器交接到下载工具时，如果是同一来源地址且原会话尚未完成，服务端会自动恢复最近的未完成会话，即使 User-Agent 或登录身份发生变化也不会重复扣次数。显式传入错误的会话 ID 会被拒绝。普通下载工具仅加 `-C -` 而不复用会话 ID时，服务端仍会按来源地址尝试恢复；已完成的文件再次完整下载会计入下一次逻辑传输。
 
 ```bash
 # CAM_DOWNLOAD_TOKEN 从受保护文件/交互输入读入，不能将其值写入日志。
@@ -110,4 +110,4 @@ curl -f -C - -H "Authorization: Bearer ${CAM_DOWNLOAD_TOKEN}" \
 sha256sum package.part
 ```
 
-新下载会话的次数计数在 SQLite 事务内执行，非法 Range 不扣次数。完成事件表示服务器完成响应，不证明测试服务器已落盘或已校验，接收端仍须核对清单摘要。正在发送的响应不因撤销授权自动截断，新请求会被拒绝。审计关联的候选文件暂保留，由授权外键阻止永久删除；后续归档/保留策略另行实现。
+新下载会话的次数计数在 SQLite 事务内执行，HEAD、非法 Range、多区间 Range、被拒绝的并发连接以及零字节中断不扣次数。每个授权文件同一时刻只允许一个内容连接；下载工具必须关闭多线程分片，否则并发连接返回 `409 download_in_progress`，跳跃到尚未连续接收位置的 Range 返回 `409 download_noncontiguous`，均不消耗次数。会话中的 `bytes_sent` 表示服务端已写入连接的累计传输字节（重传可能超过文件大小），`covered_bytes` 表示从文件起点连续接收的进度，管理页面会每 2 秒刷新这两项。写入连接不等于接收端已落盘，完成后仍须核对清单摘要。正在发送的响应不因撤销授权自动截断，新请求会被拒绝。当前并发锁为单个 cam-edge 进程内存锁，生产部署须保持单实例；若以后横向扩展，需要增加共享锁。审计关联的候选文件暂保留，由授权外键阻止永久删除；后续归档/保留策略另行实现。

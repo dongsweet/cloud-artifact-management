@@ -60,6 +60,12 @@ export class DownloadGrantStore {
       );
       CREATE INDEX IF NOT EXISTS download_events_grant_idx ON download_events(grant_id, created_at);
     `);
+    if (!db.prepare('PRAGMA table_info(download_sessions)').all().some((column) => column.name === 'covered_bytes')) {
+      db.exec('ALTER TABLE download_sessions ADD COLUMN covered_bytes INTEGER NOT NULL DEFAULT 0; UPDATE download_sessions SET covered_bytes = bytes_sent');
+    }
+    // An ACTIVE row left by a process restart has no live response to resume.
+    db.prepare("UPDATE download_sessions SET status = 'INTERRUPTED' WHERE status = 'ACTIVE'").run();
+    this.activeTransfers = new Set();
   }
 
   recordEvent({ grantId, candidateId = null, sessionId = null, principalId = null, type, details = {} }) {
@@ -116,9 +122,9 @@ export class DownloadGrantStore {
   }
 
   _parseGrant(row) {
-    const usedTotal = this.db.prepare('SELECT COUNT(*) AS count FROM download_sessions WHERE grant_id = ?').get(row.grant_id).count;
+    const usedTotal = this.db.prepare("SELECT COUNT(*) AS count FROM download_sessions WHERE grant_id = ? AND (bytes_sent > 0 OR status = 'COMPLETED')").get(row.grant_id).count;
     const items = this.db.prepare(`SELECT i.candidate_id, i.max_sessions, c.file_name, c.expected_size, c.final_md5, c.final_sha256,
-      (SELECT COUNT(*) FROM download_sessions s WHERE s.grant_id = i.grant_id AND s.candidate_id = i.candidate_id) AS used_sessions
+      (SELECT COUNT(*) FROM download_sessions s WHERE s.grant_id = i.grant_id AND s.candidate_id = i.candidate_id AND (s.bytes_sent > 0 OR s.status = 'COMPLETED')) AS used_sessions
       FROM download_grant_items i JOIN candidates c ON c.candidate_id = i.candidate_id WHERE i.grant_id = ?`).all(row.grant_id);
     return { grantId: row.grant_id, principalId: row.principal_id, principalType: row.principal_type, createdBy: row.created_by, createdAt: row.created_at, expiresAt: row.expires_at, maxTotalSessions: row.max_total_sessions, usedTotalSessions: usedTotal, remainingTotalSessions: Math.max(0, row.max_total_sessions - usedTotal), revokedAt: row.revoked_at, items: items.map((item) => ({ candidateId: item.candidate_id, fileName: item.file_name, size: item.expected_size, sha256: item.final_sha256, md5: item.final_md5, maxSessions: item.max_sessions, usedSessions: item.used_sessions, remainingSessions: Math.max(0, item.max_sessions - item.used_sessions) })) };
   }
@@ -133,17 +139,22 @@ export class DownloadGrantStore {
     return this.getGrant(grantId);
   }
 
-  beginSession({ token, candidateId, sessionId = null, downloadedBy, sourceAddress = null, userAgent = null }) {
+  beginSession({ token, candidateId, sessionId = null, downloadedBy, sourceAddress = null, userAgent = null, autoResume = false, start = null }) {
     if (typeof downloadedBy !== 'string' || !downloadedBy.trim()) throw new Error('downloadedBy is required');
     const grant = this.getGrantByToken(token);
     if (!grant || grant.revokedAt || Date.parse(grant.expiresAt) <= Date.now()) throw new Error('download grant is invalid, expired or revoked');
     const item = grant.items.find((entry) => entry.candidateId === candidateId);
     if (!item) throw new Error('candidate is outside the download grant');
-    const session = sessionId ? this.db.prepare('SELECT * FROM download_sessions WHERE session_id = ?').get(sessionId) : null;
+    let session = sessionId ? this.db.prepare('SELECT * FROM download_sessions WHERE session_id = ?').get(sessionId) : null;
+    if (sessionId && !session) throw new Error('download session not found');
+    if (!sessionId && autoResume) session = this.db.prepare("SELECT * FROM download_sessions WHERE grant_id = ? AND candidate_id = ? AND source_address IS ? AND status != 'COMPLETED' ORDER BY rowid DESC LIMIT 1").get(grant.grantId, candidateId, sourceAddress);
+    if (start !== null && start > (session?.covered_bytes ?? 0)) throw Object.assign(new Error('仅支持单连接顺序下载，请关闭多线程并从已下载位置续传'), { statusCode: 409, code: 'download_noncontiguous' });
     if (session) {
       if (session.grant_id !== grant.grantId || session.candidate_id !== candidateId) throw new Error('download session does not match grant and candidate');
       if (session.status === 'COMPLETED') throw new Error('download session is already completed');
-      this.db.prepare(`UPDATE download_sessions SET status = 'ACTIVE', updated_at = ?, source_address = ?, user_agent = ? WHERE session_id = ?`).run(timestamp(), sourceAddress, userAgent, sessionId);
+      sessionId = session.session_id;
+      this.reserveSlot(grant.grantId, candidateId, sessionId);
+      this.db.prepare(`UPDATE download_sessions SET status = 'ACTIVE', downloaded_by = ?, updated_at = ?, source_address = ?, user_agent = ? WHERE session_id = ?`).run(downloadedBy, timestamp(), sourceAddress, userAgent, sessionId);
       this.recordEvent({ grantId: grant.grantId, candidateId, sessionId, principalId: downloadedBy, type: 'DOWNLOAD_RESUMED' });
       return { sessionId, resumed: true };
     }
@@ -151,10 +162,9 @@ export class DownloadGrantStore {
     const startedAt = timestamp();
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const current = this._parseGrant(this.db.prepare('SELECT * FROM download_grants WHERE grant_id = ?').get(grant.grantId));
-      const currentItem = current.items.find((entry) => entry.candidateId === candidateId);
+      const current = this.getGrant(grant.grantId);
       if (current.revokedAt || Date.parse(current.expiresAt) <= Date.now()) throw new Error('download grant is invalid, expired or revoked');
-      if (current.usedTotalSessions >= current.maxTotalSessions || currentItem.usedSessions >= currentItem.maxSessions) throw new Error('download session limit reached');
+      this.reserveSlot(grant.grantId, candidateId);
       this.db.prepare(`INSERT INTO download_sessions
         (session_id, grant_id, candidate_id, downloaded_by, source_address, user_agent, status, started_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)`).run(newSessionId, grant.grantId, candidateId, downloadedBy, sourceAddress, userAgent, startedAt, startedAt);
@@ -167,14 +177,28 @@ export class DownloadGrantStore {
     return { sessionId: newSessionId, resumed: false };
   }
 
-  recordSessionProgress(sessionId, { bytesSent, status, errorMessage = null, principalId = null }) {
+  reserveSlot(grantId, candidateId, sessionId = null) {
+    // Zero-byte active sessions reserve capacity until the response closes, but are not charged.
+    const rows = this.db.prepare("SELECT session_id, candidate_id FROM download_sessions WHERE grant_id = ? AND (bytes_sent > 0 OR status IN ('ACTIVE', 'COMPLETED')) AND session_id != ?").all(grantId, sessionId ?? '');
+    const grant = this.getGrant(grantId);
+    if (rows.length >= grant.maxTotalSessions || rows.filter((row) => row.candidate_id === candidateId).length >= grant.items.find((item) => item.candidateId === candidateId).maxSessions) throw new Error('download session limit reached');
+  }
+
+  acquireTransfer(grantId, candidateId) {
+    const key = `${grantId}/${candidateId}`;
+    if (this.activeTransfers.has(key)) throw Object.assign(new Error('该文件正在下载，仅支持一个连接；请关闭多线程后续传'), { statusCode: 409, code: 'download_in_progress' });
+    this.activeTransfers.add(key);
+    return () => this.activeTransfers.delete(key);
+  }
+
+  recordSessionProgress(sessionId, { bytesSent, coveredBytes, status, errorMessage = null, principalId = null, responseBytes = null }) {
     if (!Number.isSafeInteger(bytesSent) || bytesSent < 0) throw new Error('bytesSent must be a non-negative safe integer');
     if (!['ACTIVE', 'INTERRUPTED', 'COMPLETED', 'FAILED'].includes(status)) throw new Error('invalid download session status');
     const session = this.db.prepare('SELECT * FROM download_sessions WHERE session_id = ?').get(sessionId);
     if (!session) return null;
     const ended = ['COMPLETED', 'FAILED'].includes(status) ? timestamp() : null;
-    this.db.prepare('UPDATE download_sessions SET bytes_sent = ?, status = ?, updated_at = ?, completed_at = ?, error_message = ? WHERE session_id = ?').run(bytesSent, status, timestamp(), ended, errorMessage, sessionId);
-    this.recordEvent({ grantId: session.grant_id, candidateId: session.candidate_id, sessionId, principalId, type: `DOWNLOAD_${status}`, details: { bytesSent, errorMessage } });
+    this.db.prepare('UPDATE download_sessions SET bytes_sent = ?, covered_bytes = ?, status = ?, updated_at = ?, completed_at = ?, error_message = ? WHERE session_id = ?').run(bytesSent, coveredBytes ?? bytesSent, status, timestamp(), ended, errorMessage, sessionId);
+    if (status !== 'ACTIVE') this.recordEvent({ grantId: session.grant_id, candidateId: session.candidate_id, sessionId, principalId, type: `DOWNLOAD_${status}`, details: { bytesSent, coveredBytes: coveredBytes ?? bytesSent, responseBytes, errorMessage } });
     return this.db.prepare('SELECT * FROM download_sessions WHERE session_id = ?').get(sessionId);
   }
 }

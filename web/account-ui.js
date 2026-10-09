@@ -1,4 +1,5 @@
 let user = null, api, refresh, context, alert, labels = {}, users = [], exported = null;
+let selectedGrantId = null, grantDetailTimer = null, grantDetailLoading = false;
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const modal = (id) => bootstrap.Modal.getOrCreateInstance($(`#${id}-modal`));
@@ -10,6 +11,7 @@ export function csrfHeaders() {
 }
 export function showLogin() {
   if (context) { window.clearInterval(context().pollTimer); window.clearInterval(context().queueTimer); }
+  stopGrantDetailPolling();
   user = null; $('.app-wrapper').classList.add('d-none'); $('#account-login')?.classList.remove('d-none');
   document.querySelectorAll('.modal.show').forEach((e) => bootstrap.Modal.getInstance(e)?.hide());
 }
@@ -26,7 +28,7 @@ function markup() {
   function section(id, title, content, action) {
     return `<section id="view-${id}" class="d-none"><div class="card"><div class="card-header cam-card-header"><h3 class="card-title">${title}</h3>${action}</div><div class="card-body">${content}</div></div></section>`;
   }
-  $('.app-content .container-fluid').insertAdjacentHTML('beforeend', section('users', '账号管理', '<div class="table-responsive"><table class="table align-middle"><thead><tr><th>用户名 / 姓名</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody id="user-rows"></tbody></table></div><h5 class="mt-4">最近认证及操作审计</h5><div id="auth-events"></div>', '<button id="new-user" class="btn btn-primary btn-sm">创建账号</button>') + section('grants', '下载授权', '<p class="small text-body-secondary">按累计 / 单文件会话次数限制下载；续传复用会话。账号禁用后停止下载。Token 调用记录为授权持有者，不视为责任人本人认证。</p><div class="table-responsive"><table class="table align-middle"><thead><tr><th>授权 / 责任人</th><th>文件数</th><th>已用 / 累计次数</th><th>到期 / 状态</th><th>操作</th></tr></thead><tbody id="grant-rows"></tbody></table></div><div id="grant-events" class="mt-3"></div>', '<button id="new-grant" class="btn btn-primary btn-sm">创建下载授权</button>'));
+  $('.app-content .container-fluid').insertAdjacentHTML('beforeend', section('users', '账号管理', '<div class="table-responsive"><table class="table align-middle"><thead><tr><th>用户名 / 姓名</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody id="user-rows"></tbody></table></div><h5 class="mt-4">最近认证及操作审计</h5><div id="auth-events"></div>', '<button id="new-user" class="btn btn-primary btn-sm">创建账号</button>') + section('grants', '下载授权', '<p class="small text-body-secondary">按累计 / 单文件会话次数限制下载；续传复用会话。账号禁用后停止下载。Token 调用记录为授权持有者，不视为责任人本人认证。</p><div class="table-responsive"><table class="table align-middle"><thead><tr><th>授权 / 责任人</th><th>文件数</th><th>已用 / 累计次数</th><th>到期 / 状态</th><th>操作</th></tr></thead><tbody id="grant-rows"></tbody></table></div><div id="grant-detail" class="mt-4 d-none"></div>', '<button id="new-grant" class="btn btn-primary btn-sm">创建下载授权</button>'));
   $('.sidebar-menu').insertAdjacentHTML('beforeend', '<li class="nav-item" id="grants-nav"><a href="#grants" class="nav-link"><span class="nav-icon bi bi-download"></span><p>下载授权</p></a></li><li class="nav-item" id="users-nav"><a href="#users" class="nav-link"><span class="nav-icon bi bi-people"></span><p>账号管理</p></a></li>');
   $('.app-header .container-fluid').insertAdjacentHTML('beforeend', '<div class="ms-auto d-flex gap-2 align-items-center"><span id="account-name" class="small"></span><button id="change-password" class="btn btn-outline-secondary btn-sm">修改密码</button><button id="logout" class="btn btn-outline-secondary btn-sm">退出</button></div>');
   $('#new-package-button').insertAdjacentHTML('beforebegin', '<button id="round-grant" class="btn btn-outline-success btn-sm"><i class="bi bi-download me-1"></i>交付验证</button>');
@@ -108,6 +110,7 @@ function saveExport(type) {
   const link = document.createElement('a'); link.href = url; link.download = `${exported.grantId}.${type}`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 export async function renderAccountView(view) {
+  if (view !== 'grants') stopGrantDetailPolling();
   if (view === 'users') {
     if (!hasRole('EDGE_ADMIN', 'EDGE_AUDITOR')) throw new Error('没有账号管理权限');
     users = (await api('/api/v1/users')).items;
@@ -120,9 +123,46 @@ export async function renderAccountView(view) {
     if (!hasRole('VALIDATOR', 'EDGE_AUDITOR')) throw new Error('没有下载授权权限');
     const grants = (await api('/api/v1/download-grants')).items;
     $('#grant-rows').innerHTML = grants.map((g) => `<tr><td class="small text-break">${esc(g.grantId)}<div>责任人：${esc(g.principalId)}</div></td><td>${g.items.length}</td><td>${g.usedTotalSessions} / ${g.maxTotalSessions}</td><td>${new Date(g.expiresAt).toLocaleString()}<div>${g.revokedAt ? '已撤销' : Date.parse(g.expiresAt) <= Date.now() ? '已到期' : '有效'}</div></td><td><button class="btn btn-outline-primary btn-sm me-2" data-grant-log="${esc(g.grantId)}"><i class="bi bi-eye"></i> 日志</button>${g.createdBy === user.id && !g.revokedAt && hasRole('VALIDATOR') ? `<button class="btn btn-outline-danger btn-sm" data-revoke-grant="${esc(g.grantId)}">撤销</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-body-secondary">暂无授权；创建后请及时导出清单。</td></tr>';
-    document.querySelectorAll('[data-grant-log]').forEach((b) => { b.onclick = async () => { try { const g = await api(`/api/v1/download-grants/${encodeURIComponent(b.dataset.grantLog)}`); $('#grant-events').innerHTML = eventTable(g.events); } catch (e) { alert(e.message, 'danger'); } }; });
+    if (selectedGrantId && !grants.some((g) => g.grantId === selectedGrantId)) { selectedGrantId = null; stopGrantDetailPolling(); }
+    document.querySelectorAll('[data-grant-log]').forEach((b) => { b.onclick = () => showGrantDetail(b.dataset.grantLog); });
     document.querySelectorAll('[data-revoke-grant]').forEach((b) => { b.onclick = async () => { if (!await context().confirm({ title: '撤销下载授权', message: '撤销后对应 Token 链接停止接受新的下载请求。', confirmText: '确定撤销' })) return; try { await api(`/api/v1/download-grants/${encodeURIComponent(b.dataset.revokeGrant)}`, { method: 'DELETE' }); await renderAccountView('grants'); } catch (e) { alert(e.message, 'danger'); } }; });
   }
+}
+function stopGrantDetailPolling() {
+  if (grantDetailTimer) window.clearInterval(grantDetailTimer);
+  grantDetailTimer = null;
+  selectedGrantId = null;
+  grantDetailLoading = false;
+  $('#grant-detail')?.classList.add('d-none');
+}
+function bytes(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '-';
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB']; let amount = n; let i = -1;
+  while (amount >= 1024 && i < units.length - 1) { amount /= 1024; i += 1; }
+  return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${units[i]}`;
+}
+function sessionStatus(status) { return { ACTIVE: '发送中', INTERRUPTED: '已中断', COMPLETED: '已完成', FAILED: '失败' }[status] ?? status; }
+async function showGrantDetail(grantId) {
+  selectedGrantId = grantId;
+  if (grantDetailTimer) window.clearInterval(grantDetailTimer);
+  const load = async () => {
+    if (grantDetailLoading || selectedGrantId !== grantId) return;
+    grantDetailLoading = true;
+    try {
+      const g = await api(`/api/v1/download-grants/${encodeURIComponent(grantId)}`);
+      if (selectedGrantId !== grantId) return;
+      const itemMap = new Map(g.items.map((item) => [item.candidateId, item]));
+      const sessions = g.sessions ?? [];
+      $('#grant-detail').classList.remove('d-none');
+      $('#grant-detail').innerHTML = `<div class="d-flex justify-content-between align-items-center mb-2"><h5 class="mb-0">传输明细：${esc(g.grantId)}</h5><button type="button" class="btn btn-outline-secondary btn-sm" id="close-grant-detail">关闭</button></div><p class="small text-body-secondary">累计传输表示服务器已写入连接的字节数；文件进度表示已连续接收的文件前缀。统计不代表接收端已经落盘。</p>${sessions.length ? `<div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>文件</th><th>状态</th><th>文件进度</th><th>累计传输</th><th>来源 / 更新时间</th></tr></thead><tbody>${sessions.map((s) => { const item = itemMap.get(s.candidate_id); const size = Number(item?.size ?? 0); const covered = Number(s.covered_bytes ?? 0); const percent = size > 0 ? Math.min(100, Math.round((covered / size) * 100)) : 0; return `<tr><td class="text-break">${esc(item?.fileName ?? s.candidate_id)}</td><td>${esc(sessionStatus(s.status))}</td><td style="min-width:180px"><div class="progress" role="progressbar" aria-label="文件接收进度" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar ${s.status === 'COMPLETED' ? 'bg-success' : ''}" style="width:${percent}%">${percent}%</div></div><div class="small text-body-secondary mt-1">${bytes(covered)} / ${bytes(size)}</div></td><td>${bytes(s.bytes_sent)}</td><td class="small text-break">${esc(s.source_address ?? '-')}<br>${esc(s.updated_at ?? '-')}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="alert alert-light border">暂无传输会话。HEAD 探测、被拒绝的并发连接和零字节中断不会计入次数。</div>'}<h6 class="mt-3">事件记录</h6>${eventTable(g.events)}`;
+      $('#close-grant-detail').onclick = stopGrantDetailPolling;
+    } catch (e) { if (selectedGrantId === grantId) alert(e.message, 'danger'); }
+    finally { grantDetailLoading = false; }
+  };
+  await load();
+  if (selectedGrantId === grantId) grantDetailTimer = window.setInterval(load, 2000);
 }
 function eventTable(events, auth = false) {
   return `<div class="table-responsive"><table class="table table-sm"><thead><tr><th>时间</th><th>事件</th><th>调用身份</th><th>${auth ? '来源' : '文件'}</th><th>详情</th></tr></thead><tbody>${events.map((e) => `<tr><td>${esc(e.created_at)}</td><td>${esc(e.event_type)}</td><td class="small text-break">${esc(e.principal_id)}</td><td>${esc(auth ? e.source_address : e.candidate_id)}</td><td class="small text-break">${esc(e.details_json)}</td></tr>`).join('')}</tbody></table></div>`;

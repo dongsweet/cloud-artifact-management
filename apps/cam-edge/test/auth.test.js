@@ -107,7 +107,10 @@ test('download ownership, token-only calls, revoked recipient and invalid Range 
     assert.equal((await app.inject({ url: grant.items[0].downloadUrl, headers: { range: 'bytes=999-1000' } })).statusCode, 416);
     assert.equal(app.downloadGrantStore.getGrant(grant.grantId).usedTotalSessions, 0);
     const suffix = await app.inject({ url: grant.items[0].downloadUrl, headers: { range: 'bytes=-4' } });
-    assert.equal(suffix.statusCode, 206); assert.deepEqual(suffix.rawPayload, bytes.subarray(-4));
+    assert.equal(suffix.statusCode, 409);
+    assert.equal(app.downloadGrantStore.getGrant(grant.grantId).usedTotalSessions, 0);
+    const firstPart = await app.inject({ url: grant.items[0].downloadUrl, headers: { range: 'bytes=0-3' } });
+    assert.equal(firstPart.statusCode, 206); assert.deepEqual(firstPart.rawPayload, bytes.subarray(0, 4));
     const event = app.downloadGrantStore.db.prepare("SELECT principal_id FROM download_events WHERE event_type = 'DOWNLOAD_STARTED'").get();
     assert.equal(event.principal_id, `TOKEN:${grant.grantId}`);
     app.authStore.updateUser(recipient.id, { status: 'DISABLED' }, admin.id);

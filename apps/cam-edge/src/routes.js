@@ -169,7 +169,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const actor = principal(request);
       const grant = downloadGrants.getGrant(request.params.grantId);
       if (!grant || (grant.createdBy !== actor.principalId && grant.principalId !== actor.principalId && !request.principal.roles?.includes('EDGE_AUDITOR'))) return error(reply, 404, 'download_grant_not_found', 'download grant not found');
-      return reply.send({ ...grant, events: downloadGrants.db.prepare('SELECT * FROM download_events WHERE grant_id = ? ORDER BY created_at DESC LIMIT 200').all(grant.grantId) });
+      return reply.send({ ...grant, sessions: downloadGrants.db.prepare('SELECT session_id, candidate_id, status, bytes_sent, covered_bytes, source_address, started_at, updated_at FROM download_sessions WHERE grant_id = ? ORDER BY rowid DESC LIMIT 200').all(grant.grantId), events: downloadGrants.db.prepare('SELECT * FROM download_events WHERE grant_id = ? ORDER BY created_at DESC LIMIT 200').all(grant.grantId) });
     } catch (err) {
       return error(reply, err.code === 'principal_required' ? 401 : 400, err.code ?? 'download_grant_query_failed', err.message);
     }
@@ -203,16 +203,21 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
 
   app.post('/api/v1/downloads/:candidateId/session', async (request, reply) => {
+    let releaseTransfer;
     try {
       const token = bearerToken(request);
       if (!token) return error(reply, 401, 'download_token_required', 'Bearer download token is required');
       const grant = downloadGrants.getGrantByToken(token);
       if (!usableRecipient(grant)) return error(reply, 403, 'recipient_disabled', '下载责任人账号已停用或权限失效');
       const actor = downloadActor(request, grant);
-      const session = downloadGrants.beginSession({ token, candidateId: request.params.candidateId, sessionId: request.body?.sessionId ?? null, downloadedBy: actor.principalId, sourceAddress: request.ip, userAgent: request.headers['user-agent'] ?? null });
+      if (!grant) return error(reply, 403, 'download_grant_invalid', 'download grant is invalid');
+      releaseTransfer = downloadGrants.acquireTransfer(grant.grantId, request.params.candidateId);
+      const session = downloadGrants.beginSession({ token, candidateId: request.params.candidateId, sessionId: request.body?.sessionId ?? null, downloadedBy: actor.principalId, sourceAddress: request.ip, userAgent: request.headers['user-agent'] ?? null, autoResume: true });
+      releaseTransfer();
       return reply.header('Cache-Control', 'no-store').send(session);
     } catch (err) {
-      const status = err.code === 'principal_required' ? 401 : /invalid, expired|outside|limit reached|already completed/.test(err.message) ? 403 : 400;
+      releaseTransfer?.();
+      const status = err.statusCode ?? (err.code === 'principal_required' ? 401 : /invalid, expired|outside|limit reached|already completed/.test(err.message) ? 403 : 400);
       return error(reply, status, err.code ?? 'download_session_failed', err.message);
     }
   });
@@ -220,6 +225,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   app.get('/api/v1/downloads/:candidateId/content', async (request, reply) => {
     let sessionId = request.headers['x-cam-download-session'];
     let session;
+    let releaseTransfer;
     try {
       const token = bearerToken(request);
       if (!token) return error(reply, 401, 'download_token_required', 'Bearer download token is required');
@@ -232,40 +238,67 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const file = await stat(candidate.source_path);
       const range = parseRange(request.headers.range, file.size);
       if (range === 'invalid') return reply.code(416).header('Content-Range', `bytes */${file.size}`).send();
-      session = downloadGrants.beginSession({ token, candidateId: candidate.candidate_id, sessionId: typeof sessionId === 'string' ? sessionId : null, downloadedBy: actor.principalId, sourceAddress: request.ip, userAgent: request.headers['user-agent'] ?? null });
-      sessionId = session.sessionId;
       const start = range?.start ?? 0;
       const end = range?.end ?? file.size - 1;
       const length = end - start + 1;
-      const stream = createReadStream(candidate.source_path, { start, end });
-      const prior = downloadGrants.db.prepare('SELECT bytes_sent FROM download_sessions WHERE session_id = ?').get(sessionId).bytes_sent;
-      let recorded = false;
-      const record = (finished, err = null) => {
-        if (recorded) return;
-        recorded = true;
-        // Advance only a contiguous prefix after the response finishes. A suffix alone is not a full download.
-        const bytesSent = finished && start <= prior ? Math.max(prior, end + 1) : prior;
-        downloadGrants.recordSessionProgress(sessionId, { bytesSent, status: err ? 'FAILED' : finished && bytesSent >= file.size ? 'COMPLETED' : 'INTERRUPTED', errorMessage: err?.message ?? null, principalId: actor.principalId });
-      };
-      stream.on('error', (err) => record(false, err));
-      reply.raw.once('finish', () => record(true));
-      reply.raw.once('close', () => { record(false); stream.destroy(); });
-      return reply
-        .code(range ? 206 : 200)
+      reply.code(range ? 206 : 200)
         .header('Accept-Ranges', 'bytes')
         .header('Content-Length', length)
         .header('Content-Type', 'application/octet-stream')
         .header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(candidate.file_name)}`)
         .header('Cache-Control', 'no-store')
         .header('Referrer-Policy', 'no-referrer')
-        .header('X-CAM-Download-Session', sessionId)
         .header('X-CAM-SHA256', candidate.final_sha256 ?? '')
-        .header('X-CAM-MD5', candidate.final_md5 ?? '')
-        .header('Content-Range', range ? `bytes ${start}-${end}/${file.size}` : undefined)
-        .send(stream);
+        .header('X-CAM-MD5', candidate.final_md5 ?? '');
+      if (range) reply.header('Content-Range', `bytes ${start}-${end}/${file.size}`);
+      // Download managers probe with HEAD before opening their actual data connection.
+      if (request.method === 'HEAD') return reply.send();
+      releaseTransfer = downloadGrants.acquireTransfer(grant.grantId, candidate.candidate_id);
+      session = downloadGrants.beginSession({ token, candidateId: candidate.candidate_id, sessionId: typeof sessionId === 'string' ? sessionId : null, downloadedBy: actor.principalId, sourceAddress: request.ip, userAgent: request.headers['user-agent'] ?? null, autoResume: true, start });
+      sessionId = session.sessionId;
+      const stream = createReadStream(candidate.source_path, { start, end });
+      const prior = downloadGrants.db.prepare('SELECT bytes_sent, covered_bytes FROM download_sessions WHERE session_id = ?').get(sessionId);
+      let recorded = false;
+      let responseBytes = 0;
+      const originalWrite = reply.raw.write;
+      // Count successfully flushed HTTP body writes, including those before an interrupted response.
+      reply.raw.write = function (chunk, encoding, callback) {
+        if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
+        const size = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk, encoding);
+        return originalWrite.call(this, chunk, encoding, (err) => {
+          if (!err && !recorded) responseBytes += size;
+          callback?.(err);
+        });
+      };
+      const progress = (finished = false) => ({
+        bytesSent: prior.bytes_sent + (finished ? length : responseBytes),
+        coveredBytes: start <= prior.covered_bytes ? Math.max(prior.covered_bytes, start + (finished ? length : responseBytes)) : prior.covered_bytes
+      });
+      const timer = setInterval(() => {
+        if (!recorded) downloadGrants.recordSessionProgress(sessionId, { ...progress(), status: 'ACTIVE' });
+      }, 1000);
+      timer.unref();
+      const record = (finished, err = null) => {
+        if (recorded) return;
+        recorded = true;
+        clearInterval(timer);
+        reply.raw.write = originalWrite;
+        releaseTransfer();
+        const current = progress(finished);
+        downloadGrants.recordSessionProgress(sessionId, { ...current, responseBytes: finished ? length : responseBytes, status: err ? 'FAILED' : finished && current.coveredBytes >= file.size ? 'COMPLETED' : 'INTERRUPTED', errorMessage: err?.message ?? null, principalId: actor.principalId });
+      };
+      stream.on('error', (err) => record(false, err));
+      reply.raw.once('finish', () => record(true));
+      reply.raw.once('close', () => { record(false); stream.destroy(); });
+      return reply.header('X-CAM-Download-Session', sessionId).send(stream);
     } catch (err) {
-      if (session) downloadGrants.recordSessionProgress(sessionId, { bytesSent: 0, status: 'FAILED', errorMessage: err.message });
-      const status = err.code === 'principal_required' ? 401 : /invalid, expired|outside|limit reached|already completed/.test(err.message) ? 403 : 404;
+      releaseTransfer?.();
+      reply.removeHeader('Content-Length').removeHeader('Content-Range').removeHeader('Content-Disposition').type('application/json');
+      if (session) {
+        const previous = downloadGrants.db.prepare('SELECT bytes_sent, covered_bytes FROM download_sessions WHERE session_id = ?').get(sessionId);
+        downloadGrants.recordSessionProgress(sessionId, { bytesSent: previous.bytes_sent, coveredBytes: previous.covered_bytes, status: 'FAILED', errorMessage: err.message });
+      }
+      const status = err.statusCode ?? (err.code === 'principal_required' ? 401 : /invalid, expired|outside|limit reached|already completed/.test(err.message) ? 403 : 404);
       return error(reply, status, err.code ?? 'download_failed', err.message);
     }
   });
