@@ -323,6 +323,9 @@ async function loadCandidateDetail(generation = state.routeGeneration) {
 }
 
 function renderCandidate(candidate, parts) {
+  const transferVisible = candidate.status !== 'COMPLETED';
+  $('#candidate-transfer-controls').classList.toggle('d-none', !transferVisible);
+  $('#candidate-transfer-progress').classList.toggle('d-none', !transferVisible);
   $('#candidate-title').textContent = candidate.fileName;
   $('#candidate-delete-button').innerHTML = '<i class="bi bi-trash me-1"></i>永久删除';
   $('#candidate-back-button').innerHTML = `<i class="bi bi-arrow-left me-1"></i>${state.roundId ? '返回候选轮次' : '返回候选包'}`;
