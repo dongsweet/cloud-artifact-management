@@ -51,7 +51,8 @@ test('download session resumes do not consume another slot and scope/revocation 
   assert.throws(() => store.beginSession({ token: grant.token, candidateId: 'CAND-1', downloadedBy: 'user-42' }), /limit reached/);
   store.revokeGrant(grant.grantId, 'user-42');
   assert.throws(() => store.beginSession({ token: grant.token, candidateId: 'CAND-1', sessionId: first.sessionId, downloadedBy: 'user-42' }), /invalid, expired or revoked/);
-  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM download_events WHERE grant_id = ?').get(grant.grantId).count, 5);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM download_events WHERE grant_id = ?').get(grant.grantId).count, 3);
+  assert.deepEqual(store.db.prepare('SELECT event_type FROM download_events WHERE grant_id = ? ORDER BY rowid').all(grant.grantId).map((event) => event.event_type), ['GRANT_CREATED', 'DOWNLOAD_STARTED', 'GRANT_REVOKED']);
 });
 
 test('cam-edge serves completed packages through principal-bound, resumable grants', async () => {
@@ -78,6 +79,8 @@ test('cam-edge serves completed packages through principal-bound, resumable gran
     assert.deepEqual(second.rawPayload, payload.subarray(7));
     const grantState = await app.inject({ method: 'GET', url: `/api/v1/download-grants/${grant.grantId}`, headers: { 'x-test-user': 'validator-1' } });
     assert.equal(grantState.json().usedTotalSessions, 1);
+    assert.ok(grantState.json().sessions.length);
+    assert.equal(Object.hasOwn(grantState.json(), 'events'), false);
     assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/download-grants/${grant.grantId}`, headers: { 'x-test-user': 'validator-1' } })).statusCode, 200);
     assert.equal((await app.inject({ method: 'GET', url: grant.items[0].downloadUrl })).statusCode, 403);
   } finally {

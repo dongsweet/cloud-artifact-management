@@ -45,6 +45,11 @@ services:
       CAM_SOURCE_ALLOWLIST: ${CAM_SOURCE_ALLOWLIST:-}
     networks:
       - default
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     restart: unless-stopped
 
   cam-core:

@@ -169,7 +169,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const actor = principal(request);
       const grant = downloadGrants.getGrant(request.params.grantId);
       if (!grant || (grant.createdBy !== actor.principalId && grant.principalId !== actor.principalId && !request.principal.roles?.includes('EDGE_AUDITOR'))) return error(reply, 404, 'download_grant_not_found', 'download grant not found');
-      return reply.send({ ...grant, sessions: downloadGrants.db.prepare('SELECT session_id, candidate_id, status, bytes_sent, covered_bytes, source_address, started_at, updated_at FROM download_sessions WHERE grant_id = ? ORDER BY rowid DESC LIMIT 200').all(grant.grantId), events: downloadGrants.db.prepare('SELECT * FROM download_events WHERE grant_id = ? ORDER BY created_at DESC LIMIT 200').all(grant.grantId) });
+      return reply.send({ ...grant, sessions: downloadGrants.db.prepare('SELECT session_id, candidate_id, status, bytes_sent, covered_bytes, source_address, started_at, updated_at FROM download_sessions WHERE grant_id = ? ORDER BY rowid DESC LIMIT 200').all(grant.grantId) });
     } catch (err) {
       return error(reply, err.code === 'principal_required' ? 401 : 400, err.code ?? 'download_grant_query_failed', err.message);
     }

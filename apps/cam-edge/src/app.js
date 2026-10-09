@@ -27,6 +27,7 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
       server.addHook('onClose', async () => db.close());
     }
   });
+  downloadGrants.setLogger(app.log);
   app.decorate('candidateStore', store);
   app.decorate('candidateReceiver', receiver);
   app.decorate('receiveScheduler', scheduler);

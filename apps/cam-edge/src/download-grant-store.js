@@ -7,10 +7,13 @@ function boundedInteger(value, name, { min = 1, max = 10000 } = {}) {
   return value;
 }
 
+const DATABASE_AUDIT_EVENTS = new Set(['GRANT_CREATED', 'GRANT_REVOKED', 'DOWNLOAD_STARTED', 'DOWNLOAD_COMPLETED', 'DOWNLOAD_FAILED']);
+
 export class DownloadGrantStore {
-  constructor({ db, candidateStore }) {
+  constructor({ db, candidateStore, logger = null }) {
     this.db = db;
     this.candidateStore = candidateStore;
+    this.logger = logger ?? { info() {} };
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS download_grants (
         grant_id TEXT PRIMARY KEY,
@@ -68,10 +71,19 @@ export class DownloadGrantStore {
     this.activeTransfers = new Set();
   }
 
+  setLogger(logger) {
+    this.logger = logger ?? { info() {} };
+  }
+
   recordEvent({ grantId, candidateId = null, sessionId = null, principalId = null, type, details = {} }) {
-    this.db.prepare(`INSERT INTO download_events
-      (event_id, grant_id, candidate_id, session_id, principal_id, event_type, details_json, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(randomUUID(), grantId, candidateId, sessionId, principalId, type, JSON.stringify(details), timestamp());
+    const eventId = randomUUID();
+    const createdAt = timestamp();
+    if (DATABASE_AUDIT_EVENTS.has(type)) {
+      this.db.prepare(`INSERT INTO download_events
+        (event_id, grant_id, candidate_id, session_id, principal_id, event_type, details_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(eventId, grantId, candidateId, sessionId, principalId, type, JSON.stringify(details), createdAt);
+    }
+    this.logger.info({ downloadEvent: { eventId, grantId, candidateId, sessionId, principalId, eventType: type, details, createdAt } }, 'download event');
   }
 
   createGrant({ candidateIds, principalId, principalType, createdBy = principalId, expiresAt, maxTotalSessions, maxSessionsPerFile }) {

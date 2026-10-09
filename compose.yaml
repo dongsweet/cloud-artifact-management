@@ -84,6 +84,11 @@ services:
       CAM_COOKIE_SECURE: ${CAM_COOKIE_SECURE:-true}
       CAM_TRUST_PROXY: ${CAM_TRUST_PROXY:-192.168.240.0/24}
       CAM_SOURCE_ALLOWLIST: ${CAM_SOURCE_ALLOWLIST:-}
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     restart: unless-stopped
 
   cam-core:
