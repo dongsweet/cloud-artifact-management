@@ -243,8 +243,8 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler }) {
       }
       const candidateIds = requested ?? roundIds;
       if (candidateIds.some((id) => !roundIds.includes(id))) return error(reply, 400, 'candidate_not_in_round', 'all selected candidates must belong to the specified round');
-      const items = scheduler.enqueue(candidateIds);
-      return reply.code(202).send({ roundId: request.params.roundId, enqueued: items.filter(Boolean).length, concurrency: scheduler.concurrency, items: scheduler.list() });
+      const result = scheduler.enqueue(candidateIds);
+      return reply.code(202).send({ roundId: request.params.roundId, enqueued: result.enqueued, alreadyActive: result.alreadyActive, completed: result.completed, concurrency: scheduler.concurrency, items: scheduler.list() });
     } catch (err) {
       return error(reply, 400, 'receive_batch_failed', err.message);
     }

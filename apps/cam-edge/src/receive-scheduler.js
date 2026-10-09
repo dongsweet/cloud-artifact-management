@@ -31,9 +31,23 @@ export function createReceiveScheduler({ store, receiver, concurrency = Number(p
 
   function enqueue(candidateIds) {
     const uniqueIds = [...new Set(candidateIds)];
-    const jobs = uniqueIds.map((candidateId) => store.enqueueReceive(candidateId));
+    let enqueued = 0;
+    let alreadyActive = 0;
+    let completed = 0;
+    const jobs = uniqueIds.map((candidateId) => {
+      const candidate = store.get(candidateId);
+      if (candidate?.status === 'COMPLETED') {
+        completed += 1;
+        return store.getReceiveJob(candidateId);
+      }
+      const previous = store.getReceiveJob(candidateId);
+      const job = store.enqueueReceive(candidateId);
+      if (['QUEUED', 'RUNNING'].includes(previous?.status)) alreadyActive += 1;
+      else if (job?.status === 'QUEUED' || job?.status === 'RUNNING') enqueued += 1;
+      return job;
+    });
     pump();
-    return jobs;
+    return { jobs, enqueued, alreadyActive, completed };
   }
 
   function pause(candidateId) {

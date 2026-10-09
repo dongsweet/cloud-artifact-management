@@ -1,4 +1,4 @@
-const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, routeGeneration: 0, importFile: null, importPreview: null };
+const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null };
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
 
@@ -268,20 +268,36 @@ async function updateRoundQueue(round, candidates) {
     const queue = (await api('/api/v1/receive-queue')).items.filter((item) => candidates.some((candidate) => candidate.candidateId === item.candidate_id));
     const completed = queue.filter((item) => item.status === 'COMPLETED').length;
     const active = queue.filter((item) => item.status === 'RUNNING').length;
-    $('#round-queue-summary').textContent = queue.length ? `后台队列：${completed}/${queue.length} 已完成，${active} 个下载中` : '后台队列：尚未提交';
-    $('#batch-receive-button').disabled = !candidates.some((candidate) => candidate.status !== 'COMPLETED');
+    const queued = queue.filter((item) => item.status === 'QUEUED').length;
+    const paused = queue.filter((item) => ['PAUSED', 'FAILED'].includes(item.status)).length;
+    $('#round-queue-summary').textContent = queue.length ? `后台队列：${completed} 已完成，${active} 下载中，${queued} 排队中${paused ? `，${paused} 暂停/失败` : ''}` : '后台队列：尚未提交';
+    const activeIds = new Set(queue.filter((item) => ['QUEUED', 'RUNNING'].includes(item.status)).map((item) => item.candidate_id));
+    const canEnqueue = candidates.some((candidate) => candidate.status !== 'COMPLETED' && candidate.status !== 'RECEIVING' && !activeIds.has(candidate.candidateId));
+    const button = $('#batch-receive-button');
+    button.disabled = state.batchSubmitting || !canEnqueue;
+    button.innerHTML = active || queued ? `<i class="bi bi-cloud-download me-1"></i>继续接收未入队包` : '<i class="bi bi-cloud-download me-1"></i>批量接收本轮';
   } catch { $('#round-queue-summary').textContent = '后台队列状态暂不可用'; }
 }
 
 async function batchReceiveRound() {
   if (!state.roundId) return;
   const button = $('#batch-receive-button');
+  if (button.disabled) return;
+  state.batchSubmitting = true;
   button.disabled = true;
   try {
     const result = await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/receive-batch`, { method: 'POST', body: '{}' });
-    showAlert(`已加入后台下载队列：${result.enqueued} 个候选包`);
+    const notes = [];
+    if (result.enqueued) notes.push(`${result.enqueued} 个新加入队列`);
+    if (result.alreadyActive) notes.push(`${result.alreadyActive} 个已在接收或排队`);
+    if (result.completed) notes.push(`${result.completed} 个已完成`);
+    showAlert(notes.length ? `批量接收处理完成：${notes.join('，')}` : '本轮没有需要接收的候选包');
     await loadRound(state.routeGeneration);
-  } catch (error) { showAlert(error.message, 'danger'); button.disabled = false; }
+  } catch (error) { showAlert(error.message, 'danger'); }
+  finally {
+    state.batchSubmitting = false;
+    if (state.currentRound && state.roundId) loadRound(state.routeGeneration).catch(() => {});
+  }
 }
 
 async function detachRoundCandidate(candidateId) {

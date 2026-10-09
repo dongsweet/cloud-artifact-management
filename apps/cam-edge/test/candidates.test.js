@@ -163,10 +163,12 @@ test('round batch receive is persisted and limits concurrent downloads', async (
   const payload = Buffer.from('scheduled-package');
   let activeRequests = 0;
   let maxActiveRequests = 0;
+  let rangeRequests = 0;
   const source = createServer(async (request, response) => {
     const match = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range ?? '');
     if (!match) return response.writeHead(416).end();
     activeRequests += 1;
+    rangeRequests += 1;
     maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
     await new Promise((resolve) => setTimeout(resolve, 40));
     const start = Number(match[1]);
@@ -191,6 +193,10 @@ test('round batch receive is persisted and limits concurrent downloads', async (
   assert.equal(batch.json().enqueued, 3);
   assert.equal(batch.json().concurrency, 2);
   assert.equal(batch.json().items.filter((item) => item.status === 'QUEUED').length, 1);
+  const repeatedBatch = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.json().roundId}/receive-batch`, payload: {} });
+  assert.equal(repeatedBatch.statusCode, 202);
+  assert.equal(repeatedBatch.json().enqueued, 0);
+  assert.equal(repeatedBatch.json().alreadyActive, 3);
   const queuedId = batch.json().items.find((item) => item.status === 'QUEUED').candidate_id;
   await app.inject({ method: 'POST', url: `/api/v1/candidates/${queuedId}/cancel-receive` });
   assert.equal(app.receiveScheduler.list().find((item) => item.candidate_id === queuedId).status, 'PAUSED');
@@ -206,6 +212,7 @@ test('round batch receive is persisted and limits concurrent downloads', async (
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.equal(app.receiveScheduler.list().filter((item) => item.status === 'COMPLETED').length, 3);
+  assert.equal(rangeRequests, 3);
   assert.equal((await app.inject({ method: 'GET', url: '/api/v1/receive-queue' })).json().items.length, 3);
   await app.close();
   await new Promise((resolve, reject) => source.close((error) => error ? reject(error) : resolve()));
