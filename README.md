@@ -59,17 +59,17 @@ http://127.0.0.1:16080/       # Hillstone noVNC 入口（目标主机本地）
 
 在开发机浏览器访问测试机上的 Hillstone，可运行 `tools\hillstone-vpn.cmd start -Detach`。脚本通过 SSH 控制测试机上的 `cam-hillstone-vpn` 容器，刷新动态路由，并将测试机本地绑定的管理端口映射到开发机：默认 noVNC 为 `16081`、Web 管理入口为 `18081`、SOCKS5 为 `11081`。关闭映射和远端容器运行 `tools\hillstone-vpn.cmd stop`，重建容器并刷新路由运行 `tools\hillstone-vpn.cmd restart`，查看容器、路由和映射状态运行 `tools\hillstone-vpn.cmd status`，测试研发文件地址运行 `tools\hillstone-vpn.cmd target-test`。不带参数执行 `.cmd` 文件会进入交互菜单。如 SSH 用户、地址、端口或远端项目目录不同，可设置 `CAM_HILLSTONE_SSH_USER`、`CAM_HILLSTONE_SSH_HOST`、`CAM_HILLSTONE_SSH_PORT`、`CAM_HILLSTONE_REMOTE_DIR` 环境变量。
 
-测试机需要安装 `deploy/cam-hillstone-route.service`。该服务调用 `deploy/cam-hillstone-route.sh`，运行时动态查询 Compose 网络 ID、对应的 `br-xxxx` 网桥和 Hillstone 容器 IP，再安装研发文件主机路由。默认目标为 `172.22.5.177/32` 和 `172.22.5.66/32`，须与 `CAM_SOURCE_ALLOWLIST` 中的 IP 地址保持一致；可通过 `CAM_HILLSTONE_ROUTE_TARGETS` 增减目标。不把网桥名或容器 IP 固定写入配置。安装命令为：
+直连部署的路由服务读取项目 `.env` 中的 `CAM_SOURCE_ALLOWLIST`，为其中每个主机名解析出的 IPv4 地址安装精确 `/32` 路由。路由目标不再单独配置，避免 allowlist 与路由目标不一致；新增或删除来源时只需修改 `.env` 后重启服务。安装命令为：
 
 CAM 专用 Docker 网络默认使用 `192.168.240.0/24`，避开测试机已有的 `172.20.0.0/16`、`172.21.0.0/16` 和 `172.22.0.0/16`。如部署环境已有该网段，可在 `.env` 中设置 `CAM_DOCKER_SUBNET` 为其他未占用的专用网段。
 
-直连测试模式下，如果宿主机其他 Docker 网络占用了研发文件服务器所在的大网段（例如 `172.22.0.0/16`），需要安装 `deploy/install-cam-source-route.sh`。该服务为 `CAM_SOURCE_ALLOWLIST` 中每个研发文件服务器 IP 安装精确 `/32` 路由，动态使用宿主机默认网关和网卡，避免被 Docker 大网段路由截获；新增 allowlist IP 时必须同步增加对应路由目标。该服务只适用于 `compose.direct.yaml`；使用 Hillstone VPN 时应使用 `cam-hillstone-route.service`，不要同时安装两套到同一目标的路由服务。
+如果宿主机其他 Docker 网络占用了研发文件服务器所在的大网段（例如 `172.22.0.0/16`），需要安装 `deploy/install-cam-source-route.sh`。该服务动态使用宿主机默认网关和网卡，为 `.env` 中 `CAM_SOURCE_ALLOWLIST` 的每个地址安装精确 `/32` 路由，避免被 Docker 大网段路由截获。
 
 `CAM_SOURCE_ALLOWLIST` 按研发地址的主机名或 IP 匹配，忽略 URL 端口。例如 `http://172.22.5.66:9090/path/file.zip` 的 allowlist 项写 `172.22.5.66`，路由目标写 `172.22.5.66/32`；端口由 URL 和网络访问控制策略决定，不写入路由。
 
 ```bash
 cd cloud-artifact-management/deploy
-sudo sh ./install-hillstone-route.sh
+sudo sh ./install-cam-source-route.sh
 ```
 
 安装脚本同时把 legacy netfilter 模块写入 `/etc/modules-load.d/cam-hillstone-netfilter.conf` 并立即加载，保证 Hillstone 使用原生 `iptables-legacy` 入口。宿主机重启后由 `systemd-modules-load` 自动恢复这些模块。

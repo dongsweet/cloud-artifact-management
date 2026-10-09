@@ -222,7 +222,7 @@ docker exec cam-hillstone-vpn ip link show tun0
 
 CAM Compose 默认使用 `192.168.240.0/24` 作为专用 Docker 网络，避开测试机常见的 `172.20.0.0/16`、`172.21.0.0/16` 和 `172.22.0.0/16` 网段。部署时应通过 `CAM_DOCKER_SUBNET` 选择未被主机、VPN、云平台或其他 Docker 网络使用的地址段；不得把研发网段配置为 Docker 网络地址段。
 
-直连测试部署还需检查宿主机上其他 Docker 网络是否占用了研发文件服务器所在网段。如果存在整段 Docker 路由覆盖研发地址，应执行 `deploy/install-cam-source-route.sh` 安装 `cam-source-route.service`，为研发文件服务器写入精确 `/32` 路由。该服务读取宿主机默认网关和网卡，容器通过宿主机网络访问研发地址时即可避开冲突 Docker 网桥。启用 Hillstone VPN 的部署使用 `cam-hillstone-route.service`，不与直连路由服务重复安装。
+直连部署还需检查宿主机上其他 Docker 网络是否占用了研发文件服务器所在网段。如果存在整段 Docker 路由覆盖研发地址，应执行 `deploy/install-cam-source-route.sh` 安装 `cam-source-route.service`。该服务直接读取项目 `.env` 的 `CAM_SOURCE_ALLOWLIST`，为每个主机名解析出的 IPv4 地址安装精确 `/32` 路由，动态使用宿主机默认网关和网卡，从而避开冲突 Docker 网桥。allowlist 变化后重新执行安装脚本或重启服务即可同步路由。
 
 ### 5.2 后续拆分部署
 
@@ -628,7 +628,7 @@ sequenceDiagram
 
 外部交换区的候选接收采用持久化下载队列。`POST /api/v1/rounds/:roundId/receive-batch` 可将整轮候选包或指定的候选包加入队列，`GET /api/v1/receive-queue` 返回排队、运行、暂停和失败任务。单包接收接口也复用该队列。队列状态、尝试次数和错误信息写入外部交换区 SQLite；服务重启时将运行中的任务恢复为排队状态，并从已有分块继续下载。默认同时接收 2 个包，可通过 `CAM_RECEIVE_CONCURRENCY` 调整为 1 至 16。暂停只停止当前 HTTP Range 请求并保留已完成分块，恢复时继续缺失分块。
 
-`cam-edge` 的 `CAM_SOURCE_ALLOWLIST` 按 URL 主机名或 IP 限制研发文件来源，端口不参与匹配。例如 `http://172.22.5.66:9090/path/file.zip` 应允许 `172.22.5.66`。每个 allowlist 中的 IP 都必须在宿主机部署配置中有对应的精确 `/32` 路由：直连模式路由到宿主机默认网关，Hillstone 模式路由到 Hillstone 容器。端口由 URL 和网络访问控制策略决定，不写入路由。新增或删除来源 IP 时，必须同步更新 allowlist 和路由目标；主机名还需将解析出的 IP 纳入路由配置，并在地址变化时更新。
+`cam-edge` 的 `CAM_SOURCE_ALLOWLIST` 按 URL 主机名或 IP 限制研发文件来源，端口不参与匹配。例如 `http://172.22.5.66:9090/path/file.zip` 应允许 `172.22.5.66`。`cam-source-route.service` 直接读取同一项目 `.env` 中的 allowlist，为每个主机名解析出的 IPv4 地址安装精确 `/32` 路由；不再维护独立的路由目标列表。端口由 URL 和网络访问控制策略决定，不写入路由。allowlist 变化后重启该服务即可同步新增或删除的路由。
 
 候选数据模型采用四级关系：`products` 保存软件产品；`releases` 保存产品发布版本；`release_rounds` 保存同一发布版本的候选收集轮次；`candidates` 保存单个候选包快照和断点续传状态。`round_candidates` 是轮次到候选包的清单映射，记录 `OWNED` 或 `INHERITED` 以及继承来源轮次。
 
