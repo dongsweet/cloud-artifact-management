@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 
 export async function buildServer({ service, configure, bodyLimit = Number(process.env.BODY_LIMIT ?? 25 * 1024 * 1024) } = {}) {
   const app = Fastify({
+    trustProxy: process.env.CAM_TRUST_PROXY ? process.env.CAM_TRUST_PROXY.split(',').map((value) => value.trim()) : false,
     logger: {
       serializers: {
         req(request) {

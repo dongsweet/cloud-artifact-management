@@ -13,7 +13,7 @@ function sha256(value) {
 
 test('cam-edge accepts resumable candidate parts and finalizes the candidate', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-api-'));
-  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
   const payload = Buffer.from('abcdefghij');
   const created = await app.inject({
     method: 'POST',
@@ -37,7 +37,7 @@ test('cam-edge accepts resumable candidate parts and finalizes the candidate', a
   assert.equal(await readFile(join(dataDir, 'candidates', candidate.candidateId, 'source', 'release.bin'), 'utf8'), 'abcdefghij');
   await app.close();
 
-  const reopened = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const reopened = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
   const loaded = await reopened.inject({ method: 'GET', url: `/api/v1/candidates/${candidate.candidateId}` });
   assert.equal(loaded.json().status, 'COMPLETED');
   await reopened.close();
@@ -45,7 +45,7 @@ test('cam-edge accepts resumable candidate parts and finalizes the candidate', a
 
 test('cam-edge validates candidate metadata, preserves parts on conflict and stores final digest', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-validation-'));
-  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 3, allowlist: ['127.0.0.1'] });
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 3, allowlist: ['127.0.0.1'] });
   const invalid = await app.inject({ method: 'POST', url: '/api/v1/candidates', payload: { sourceUrl: 'http://127.0.0.1/release.bin', fileName: '../release.bin', version: '1.0.0', size: 6 } });
   assert.equal(invalid.statusCode, 400);
 
@@ -68,7 +68,7 @@ test('cam-edge validates candidate metadata, preserves parts on conflict and sto
 
 test('candidate metadata can be corrected after a failed digest and candidate can be deleted', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-edit-delete-'));
-  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
   const created = await app.inject({ method: 'POST', url: '/api/v1/candidates', payload: { sourceUrl: 'http://127.0.0.1:39001/package.bin', fileName: 'package.bin', size: 4, md5: '0'.repeat(32) } });
   const candidate = created.json();
   const fixedMd5 = createHash('md5').update('data').digest('hex');
@@ -85,7 +85,7 @@ test('candidate metadata can be corrected after a failed digest and candidate ca
 
 test('candidate digest mismatch reports both expected and actual MD5 values', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-digest-details-'));
-  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 16, allowlist: ['127.0.0.1'] });
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 16, allowlist: ['127.0.0.1'] });
   const payload = Buffer.from('actual-package');
   const expectedMd5 = '0'.repeat(32);
   const actualMd5 = createHash('md5').update(payload).digest('hex');
@@ -112,7 +112,7 @@ test('cam-edge receives a candidate from an HTTP Range source and records its so
   await new Promise((resolve) => source.listen(0, '127.0.0.1', resolve));
   const port = source.address().port;
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-receive-'));
-  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 5, allowlist: ['127.0.0.1'] });
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 5, allowlist: ['127.0.0.1'] });
   const created = await app.inject({ method: 'POST', url: '/api/v1/candidates', payload: { sourceUrl: 'http://127.0.0.1:' + port + '/release.bin', fileName: 'release.bin', version: '2.0.0', size: payload.length, chunkSize: 5 } });
   const candidate = created.json();
   assert.equal((await app.inject({ method: 'POST', url: '/api/v1/candidates/' + candidate.candidateId + '/receive' })).statusCode, 202);
@@ -139,14 +139,14 @@ test('cam-edge resumes partial candidate downloads after restart and finalizes a
   await new Promise((resolve) => source.listen(0, '127.0.0.1', resolve));
   const port = source.address().port;
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-resume-restart-'));
-  const first = await buildEdgeApp({ dataDir, defaultChunkSize: 5, allowlist: ['127.0.0.1'] });
+  const first = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 5, allowlist: ['127.0.0.1'] });
   const created = await first.inject({ method: 'POST', url: '/api/v1/candidates', payload: { sourceUrl: `http://127.0.0.1:${port}/release.bin`, fileName: 'release.bin', version: '2.0.0', size: payload.length, chunkSize: 5 } });
   const candidate = created.json();
   const firstPart = payload.subarray(0, 5);
   await first.inject({ method: 'PUT', url: `/api/v1/candidates/${candidate.candidateId}/parts/0`, headers: { 'content-type': 'application/octet-stream', 'x-chunk-sha256': sha256(firstPart) }, payload: firstPart });
   await first.close();
 
-  const reopened = await buildEdgeApp({ dataDir, defaultChunkSize: 5, allowlist: ['127.0.0.1'] });
+  const reopened = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 5, allowlist: ['127.0.0.1'] });
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (reopened.candidateStore.get(candidate.candidateId).status === 'COMPLETED') break;
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -179,7 +179,7 @@ test('round batch receive is persisted and limits concurrent downloads', async (
   await new Promise((resolve) => source.listen(0, '127.0.0.1', resolve));
   const port = source.address().port;
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-batch-'));
-  const app = await buildEdgeApp({ dataDir, defaultChunkSize: payload.length, allowlist: ['127.0.0.1'] });
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: payload.length, allowlist: ['127.0.0.1'] });
   const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Batch test' } });
   const release = await app.inject({ method: 'POST', url: `/api/v1/products/${product.json().productId}/releases`, payload: { version: '1.0.0' } });
   const round = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.json().releaseId}/rounds`, payload: {} });
@@ -220,7 +220,7 @@ test('round batch receive is persisted and limits concurrent downloads', async (
 
 test('round candidate removal detaches only the current round mapping', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-round-remove-'));
-  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
   const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Round remove test' } });
   const release = await app.inject({ method: 'POST', url: `/api/v1/products/${product.json().productId}/releases`, payload: { version: '1.0.0' } });
   const round = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.json().releaseId}/rounds`, payload: {} });
@@ -236,7 +236,7 @@ test('round candidate removal detaches only the current round mapping', async ()
 
 test('release rounds inherit unchanged candidate packages and replace only updated package mappings', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-rounds-'));
-  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
   const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: '曙光云 Stack' } });
   assert.equal(product.statusCode, 201);
   const productId = product.json().productId;
@@ -263,7 +263,7 @@ test('release rounds inherit unchanged candidate packages and replace only updat
 
 test('deletes empty open releases and protects releases with candidate packages', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-release-delete-'));
-  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
   const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: '删除测试产品' } });
   const productId = product.json().productId;
 
@@ -287,7 +287,7 @@ test('deletes empty open releases and protects releases with candidate packages'
 
 test('deletes products without releases and protects products with releases', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-product-delete-'));
-  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
   const empty = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: '空产品' } });
   const emptyProductId = empty.json().productId;
   assert.equal(empty.json().releaseCount, 0);
@@ -307,7 +307,7 @@ test('deletes products without releases and protects products with releases', as
 
 test('candidate import creates only selected row metadata and refuses package key replacement', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-import-'));
-  const app = await buildEdgeApp({ dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
   const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: '导入测试产品' } });
   const release = await app.inject({ method: 'POST', url: `/api/v1/products/${product.json().productId}/releases`, payload: { version: '8.0.6.2' } });
   const round = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.json().releaseId}/rounds`, payload: {} });

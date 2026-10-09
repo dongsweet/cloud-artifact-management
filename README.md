@@ -19,6 +19,8 @@ npm run start:agent  # 3103
 
 健康检查：`/health/live` 和 `/health/ready`。
 
+外部交换区 API 已启用本地登录及角色权限，不再允许匿名访问业务接口。部署后通过容器交互终端创建初始管理员，再从页面登录；初始化、HTTPS/Cookie 配置、账号及下载交付方式见 [外部交换区账号及下载交付](docs/edge-accounts.md)。
+
 ## Docker 验证
 
 ```bash

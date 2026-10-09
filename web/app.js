@@ -1,3 +1,4 @@
+import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView } from './account-ui.js';
 const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null };
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
@@ -16,11 +17,11 @@ function queueClass(status) { return { QUEUED: 'text-bg-secondary', RUNNING: 'te
 function formatBytes(value) { if (!Number.isFinite(Number(value))) return '-'; if (value < 1024) return `${value} B`; const units = ['KB', 'MB', 'GB', 'TB']; let amount = value; let index = -1; while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index += 1; } return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${units[index]}`; }
 
 async function api(path, options = {}) {
-  const headers = { ...(options.headers ?? {}) };
+  const headers = { ...csrfHeaders(), ...(options.headers ?? {}) };
   if (options.body !== undefined && !Object.keys(headers).some((name) => name.toLowerCase() === 'content-type')) headers['content-type'] = 'application/json';
   const response = await fetch(path, { ...options, headers });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error?.message ?? `请求失败（${response.status}）`);
+  if (!response.ok) { if (response.status === 401 && !path.startsWith('/api/v1/auth/')) { window.clearInterval(state.pollTimer); window.clearInterval(state.queueTimer); showLogin(); } throw new Error(body.error?.message ?? `请求失败（${response.status}）`); }
   return body;
 }
 
@@ -38,7 +39,7 @@ function routeContext() {
   const [viewPart, queryPart = ''] = window.location.hash.slice(1).split('?');
   const params = new URLSearchParams(queryPart);
   return {
-    view: ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail'].includes(viewPart) ? viewPart : 'products',
+    view: ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'users', 'grants'].includes(viewPart) ? viewPart : 'products',
     productId: params.get('productId'),
     releaseId: params.get('releaseId'),
     roundId: params.get('roundId'),
@@ -52,18 +53,19 @@ function paramsForState(overrides = {}) {
 }
 
 function renderShell(view) {
-  const views = ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail'];
+  const views = ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'users', 'grants'];
   views.forEach((name) => $(`#view-${name}`).classList.toggle('d-none', name !== view));
   const activeRoute = view === 'release-detail' ? 'rounds' : view === 'candidate-detail' ? 'candidates' : view;
-  document.querySelectorAll('[data-route]').forEach((link) => link.classList.toggle('active', link.dataset.route === activeRoute));
-  const titles = { products: '软件产品', releases: '发布版本', rounds: '候选轮次', candidates: '候选包', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情' };
+  document.querySelectorAll('.sidebar-menu a').forEach((link) => link.classList.toggle('active', (link.dataset.route ?? link.hash.slice(1)) === activeRoute));
+  const titles = { products: '软件产品', releases: '发布版本', rounds: '候选轮次', candidates: '候选包', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情', users: '账号管理', grants: '下载授权' };
   $('#page-title').textContent = titles[view] ?? '软件产品';
 }
 
 function renderBreadcrumb() {
   const labels = [];
   const product = state.products.find((item) => item.productId === state.productId);
-  if (state.view === 'products') labels.push(['软件产品']);
+  if (state.view === 'users' || state.view === 'grants') labels.push([state.view === 'users' ? '账号管理' : '下载授权']);
+  else if (state.view === 'products') labels.push(['软件产品']);
   else if (state.view === 'releases') {
     if (state.productId) labels.push([product?.name ?? '软件产品', routeHash('releases', { productId: state.productId })]);
     labels.push(['发布版本']);
@@ -531,12 +533,14 @@ async function deleteCandidateById(candidateId) {
 }
 
 async function renderRoute() {
+  if (!currentUser() || currentUser().mustChangePassword) return;
   const generation = ++state.routeGeneration;
   const route = routeContext();
   Object.assign(state, route);
   window.clearInterval(state.queueTimer);
   renderShell(state.view);
   try {
+    if (state.view === 'users' || state.view === 'grants') await renderAccountView(state.view);
     if (state.view === 'products') await loadProducts(generation);
     if (state.view === 'releases') await loadReleases(generation);
     if (state.view === 'rounds') await loadRounds(generation);
@@ -684,4 +688,4 @@ $('#package-form').addEventListener('submit', async (event) => {
   } catch (error) { showAlert(error.message, 'danger'); }
 });
 
-renderRoute();
+initAccountUI({ api, refresh: renderRoute, context: () => ({ ...state, confirm: confirmAction }), alert: showAlert });

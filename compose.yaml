@@ -81,6 +81,8 @@ services:
       HOST: 0.0.0.0
       PORT: 3101
       DATA_DIR: /data/edge
+      CAM_COOKIE_SECURE: ${CAM_COOKIE_SECURE:-true}
+      CAM_TRUST_PROXY: ${CAM_TRUST_PROXY:-192.168.240.0/24}
       CAM_SOURCE_ALLOWLIST: ${CAM_SOURCE_ALLOWLIST:-}
     restart: unless-stopped
 

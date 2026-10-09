@@ -452,11 +452,15 @@ export class CandidateStore {
     return parseCandidate(row);
   }
 
-  list({ limit = 50, offset = 0, releaseId = null } = {}) {
+  list({ limit = 50, offset = 0, releaseId = null, status = null } = {}) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('limit must be between 1 and 200');
     if (!Number.isInteger(offset) || offset < 0) throw new Error('offset must be a non-negative integer');
-    const filter = releaseId ? 'WHERE c.release_id = ?' : '';
-    const args = releaseId ? [releaseId, limit, offset] : [limit, offset];
+    if (status && !['CREATED', 'RECEIVING', 'PARTIAL', 'ASSEMBLING', 'FAILED', 'COMPLETED'].includes(status)) throw new Error('invalid candidate status');
+    const conditions = [], args = [];
+    if (releaseId) { conditions.push('c.release_id = ?'); args.push(releaseId); }
+    if (status) { conditions.push('c.status = ?'); args.push(status); }
+    const filter = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    args.push(limit, offset);
     const rows = this.db.prepare(`SELECT c.*, r.version AS release_version, r.product_id, p.name AS product_name,
       (SELECT rc.package_key FROM round_candidates rc WHERE rc.candidate_id = c.candidate_id ORDER BY rc.created_at LIMIT 1) AS package_key,
       (SELECT COUNT(*) FROM candidate_parts p2 WHERE p2.candidate_id = c.candidate_id AND p2.status = 'COMPLETED') AS completed_parts,

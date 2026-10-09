@@ -52,7 +52,7 @@ test('download session resumes do not consume another slot and scope/revocation 
 
 test('cam-edge serves completed packages through principal-bound, resumable grants', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-downloads-'));
-  const app = await buildEdgeApp({ dataDir, principalProvider: (request) => request.headers['x-test-user'] ? { id: request.headers['x-test-user'], type: 'TEST_IDP' } : null });
+  const app = await buildEdgeApp({ dataDir, principalProvider: (request) => request.headers['x-test-user'] ? { id: request.headers['x-test-user'], type: 'TEST_IDP', roles: ['VALIDATOR'] } : null });
   try {
     const payload = Buffer.from('verified-package-content');
     const candidate = await app.candidateStore.create({ sourceUrl: 'https://dev.invalid/package.tar.gz', fileName: 'package.tar.gz', size: payload.length, sha256: createHash('sha256').update(payload).digest('hex') });

@@ -4,7 +4,7 @@ FROM node:24-bookworm-slim AS assets
 WORKDIR /build
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
-COPY web/index.html web/app.js web/app.css ./
+COPY web/index.html web/app.js web/account-ui.js web/app.css ./
 RUN mkdir -p /out/assets/fonts \
   && cp node_modules/bootstrap/dist/css/bootstrap.min.css /out/assets/ \
   && cp node_modules/bootstrap/dist/js/bootstrap.bundle.min.js /out/assets/ \
@@ -13,7 +13,7 @@ RUN mkdir -p /out/assets/fonts \
   && cp node_modules/bootstrap-icons/font/bootstrap-icons.min.css /out/assets/ \
   && cp node_modules/bootstrap-icons/font/fonts/* /out/assets/fonts/ \
   && cp index.html /out/ \
-  && cp app.js app.css /out/assets/
+  && cp app.js account-ui.js app.css /out/assets/
 
 ARG CADDY_BASE_IMAGE
 FROM ${CADDY_BASE_IMAGE} AS caddy-runtime

@@ -14,21 +14,7 @@ function principal(request) {
   if (request.principal && typeof request.principal.id === 'string') {
     return { principalId: request.principal.id, principalType: request.principal.type ?? 'AUTHENTICATED' };
   }
-  if (process.env.CAM_ALLOW_DEV_PRINCIPAL !== 'true') {
-    const error = new Error('authenticated principal is required');
-    error.code = 'principal_required';
-    throw error;
-  }
-  const principalId = request.headers['x-cam-principal-id'];
-  if (typeof principalId !== 'string' || !principalId.trim()) {
-    const error = new Error('authenticated principal is required');
-    error.code = 'principal_required';
-    throw error;
-  }
-  const principalType = typeof request.headers['x-cam-principal-type'] === 'string'
-    ? request.headers['x-cam-principal-type']
-    : 'LOCAL_PENDING';
-  return { principalId: principalId.trim(), principalType: principalType.trim() || 'LOCAL_PENDING' };
+  throw Object.assign(new Error('authenticated principal is required'), { code: 'principal_required' });
 }
 
 function bearerToken(request) {
@@ -42,7 +28,7 @@ function downloadActor(request, grant) {
   try {
     return principal(request);
   } catch (err) {
-    if (err.code === 'principal_required' && grant) return { principalId: grant.principalId, principalType: 'DOWNLOAD_TOKEN' };
+    if (err.code === 'principal_required' && grant) return { principalId: `TOKEN:${grant.grantId}`, principalType: 'DOWNLOAD_TOKEN' };
     throw err;
   }
 }
@@ -52,7 +38,7 @@ function parseRange(value, size) {
   const match = /^bytes=(\d*)-(\d*)$/.exec(value);
   if (!match || (!match[1] && !match[2])) return 'invalid';
   let start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
-  let end = match[2] ? Number(match[2]) : size - 1;
+  let end = match[1] && match[2] ? Number(match[2]) : size - 1;
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= size) return 'invalid';
   end = Math.min(end, size - 1);
   return { start, end };
@@ -141,25 +127,36 @@ export async function finalizeCandidate(store, candidateId) {
   return store.complete(candidate.candidate_id, { finalSha256: assembled.sha256, finalMd5: candidate.expected_md5 ? await md5File(assembled.path) : null });
 }
 
-export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants }) {
+export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth }) {
+  const usableRecipient = (grant) => {
+    if (grant?.principalType !== 'LOCAL_USER') return true;
+    const user = auth.getUser(grant.principalId);
+    return user?.status === 'ACTIVE' && !user.mustChangePassword && user.roles.includes('VALIDATOR');
+  };
+  app.get('/api/v1/download-grants', async (request) => {
+    const audit = request.principal.roles?.includes('EDGE_AUDITOR');
+    const rows = downloadGrants.db.prepare(audit ? 'SELECT grant_id FROM download_grants ORDER BY created_at DESC LIMIT 200' : 'SELECT grant_id FROM download_grants WHERE created_by = ? OR principal_id = ? ORDER BY created_at DESC LIMIT 200');
+    return { items: (audit ? rows.all() : rows.all(request.principal.id, request.principal.id)).map((r) => downloadGrants.getGrant(r.grant_id)) };
+  });
   app.post('/api/v1/download-grants', async (request, reply) => {
     if (!downloadGrants) return error(reply, 503, 'download_grants_unavailable', 'download grants are not configured');
     try {
       const actor = principal(request);
       const body = request.body ?? {};
+      const recipient = request.principal.type === 'LOCAL_USER' ? auth.getUser(body.recipientId ?? actor.principalId) : null;
+      if (request.principal.type === 'LOCAL_USER' && (!recipient || recipient.status !== 'ACTIVE' || recipient.mustChangePassword || !recipient.roles.includes('VALIDATOR'))) throw new Error('下载责任人须为已激活并完成初始密码修改的验证人员');
       const grant = downloadGrants.createGrant({
         candidateIds: body.candidateIds,
-        principalId: actor.principalId,
-        principalType: actor.principalType,
+        principalId: recipient?.id ?? actor.principalId,
+        principalType: recipient ? 'LOCAL_USER' : actor.principalType,
         createdBy: actor.principalId,
         expiresAt: body.expiresAt,
         maxTotalSessions: body.maxTotalSessions,
         maxSessionsPerFile: body.maxSessionsPerFile
       });
-      const origin = `${request.protocol}://${request.headers.host}`;
       return reply.code(201).send({
         ...grant,
-        items: grant.items.map((item) => ({ ...item, downloadUrl: `${origin}/api/v1/downloads/${encodeURIComponent(item.candidateId)}/content?token=${encodeURIComponent(grant.token)}` }))
+        items: grant.items.map((item) => ({ ...item, downloadUrl: `/api/v1/downloads/${encodeURIComponent(item.candidateId)}/content?token=${encodeURIComponent(grant.token)}` }))
       });
     } catch (err) {
       const status = err.code === 'principal_required' ? 401 : 400;
@@ -171,8 +168,8 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     try {
       const actor = principal(request);
       const grant = downloadGrants.getGrant(request.params.grantId);
-      if (!grant || grant.createdBy !== actor.principalId) return error(reply, 404, 'download_grant_not_found', 'download grant not found');
-      return reply.send(grant);
+      if (!grant || (grant.createdBy !== actor.principalId && grant.principalId !== actor.principalId && !request.principal.roles?.includes('EDGE_AUDITOR'))) return error(reply, 404, 'download_grant_not_found', 'download grant not found');
+      return reply.send({ ...grant, events: downloadGrants.db.prepare('SELECT * FROM download_events WHERE grant_id = ? ORDER BY created_at DESC LIMIT 200').all(grant.grantId) });
     } catch (err) {
       return error(reply, err.code === 'principal_required' ? 401 : 400, err.code ?? 'download_grant_query_failed', err.message);
     }
@@ -182,7 +179,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     try {
       const token = bearerToken(request);
       const grant = token ? downloadGrants.getGrantByToken(token) : null;
-      if (!grant || grant.grantId !== request.params.grantId || grant.revokedAt || Date.parse(grant.expiresAt) <= Date.now()) return error(reply, 401, 'download_grant_invalid', 'download grant is invalid, expired or revoked');
+      if (!grant || !usableRecipient(grant) || grant.grantId !== request.params.grantId || grant.revokedAt || Date.parse(grant.expiresAt) <= Date.now()) return error(reply, 401, 'download_grant_invalid', 'download grant is invalid, expired or revoked');
       return reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer').send({
         grantId: grant.grantId,
         expiresAt: grant.expiresAt,
@@ -210,6 +207,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const token = bearerToken(request);
       if (!token) return error(reply, 401, 'download_token_required', 'Bearer download token is required');
       const grant = downloadGrants.getGrantByToken(token);
+      if (!usableRecipient(grant)) return error(reply, 403, 'recipient_disabled', '下载责任人账号已停用或权限失效');
       const actor = downloadActor(request, grant);
       const session = downloadGrants.beginSession({ token, candidateId: request.params.candidateId, sessionId: request.body?.sessionId ?? null, downloadedBy: actor.principalId, sourceAddress: request.ip, userAgent: request.headers['user-agent'] ?? null });
       return reply.header('Cache-Control', 'no-store').send(session);
@@ -226,20 +224,32 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const token = bearerToken(request);
       if (!token) return error(reply, 401, 'download_token_required', 'Bearer download token is required');
       const grant = downloadGrants.getGrantByToken(token);
+      if (!usableRecipient(grant)) return error(reply, 403, 'recipient_disabled', '下载责任人账号已停用或权限失效');
       const actor = downloadActor(request, grant);
       const candidate = store.get(request.params.candidateId);
+      if (!grant || grant.revokedAt || Date.parse(grant.expiresAt) <= Date.now() || !grant.items.some((i) => i.candidateId === request.params.candidateId)) return error(reply, 403, 'download_grant_invalid', 'download grant is invalid, expired or revoked, or candidate is outside scope');
       if (!candidate || candidate.status !== 'COMPLETED') return error(reply, 404, 'candidate_file_not_found', 'completed candidate file not found');
-      session = downloadGrants.beginSession({ token, candidateId: candidate.candidate_id, sessionId: typeof sessionId === 'string' ? sessionId : null, downloadedBy: actor.principalId, sourceAddress: request.ip, userAgent: request.headers['user-agent'] ?? null });
-      sessionId = session.sessionId;
       const file = await stat(candidate.source_path);
       const range = parseRange(request.headers.range, file.size);
       if (range === 'invalid') return reply.code(416).header('Content-Range', `bytes */${file.size}`).send();
+      session = downloadGrants.beginSession({ token, candidateId: candidate.candidate_id, sessionId: typeof sessionId === 'string' ? sessionId : null, downloadedBy: actor.principalId, sourceAddress: request.ip, userAgent: request.headers['user-agent'] ?? null });
+      sessionId = session.sessionId;
       const start = range?.start ?? 0;
       const end = range?.end ?? file.size - 1;
       const length = end - start + 1;
       const stream = createReadStream(candidate.source_path, { start, end });
-      stream.on('error', (err) => { downloadGrants.recordSessionProgress(sessionId, { bytesSent: start, status: 'FAILED', errorMessage: err.message, principalId: actor.principalId }); });
-      stream.on('end', () => { downloadGrants.recordSessionProgress(sessionId, { bytesSent: end + 1, status: end + 1 >= file.size ? 'COMPLETED' : 'INTERRUPTED', principalId: actor.principalId }); });
+      const prior = downloadGrants.db.prepare('SELECT bytes_sent FROM download_sessions WHERE session_id = ?').get(sessionId).bytes_sent;
+      let recorded = false;
+      const record = (finished, err = null) => {
+        if (recorded) return;
+        recorded = true;
+        // Advance only a contiguous prefix after the response finishes. A suffix alone is not a full download.
+        const bytesSent = finished && start <= prior ? Math.max(prior, end + 1) : prior;
+        downloadGrants.recordSessionProgress(sessionId, { bytesSent, status: err ? 'FAILED' : finished && bytesSent >= file.size ? 'COMPLETED' : 'INTERRUPTED', errorMessage: err?.message ?? null, principalId: actor.principalId });
+      };
+      stream.on('error', (err) => record(false, err));
+      reply.raw.once('finish', () => record(true));
+      reply.raw.once('close', () => { record(false); stream.destroy(); });
       return reply
         .code(range ? 206 : 200)
         .header('Accept-Ranges', 'bytes')
@@ -254,7 +264,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
         .header('Content-Range', range ? `bytes ${start}-${end}/${file.size}` : undefined)
         .send(stream);
     } catch (err) {
-      if (sessionId) downloadGrants.recordSessionProgress(sessionId, { bytesSent: 0, status: 'FAILED', errorMessage: err.message });
+      if (session) downloadGrants.recordSessionProgress(sessionId, { bytesSent: 0, status: 'FAILED', errorMessage: err.message });
       const status = err.code === 'principal_required' ? 401 : /invalid, expired|outside|limit reached|already completed/.test(err.message) ? 403 : 404;
       return error(reply, status, err.code ?? 'download_failed', err.message);
     }
@@ -393,7 +403,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const limit = request.query?.limit === undefined ? 50 : Number(request.query.limit);
       const offset = request.query?.offset === undefined ? 0 : Number(request.query.offset);
       const releaseId = request.query?.releaseId ?? null;
-      return reply.send({ items: store.list({ limit, offset, releaseId }).map(candidateResponse), limit, offset });
+      return reply.send({ items: store.list({ limit, offset, releaseId, status: request.query?.status ?? null }).map(candidateResponse), limit, offset });
     } catch (err) {
       return error(reply, 400, 'invalid_query', err.message);
     }
@@ -429,6 +439,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.delete('/api/v1/candidates/:candidateId', async (request, reply) => {
     try {
+      if (downloadGrants.db.prepare('SELECT 1 FROM download_grant_items WHERE candidate_id = ? LIMIT 1').get(request.params.candidateId)) return error(reply, 409, 'candidate_in_download_audit', '该候选包已关联下载授权和审计记录，暂不能永久删除；可以移出候选轮次');
       const deleted = store.deleteCandidate(request.params.candidateId);
       if (!deleted) return error(reply, 404, 'candidate_not_found', 'candidate not found');
       await rm(deleted.dataDir, { recursive: true, force: true });
