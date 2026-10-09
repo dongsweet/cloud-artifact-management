@@ -52,6 +52,7 @@ function candidateResponse(candidate) {
     releaseId: candidate.release_id,
     releaseVersion: candidate.release_version,
     packageKey: candidate.package_key,
+    type: candidate.metadata?.type ?? null,
     mappingSource: candidate.mapping_source,
     inheritedFromRoundId: candidate.inherited_from_round_id,
     sourceUrl: candidate.source_url,
