@@ -12,7 +12,7 @@ install -m 0644 "$SCRIPT_DIR/cam-source-route.service" /etc/systemd/system/cam-s
 
 if [ ! -e /etc/default/cam-source-route ]; then
   install -m 0644 /dev/null /etc/default/cam-source-route
-  printf '%s\n' 'CAM_SOURCE_ROUTE_TARGETS=172.22.5.177/32' > /etc/default/cam-source-route
+  printf '%s\n' 'CAM_SOURCE_ROUTE_TARGETS=172.22.5.177/32 172.22.5.66/32' > /etc/default/cam-source-route
 fi
 
 systemctl daemon-reload

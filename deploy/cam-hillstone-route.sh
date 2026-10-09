@@ -3,7 +3,7 @@ set -eu
 
 NETWORK="${CAM_HILLSTONE_NETWORK:-cloud-artifact-management_default}"
 CONTAINER="${CAM_HILLSTONE_CONTAINER:-cam-hillstone-vpn}"
-TARGETS="${CAM_HILLSTONE_ROUTE_TARGETS:-172.22.5.177/32}"
+TARGETS="${CAM_HILLSTONE_ROUTE_TARGETS:-172.22.5.177/32 172.22.5.66/32}"
 WAIT_SECONDS="${CAM_HILLSTONE_ROUTE_WAIT_SECONDS:-180}"
 
 log() { echo "[cam-hillstone-route] $*"; }
