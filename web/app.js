@@ -751,7 +751,7 @@ $('#package-form').addEventListener('submit', async (event) => {
       return;
     }
     const candidate = await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/candidates`, { method: 'POST', body: JSON.stringify(payload) });
-    modal('package').hide(); form.reset(); showAlert(`候选包 ${candidate.fileName} 已创建`); navigate('candidate-detail', { candidateId: candidate.candidateId });
+    modal('package').hide(); form.reset(); showAlert(`候选包 ${candidate.fileName} 已创建`); navigate('candidate-detail', { candidateId: candidate.candidateId, ...paramsForState() });
   } catch (error) { showAlert(error.message, 'danger'); }
 });
 
