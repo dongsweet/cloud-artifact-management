@@ -51,8 +51,25 @@ SQLite 文件位于 `${CAM_EDGE_DATA_DIR}/edge/edge.sqlite`、`${CAM_CORE_DATA_D
 本地目录中。备份时应停止写入或停止对应服务后整体备份目录，不能只复制主 `.sqlite` 文件。
 
 测试机临时使用现有 EasyConnect 时，可叠加 `deploy/compose.test-cloud-growth.yaml`，使
-`cam-core` 加入 `cloud-growth-tracker_default` 网络，并通过 `easyconnect-vpn:8888` 的
-HTTP 代理访问 VPN 内的测试云管。该覆盖文件只用于测试环境，不属于正式部署配置。
+`cam-core` 加入 `cloud-growth-tracker_default` 网络。测试覆盖不设置应用层 HTTP 代理，
+而是由宿主机的 `cam-cloud-route.service` 在 `cam-core` 网络命名空间内安装精确路由，
+把测试云管地址转发到 `easyconnect-vpn` 容器；这只用于测试环境，不属于正式部署配置。
+
+在测试机上先在 `.env` 中设置 `CAM_CLOUD_ROUTE_TARGETS`（默认是
+`100.127.2.101/32`），再启动覆盖：
+
+```bash
+docker compose -f compose.yaml -f deploy/compose.test-cloud-growth.yaml up -d --build
+sudo CAM_ENV_FILE="$PWD/deploy/.env" sh deploy/install-cam-cloud-route.sh
+```
+
+路由服务会周期性检查两个容器，容器重建或 Docker 网络地址变化后自动重新安装路由。
+确认方式：
+
+```bash
+systemctl --no-pager status cam-cloud-route.service
+docker exec cloud-artifact-management-cam-core-1 node -e "fetch('https://token.sgwan.cn').then(r => console.log(r.status)).catch(e => { console.error(e); process.exit(1) })"
+```
 
 外部交换区的 `cam-edge` 通过 `hillstone-vpn` 的网络命名空间访问研发内网。首次部署时，需要在 Hillstone 管理界面完成 VPN 登录：
 
