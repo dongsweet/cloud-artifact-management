@@ -50,26 +50,22 @@ SQLite 文件位于 `${CAM_EDGE_DATA_DIR}/edge/edge.sqlite`、`${CAM_CORE_DATA_D
 和 `${CAM_AGENT_DATA_DIR}/agent/agent.sqlite`。SQLite 的 WAL、SHM 和制品目录同样位于对应
 本地目录中。备份时应停止写入或停止对应服务后整体备份目录，不能只复制主 `.sqlite` 文件。
 
-测试机临时使用现有 EasyConnect 时，可叠加 `deploy/compose.test-cloud-growth.yaml`，使
-`cam-core` 加入 `cloud-growth-tracker_default` 网络。测试覆盖不设置应用层 HTTP 代理，
-而是由宿主机的 `cam-cloud-route.service` 在 `cam-core` 网络命名空间内安装精确路由，
-把测试云管地址转发到 `easyconnect-vpn` 容器；cloud-growth 应用仍由
-`cloud-service-new-content/tools/easyconnect-vpn.ps1` 管理自己的策略路由。这些都只用于
-测试环境，不属于正式部署配置。
+测试机通过现有 EasyConnect 访问 VPN 内的测试云管时，`cam-core` 保持在自己的 CAM Docker
+网络中，不加入 cloud-growth 网络，也不经过应用层代理。由测试机上的
+`cloud-service-new-content/tools/easyconnect-vpn.ps1 route-on` 按容器源地址启用策略路由，
+把 cloud-growth 与 `cam-core` 发往 `100.64.0.0/10` 的流量交给 EasyConnect。该网段已包含
+测试云管地址 `100.127.2.0/24`。此配置只用于测试环境，不属于正式部署配置。
 
-在测试机上先在 `.env` 中设置 `CAM_CLOUD_ROUTE_TARGETS`（默认是
-`100.127.2.101/32`），再启动覆盖：
+测试机更新 `cam-core` 时使用常规直连部署文件：
 
 ```bash
-docker compose -f compose.yaml -f deploy/compose.test-cloud-growth.yaml up -d --build
-sudo CAM_ENV_FILE="$PWD/deploy/.env" sh deploy/install-cam-cloud-route.sh
+docker compose -f compose.direct.yaml up -d --build cam-core
 ```
 
-路由服务会周期性检查 CAM 容器，容器重建或 Docker 网络地址变化后自动重新安装容器内路由。
-确认方式：
+容器重建或 IP 变化后，需要重新运行外部脚本的 `route-on`，更新来源 IP 规则。确认方式：
 
 ```bash
-systemctl --no-pager status cam-cloud-route.service
+tools\\easyconnect-vpn.cmd route-status
 docker exec cloud-artifact-management-cam-core-1 node -e "fetch('https://token.sgwan.cn').then(r => console.log(r.status)).catch(e => { console.error(e); process.exit(1) })"
 ```
 
