@@ -197,6 +197,12 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const body = request.body ?? {};
       const recipient = request.principal.type === 'LOCAL_USER' ? auth.getUser(body.recipientId ?? actor.principalId) : null;
       if (request.principal.type === 'LOCAL_USER' && (!recipient || recipient.status !== 'ACTIVE' || recipient.mustChangePassword || !recipient.roles.includes('VALIDATOR'))) throw new Error('下载责任人须为已激活并完成初始密码修改的验证人员');
+      if (body.roundId) {
+        const roundCandidateIds = new Set(store.listRoundCandidates(body.roundId).map((candidate) => candidate.candidate_id));
+        if (!Array.isArray(body.candidateIds) || body.candidateIds.some((candidateId) => !roundCandidateIds.has(candidateId))) throw new Error('候选包必须属于所选候选轮次');
+      } else if (Array.isArray(body.candidateIds) && body.candidateIds.length > 1) {
+        throw new Error('批量创建下载授权时必须指定候选轮次');
+      }
       const grant = downloadGrants.createGrant({
         candidateIds: body.candidateIds,
         principalId: recipient?.id ?? actor.principalId,

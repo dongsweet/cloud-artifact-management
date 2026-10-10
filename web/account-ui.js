@@ -77,7 +77,7 @@ export async function initAccountUI(options) {
   $('#grant-form').onsubmit = (e) => { e.preventDefault(); submit(e.target, async () => {
     const candidateIds = [...document.querySelectorAll('#grant-files input:checked')].map((i) => i.value);
     if (!candidateIds.length) throw new Error('请选择已完成文件');
-    exported = await api('/api/v1/download-grants', { method: 'POST', body: JSON.stringify({ recipientId: $('#grant-recipient').value, candidateIds, expiresAt: new Date(Date.now() + Number($('#grant-days').value) * 86400000).toISOString(), maxTotalSessions: Number($('#grant-total').value), maxSessionsPerFile: Number($('#grant-per-file').value) }) });
+    exported = await api('/api/v1/download-grants', { method: 'POST', body: JSON.stringify({ recipientId: $('#grant-recipient').value, candidateIds, roundId: $('#grant-round').value || null, expiresAt: new Date(Date.now() + Number($('#grant-days').value) * 86400000).toISOString(), maxTotalSessions: Number($('#grant-total').value), maxSessionsPerFile: Number($('#grant-per-file').value) }) });
     exported.items.forEach((i) => { i.downloadUrl = new URL(i.downloadUrl, window.location.origin).href; });
     $('#grant-links').innerHTML = exported.items.map((i) => `<div class="mb-2"><a href="${esc(i.downloadUrl)}" referrerpolicy="no-referrer">${esc(i.fileName)}</a><div class="small font-monospace text-break">SHA-256: ${esc(i.sha256)}</div></div>`).join('');
     modal('grant').hide(); modal('grant-export').show(); if (context().view === 'grants') await renderAccountView('grants');
@@ -104,6 +104,10 @@ async function openGrant(roundId, candidateId) {
   $('#grant-files').innerHTML = '<div class="text-body-secondary">请先选择候选轮次</div>';
   $('#grant-round-filters').classList.remove('d-none');
   $('#grant-candidate-summary').classList.add('d-none');
+  $('#grant-release').innerHTML = '<option value="">请先选择软件产品</option>';
+  $('#grant-release').disabled = true;
+  $('#grant-round').innerHTML = '<option value="">请先选择发布版本</option>';
+  $('#grant-round').disabled = true;
   $('#grant-product').innerHTML = '<option value="">请选择软件产品</option>' + products.items.map((p) => `<option value="${esc(p.productId)}">${esc(p.name)}</option>`).join('');
   $('#grant-product').disabled = false;
   if (candidateId) {
