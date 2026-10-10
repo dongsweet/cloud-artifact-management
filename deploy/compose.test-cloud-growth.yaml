@@ -1,0 +1,15 @@
+# Test-only overlay. It joins cam-core to the existing cloud-growth-tracker
+# Docker network and sends its cloud-manager requests through the EasyConnect
+# HTTP proxy. This file is not part of the production deployment design.
+services:
+  cam-core:
+    networks:
+      default: {}
+      cloud-growth-tracker: {}
+    environment:
+      CAM_CLOUD_HTTP_PROXY: ${CAM_CLOUD_HTTP_PROXY:-http://easyconnect-vpn:8888}
+
+networks:
+  cloud-growth-tracker:
+    external: true
+    name: cloud-growth-tracker_default

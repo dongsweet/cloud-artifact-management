@@ -73,6 +73,7 @@ services:
       CAM_GATE_SHARED_SECRET: ${CAM_GATE_SHARED_SECRET:-}
       CAM_CLOUD_API_BASE_URL: ${CAM_CLOUD_API_BASE_URL:-}
       CAM_CLOUD_API_TOKEN_FILE: ${CAM_CLOUD_API_TOKEN_FILE:-}
+      CAM_CLOUD_HTTP_PROXY: ${CAM_CLOUD_HTTP_PROXY:-}
       CAM_CLOUD_CREATE_PATH: ${CAM_CLOUD_CREATE_PATH:-/api/v1/release-approvals}
       CAM_CLOUD_STATUS_PATH: ${CAM_CLOUD_STATUS_PATH:-/api/v1/release-approvals/{approvalId}}
       CAM_CLOUD_CLOSE_PATH: ${CAM_CLOUD_CLOSE_PATH:-/api/v1/release-approvals/{approvalId}/close}

@@ -50,6 +50,10 @@ SQLite 文件位于 `${CAM_EDGE_DATA_DIR}/edge/edge.sqlite`、`${CAM_CORE_DATA_D
 和 `${CAM_AGENT_DATA_DIR}/agent/agent.sqlite`。SQLite 的 WAL、SHM 和制品目录同样位于对应
 本地目录中。备份时应停止写入或停止对应服务后整体备份目录，不能只复制主 `.sqlite` 文件。
 
+测试机临时使用现有 EasyConnect 时，可叠加 `deploy/compose.test-cloud-growth.yaml`，使
+`cam-core` 加入 `cloud-growth-tracker_default` 网络，并通过 `easyconnect-vpn:8888` 的
+HTTP 代理访问 VPN 内的测试云管。该覆盖文件只用于测试环境，不属于正式部署配置。
+
 外部交换区的 `cam-edge` 通过 `hillstone-vpn` 的网络命名空间访问研发内网。首次部署时，需要在 Hillstone 管理界面完成 VPN 登录：
 
 ```text
