@@ -1,5 +1,5 @@
 import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js?v=20261011-grant-round-scope';
-const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null };
+const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, currentRoundCandidates: [], currentRoundQueue: [], batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null };
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
 
@@ -253,7 +253,8 @@ async function loadRound(generation = state.routeGeneration) {
   state.productId = round.productId;
   state.releaseId = round.releaseId;
   state.currentRound = round;
-  renderRound(round, candidates.items);
+  state.currentRoundCandidates = candidates.items;
+  await renderRound(round, candidates.items);
   await loadRoundFreeze(round, candidates.items);
 }
 
@@ -302,18 +303,19 @@ async function decideFreeze(decision) {
   } catch (error) { showAlert(error.message, 'danger'); }
 }
 
-function renderRound(round, candidates) {
+async function renderRound(round, candidates) {
   $('#round-summary').innerHTML = round ? `<div class="col-md-4"><div class="small-box text-bg-primary"><div class="inner"><h3>${round.roundNo}</h3><p>候选轮次</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-success"><div class="inner"><h3>${round.completedCandidateCount}/${round.candidateCount}</h3><p>已完成候选包</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-secondary"><div class="inner"><h3>${round.baseRoundId ? '继承' : '初始'}</h3><p>轮次来源</p></div></div></div>` : '';
   $('#round-candidate-rows').innerHTML = candidates.length ? candidates.map((item) => `<tr><td>${escapeHtml(item.type ?? '-')}</td><td>${escapeHtml(item.packageKey ?? item.fileName)}</td><td>${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td class="font-monospace small">${escapeHtml(item.finalSha256 ?? item.expectedSha256 ?? '-')}</td><td><span class="badge ${item.mappingSource === 'INHERITED' ? 'text-bg-info' : 'text-bg-secondary'}">${item.mappingSource === 'INHERITED' ? `继承${item.inheritedFromRoundId ? ` · ${escapeHtml(item.inheritedFromRoundId.slice(-8))}` : ''}` : '本轮新增'}</span></td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><div class="d-flex gap-1"><button class="btn btn-outline-primary btn-sm" data-candidate="${escapeHtml(item.candidateId)}" title="查看候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button><button class="btn btn-outline-warning btn-sm" data-round-candidate-delete="${escapeHtml(item.candidateId)}" title="移出本轮；保留候选记录和文件"><i class="bi bi-dash-circle"></i><span class="visually-hidden">移出本轮</span></button></div></td></tr>`).join('') : '<tr><td colspan="8" class="text-center text-body-secondary py-4">本轮暂无候选包</td></tr>';
   document.querySelectorAll('[data-candidate]').forEach((button) => button.addEventListener('click', () => navigate('candidate-detail', { candidateId: button.dataset.candidate, ...paramsForState() })));
   document.querySelectorAll('[data-round-candidate-delete]').forEach((button) => button.addEventListener('click', () => detachRoundCandidate(button.dataset.roundCandidateDelete)));
-  updateRoundQueue(round, candidates);
+  await updateRoundQueue(round, candidates);
 }
 
 async function updateRoundQueue(round, candidates) {
-  if (!round) return;
+  if (!round) { state.currentRoundQueue = []; return; }
   try {
     const queue = (await api('/api/v1/receive-queue')).items.filter((item) => candidates.some((candidate) => candidate.candidateId === item.candidate_id));
+    state.currentRoundQueue = queue;
     const completed = queue.filter((item) => item.status === 'COMPLETED').length;
     const active = queue.filter((item) => item.status === 'RUNNING').length;
     const queued = queue.filter((item) => item.status === 'QUEUED').length;
@@ -324,7 +326,7 @@ async function updateRoundQueue(round, candidates) {
     const button = $('#batch-receive-button');
     button.disabled = state.batchSubmitting || !canEnqueue;
     button.innerHTML = active || queued ? `<i class="bi bi-cloud-download me-1"></i>继续接收未入队包` : '<i class="bi bi-cloud-download me-1"></i>批量接收本轮';
-  } catch { $('#round-queue-summary').textContent = '后台队列状态暂不可用'; }
+  } catch { state.currentRoundQueue = []; $('#round-queue-summary').textContent = '后台队列状态暂不可用'; }
 }
 
 async function batchReceiveRound() {
@@ -431,11 +433,21 @@ function startCandidatePolling() {
 }
 
 function startRoundQueuePolling() {
-  window.clearInterval(state.queueTimer);
-  state.queueTimer = window.setInterval(() => {
-    if (state.view !== 'release-detail' || !state.roundId) return window.clearInterval(state.queueTimer);
-    loadRound(state.routeGeneration).catch(() => {});
-  }, 2000);
+  window.clearTimeout(state.queueTimer);
+  scheduleRoundQueuePolling();
+}
+
+function scheduleRoundQueuePolling() {
+  if (state.view !== 'release-detail' || !state.roundId) return;
+  if (state.currentFreeze?.status === 'APPROVED') { state.queueTimer = null; return; }
+  const receiving = state.currentRoundCandidates.some((candidate) => ['RECEIVING', 'ASSEMBLING'].includes(candidate.status));
+  const queued = state.currentRoundQueue.some((item) => ['QUEUED', 'RUNNING'].includes(item.status));
+  const delay = receiving || queued ? 2000 : state.currentFreeze?.status === 'PENDING_APPROVAL' ? 10000 : 30000;
+  state.queueTimer = window.setTimeout(async () => {
+    if (state.view !== 'release-detail' || !state.roundId) return;
+    try { await loadRound(state.routeGeneration); } catch {}
+    scheduleRoundQueuePolling();
+  }, delay);
 }
 
 async function pauseCandidate() {
