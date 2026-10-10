@@ -2,8 +2,8 @@
 set -eu
 
 # Test-environment route helper for a core container joined to an existing
-# Docker network whose gateway container owns the VPN tunnel. Routes are
-# installed inside each listed client network namespace, so clients use
+# Docker network whose gateway container owns the VPN tunnel. The route is
+# installed inside cam-core's network namespace, so the application uses
 # ordinary TCP/TLS without an HTTP proxy or host-wide routing changes.
 ENV_FILE="${CAM_ENV_FILE:-}"
 if [ -n "$ENV_FILE" ] && [ -r "$ENV_FILE" ]; then
@@ -15,7 +15,7 @@ fi
 
 NETWORK="${CAM_CLOUD_ROUTE_NETWORK:-cloud-growth-tracker_default}"
 GATEWAY_CONTAINER="${CAM_CLOUD_ROUTE_GATEWAY_CONTAINER:-easyconnect-vpn}"
-CLIENT_CONTAINERS="${CAM_CLOUD_ROUTE_CLIENT_CONTAINERS:-cloud-artifact-management-cam-core-1 cloud-growth-tracker-app-1}"
+CORE_CONTAINER="${CAM_CLOUD_ROUTE_CORE_CONTAINER:-cloud-artifact-management-cam-core-1}"
 TARGETS="${CAM_CLOUD_ROUTE_TARGETS:-100.127.2.101/32}"
 WAIT_SECONDS="${CAM_CLOUD_ROUTE_WAIT_SECONDS:-180}"
 CHECK_INTERVAL="${CAM_CLOUD_ROUTE_CHECK_INTERVAL:-10}"
@@ -24,20 +24,16 @@ log() { echo "[cam-cloud-route] $*"; }
 
 install_routes() {
   gateway_ip=$(docker inspect "$GATEWAY_CONTAINER" -f "{{with index .NetworkSettings.Networks \"$NETWORK\"}}{{.IPAddress}}{{end}}" 2>/dev/null || true)
-  [ -n "$gateway_ip" ] || return 1
+  core_pid=$(docker inspect "$CORE_CONTAINER" -f '{{.State.Pid}}' 2>/dev/null || true)
+  [ -n "$gateway_ip" ] && [ -n "$core_pid" ] && [ "$core_pid" != "0" ] || return 1
 
-  for client_container in $CLIENT_CONTAINERS; do
-    client_pid=$(docker inspect "$client_container" -f '{{.State.Pid}}' 2>/dev/null || true)
-    [ -n "$client_pid" ] && [ "$client_pid" != "0" ] || return 1
+  route_info=$(nsenter -t "$core_pid" -n ip -4 route get "$gateway_ip" 2>/dev/null || true)
+  interface=$(printf '%s\n' "$route_info" | awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+  [ -n "$interface" ] || return 1
 
-    route_info=$(nsenter -t "$client_pid" -n ip -4 route get "$gateway_ip" 2>/dev/null || true)
-    interface=$(printf '%s\n' "$route_info" | awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
-    [ -n "$interface" ] || return 1
-
-    for target in $TARGETS; do
-      nsenter -t "$client_pid" -n ip route replace "$target" via "$gateway_ip" dev "$interface"
-      log "route installed: container=$client_container target=$target via $gateway_ip dev $interface"
-    done
+  for target in $TARGETS; do
+    nsenter -t "$core_pid" -n ip route replace "$target" via "$gateway_ip" dev "$interface"
+    log "route installed: container=$CORE_CONTAINER target=$target via $gateway_ip dev $interface"
   done
 }
 
