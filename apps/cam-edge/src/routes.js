@@ -168,6 +168,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
 
   app.post('/api/v1/freezes/:freezeId/decision', { bodyLimit: 8192 }, async (request, reply) => {
+    if (process.env.CAM_APPROVAL_MODE === 'cloud') return error(reply, 409, 'cloud_workflow_required', '生产环境必须通过 cam-core 和统一云管完成审批');
     try { return reply.send(freezes.decide(request.params.freezeId, request.body ?? {}, principal(request).principalId)); }
     catch (err) { return error(reply, err.code === 'freeze_not_found' ? 404 : err.code === 'self_approval_forbidden' || err.code === 'freeze_not_pending' ? 409 : 400, err.code ?? 'freeze_decision_failed', err.message); }
   });
