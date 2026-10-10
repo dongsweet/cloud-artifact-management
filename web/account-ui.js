@@ -23,7 +23,7 @@ function markup() {
   document.body.insertAdjacentHTML('beforeend', `<div id="account-login" class="position-fixed top-0 start-0 w-100 h-100 bg-body-tertiary d-flex align-items-center justify-content-center" style="z-index:2000"><div class="card shadow" style="width:380px;max-width:95vw"><div class="card-header"><h3 class="card-title">统一运维外部交换区 · 登录</h3></div><form id="login-form"><div class="card-body"><div id="login-error" class="alert alert-danger d-none"></div>${input('login-name', '用户名', 'text', 'autocomplete="username" required')}${input('login-password', '密码', 'password', 'autocomplete="current-password" required')}<p class="small text-body-secondary">使用外部交换区独立账号。</p></div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">登录</button></div></form></div></div>`
     + dialog('password', '修改密码', `<p>首次登录或重置密码后须先修改密码，修改后重新登录。</p>${input('old-password', '原密码', 'password', 'autocomplete="current-password" required')}${input('new-password', '新密码（至少 12 个字符）', 'password', 'autocomplete="new-password" minlength="12" required')}${input('repeat-password', '确认新密码', 'password', 'autocomplete="new-password" minlength="12" required')}`)
     + dialog('user', '账号管理', `${input('user-name', '用户名', 'text', 'pattern="[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}" required')}${input('user-display', '姓名', 'text', 'maxlength="100" required')}<div id="user-password-field">${input('user-password', '初始 / 重置密码（至少 12 个字符）', 'password', 'minlength="12" autocomplete="new-password"')}</div><div id="user-roles"></div><label for="user-status" class="form-label mt-3">状态</label><select id="user-status" class="form-select"><option value="ACTIVE">启用</option><option value="DISABLED">禁用</option></select><p class="small text-body-secondary mt-3">创建 / 重置后须修改初始密码。保存角色、状态或重置密码会撤销登录会话；保存账号也会解除登录锁定。</p>`)
-    + dialog('grant', '创建下载授权', `<label for="grant-recipient" class="form-label">下载责任人</label><select id="grant-recipient" class="form-select mb-3" required></select><div class="row"><div class="col-md-4">${input('grant-days', '有效天数（1–30）', 'number', 'min="1" max="30" value="1" required')}</div><div class="col-md-4">${input('grant-total', '累计会话次数', 'number', 'min="1" max="10000" value="20" required')}</div><div class="col-md-4">${input('grant-per-file', '每文件会话次数', 'number', 'min="1" max="10000" value="2" required')}</div></div><p class="small text-body-secondary">续传携带同一会话 ID 不重复扣次数。只可选择已完成并通过摘要校验的文件。</p><div id="grant-files" style="max-height:300px;overflow:auto"></div>`)
+    + dialog('grant', '创建下载授权', `<div id="grant-round-filters"><div class="row"><div class="col-md-4"><label for="grant-product" class="form-label">软件产品</label><select id="grant-product" class="form-select mb-3"><option value="">请选择软件产品</option></select></div><div class="col-md-4"><label for="grant-release" class="form-label">发布版本</label><select id="grant-release" class="form-select mb-3" disabled><option value="">请先选择软件产品</option></select></div><div class="col-md-4"><label for="grant-round" class="form-label">候选轮次</label><select id="grant-round" class="form-select mb-3" disabled><option value="">请先选择发布版本</option></select></div></div></div><div id="grant-candidate-summary" class="alert alert-light border d-none"></div><label for="grant-recipient" class="form-label">下载责任人</label><select id="grant-recipient" class="form-select mb-3" required></select><div class="row"><div class="col-md-4">${input('grant-days', '有效天数（1–30）', 'number', 'min="1" max="30" value="1" required')}</div><div class="col-md-4">${input('grant-total', '累计会话次数', 'number', 'min="1" max="10000" value="20" required')}</div><div class="col-md-4">${input('grant-per-file', '每文件会话次数', 'number', 'min="1" max="10000" value="2" required')}</div></div><p class="small text-body-secondary">续传携带同一会话 ID 不重复扣次数。只可选择当前候选轮次中已完成并通过摘要校验的文件。</p><div id="grant-files" style="max-height:300px;overflow:auto"></div>`)
     + `<div class="modal fade" id="grant-export-modal" tabindex="-1" aria-label="授权清单" aria-hidden="true"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">下载授权清单</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div><div class="modal-body"><div class="alert alert-warning">带 Token 链接只在本次创建后显示，请及时导出并交给责任人。数据库不保存明文 Token；持有链接者可使用下载授权。</div><div id="grant-links"></div><p class="small mt-3">测试服务器下载：首次保存响应头 X-CAM-Download-Session；续传使用 Range 与同名请求头携带会话 ID。也可使用 Authorization: Bearer 传 Token。下载完成请核对 SHA-256。</p></div><div class="modal-footer"><button id="export-grant-json" class="btn btn-outline-primary"><i class="bi bi-filetype-json me-1"></i>导出 JSON</button><button id="export-grant-text" class="btn btn-outline-primary"><i class="bi bi-download me-1"></i>导出链接列表</button><button id="redownload-grant-list" class="btn btn-primary"><i class="bi bi-arrow-repeat me-1"></i>重新下载列表文件</button></div></div></div></div>`);
   function section(id, title, content, action) {
     return `<section id="view-${id}" class="d-none"><div class="card"><div class="card-header cam-card-header"><h3 class="card-title">${title}</h3>${action}</div><div class="card-body">${content}</div></div></section>`;
@@ -71,6 +71,9 @@ export async function initAccountUI(options) {
   $('#new-grant').onclick = () => openGrant().catch((e) => alert(e.message, 'danger'));
   $('#round-grant').onclick = () => openGrant(context().roundId).catch((e) => alert(e.message, 'danger'));
   $('#candidate-grant').onclick = () => openGrant(null, context().candidateId).catch((e) => alert(e.message, 'danger'));
+  $('#grant-product').onchange = () => loadGrantReleases().catch((e) => alert(e.message, 'danger'));
+  $('#grant-release').onchange = () => loadGrantRounds().catch((e) => alert(e.message, 'danger'));
+  $('#grant-round').onchange = () => loadGrantFiles().catch((e) => alert(e.message, 'danger'));
   $('#grant-form').onsubmit = (e) => { e.preventDefault(); submit(e.target, async () => {
     const candidateIds = [...document.querySelectorAll('#grant-files input:checked')].map((i) => i.value);
     if (!candidateIds.length) throw new Error('请选择已完成文件');
@@ -95,13 +98,78 @@ function openUser(id = '', mode = 'edit') {
   $('#user-error').classList.add('d-none'); modal('user').show();
 }
 async function openGrant(roundId, candidateId) {
-  const [people, files] = await Promise.all([api('/api/v1/validators'), candidateId ? api(`/api/v1/candidates/${encodeURIComponent(candidateId)}`).then((c) => ({ items: [c] })) : api(roundId ? `/api/v1/rounds/${encodeURIComponent(roundId)}/candidates` : '/api/v1/candidates?status=COMPLETED&limit=200')]);
-  const completed = files.items.filter((c) => c.status === 'COMPLETED');
-  if (!completed.length) throw new Error('没有可交付的已完成文件');
+  const [people, products] = await Promise.all([api('/api/v1/validators'), api('/api/v1/products')]);
   $('#grant-recipient').innerHTML = people.items.map((p) => `<option value="${esc(p.id)}">${esc(p.displayName)} (${esc(p.username)})</option>`).join('');
   if (people.items.some((p) => p.id === user.id)) $('#grant-recipient').value = user.id;
-  $('#grant-files').innerHTML = completed.map((c) => `<label class="form-check mb-2"><input class="form-check-input" type="checkbox" value="${esc(c.candidateId)}" checked><span class="form-check-label">${esc(c.fileName)} <small class="text-body-secondary">${esc(c.version)} / ${esc(c.architecture)}</small></span></label>`).join('');
+  $('#grant-files').innerHTML = '<div class="text-body-secondary">请先选择候选轮次</div>';
+  $('#grant-round-filters').classList.remove('d-none');
+  $('#grant-candidate-summary').classList.add('d-none');
+  $('#grant-product').innerHTML = '<option value="">请选择软件产品</option>' + products.items.map((p) => `<option value="${esc(p.productId)}">${esc(p.name)}</option>`).join('');
+  $('#grant-product').disabled = false;
+  if (candidateId) {
+    const candidate = await api(`/api/v1/candidates/${encodeURIComponent(candidateId)}`);
+    if (candidate.status !== 'COMPLETED') throw new Error('只能授权已完成的候选包');
+    $('#grant-round-filters').classList.add('d-none');
+    $('#grant-candidate-summary').textContent = `候选包：${candidate.fileName}（${candidate.version} / ${candidate.architecture}）`;
+    $('#grant-candidate-summary').classList.remove('d-none');
+    renderGrantFiles([candidate]);
+  } else if (roundId) {
+    const round = await api(`/api/v1/rounds/${encodeURIComponent(roundId)}`);
+    $('#grant-product').value = round.productId;
+    await loadGrantReleases(round.releaseId, roundId);
+  } else {
+    $('#grant-release').innerHTML = '<option value="">请先选择软件产品</option>';
+    $('#grant-release').disabled = true;
+    $('#grant-round').innerHTML = '<option value="">请先选择发布版本</option>';
+    $('#grant-round').disabled = true;
+  }
   $('#grant-error').classList.add('d-none'); modal('grant').show();
+}
+
+async function loadGrantReleases(selectedReleaseId = null, selectedRoundId = null) {
+  const productId = $('#grant-product').value;
+  $('#grant-release').innerHTML = '<option value="">请选择发布版本</option>';
+  $('#grant-round').innerHTML = '<option value="">请先选择发布版本</option>';
+  $('#grant-release').disabled = !productId;
+  $('#grant-round').disabled = true;
+  $('#grant-files').innerHTML = '<div class="text-body-secondary">请先选择候选轮次</div>';
+  if (!productId) return;
+  const releases = (await api(`/api/v1/releases?productId=${encodeURIComponent(productId)}`)).items;
+  $('#grant-release').innerHTML = '<option value="">请选择发布版本</option>' + releases.map((r) => `<option value="${esc(r.releaseId)}">${esc(r.version)}</option>`).join('');
+  if (selectedReleaseId) {
+    $('#grant-release').value = selectedReleaseId;
+    await loadGrantRounds(selectedRoundId);
+  }
+}
+
+async function loadGrantRounds(selectedRoundId = null) {
+  const releaseId = $('#grant-release').value;
+  $('#grant-round').innerHTML = '<option value="">请选择候选轮次</option>';
+  $('#grant-round').disabled = !releaseId;
+  $('#grant-files').innerHTML = '<div class="text-body-secondary">请先选择候选轮次</div>';
+  if (!releaseId) return;
+  const rounds = (await api(`/api/v1/releases/${encodeURIComponent(releaseId)}/rounds`)).items;
+  $('#grant-round').innerHTML = '<option value="">请选择候选轮次</option>' + rounds.map((r) => `<option value="${esc(r.roundId)}">第 ${r.roundNo} 轮</option>`).join('');
+  if (selectedRoundId) {
+    $('#grant-round').value = selectedRoundId;
+    await loadGrantFiles();
+  }
+}
+
+async function loadGrantFiles() {
+  const roundId = $('#grant-round').value;
+  if (!roundId) {
+    $('#grant-files').innerHTML = '<div class="text-body-secondary">请先选择候选轮次</div>';
+    return;
+  }
+  const files = (await api(`/api/v1/rounds/${encodeURIComponent(roundId)}/candidates`)).items;
+  renderGrantFiles(files.filter((c) => c.status === 'COMPLETED'));
+}
+
+function renderGrantFiles(completed) {
+  $('#grant-files').innerHTML = completed.length
+    ? completed.map((c) => `<label class="form-check mb-2"><input class="form-check-input" type="checkbox" value="${esc(c.candidateId)}" checked><span class="form-check-label">${esc(c.fileName)} <small class="text-body-secondary">${esc(c.version)} / ${esc(c.architecture)}</small></span></label>`).join('')
+    : '<div class="text-body-secondary">当前候选轮次没有已完成的候选包</div>';
 }
 function saveExport(type) {
   if (!exported) return;
