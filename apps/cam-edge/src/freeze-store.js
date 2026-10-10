@@ -10,6 +10,7 @@ export class FreezeStore {
   constructor({ db, dataDir, candidateStore }) {
     this.db = db;
     this.dataDir = join(dataDir, 'verification-reports');
+    this.exchangeDir = join(dataDir, 'exchange', 'outbox', 'approval-requests');
     this.candidates = candidateStore;
     db.exec(`CREATE TABLE IF NOT EXISTS round_freezes (
       freeze_id TEXT PRIMARY KEY,
@@ -134,7 +135,7 @@ export class FreezeStore {
     return this.get(freezeId);
   }
 
-  submit(freezeId, actorId) {
+  async submit(freezeId, actorId) {
     const freeze = this.get(freezeId);
     if (!freeze) throw Object.assign(new Error('freeze request not found'), { code: 'freeze_not_found' });
     if (freeze.submittedBy !== actorId) throw Object.assign(new Error('只有草稿创建人可以提交固化申请'), { code: 'freeze_owner_required' });
@@ -146,7 +147,31 @@ export class FreezeStore {
     const comparable = (value) => { const { createdAt, ...rest } = value; return JSON.stringify(rest); };
     if (comparable(snapshot) !== comparable(current)) throw Object.assign(new Error('候选清单在申请期间发生变化，请重新创建固化申请'), { code: 'manifest_changed' });
     const timestamp = now();
-    this.db.prepare("UPDATE round_freezes SET status = 'PENDING_APPROVAL', submitted_at = ?, updated_at = ? WHERE freeze_id = ? AND status = 'DRAFT'").run(timestamp, timestamp, freezeId);
+    const envelope = {
+      schemaVersion: 1,
+      type: 'VERIFICATION_APPROVAL_REQUEST',
+      requestId: freeze.freezeId,
+      freezeId: freeze.freezeId,
+      roundId: freeze.roundId,
+      releaseId: freeze.manifest.releaseId,
+      manifestSha256: freeze.manifestSha256,
+      reportSha256: freeze.reportSha256,
+      reportFileName: freeze.reportFileName,
+      conclusion: freeze.conclusion,
+      submittedBy: freeze.submittedBy,
+      submittedAt: timestamp
+    };
+    await mkdir(this.exchangeDir, { recursive: true });
+    const destination = join(this.exchangeDir, `${freezeId}.json`);
+    const temporary = `${destination}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify(envelope)}\n`, { flag: 'wx', mode: 0o600 });
+      await rename(temporary, destination);
+      this.db.prepare("UPDATE round_freezes SET status = 'PENDING_APPROVAL', submitted_at = ?, updated_at = ? WHERE freeze_id = ? AND status = 'DRAFT'").run(timestamp, timestamp, freezeId);
+    } catch (error) {
+      await rm(temporary, { force: true });
+      throw error;
+    }
     return this.get(freezeId);
   }
 

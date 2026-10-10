@@ -163,7 +163,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
 
   app.post('/api/v1/freezes/:freezeId/submit', async (request, reply) => {
-    try { return reply.send(freezes.submit(request.params.freezeId, principal(request).principalId)); }
+    try { return reply.send(await freezes.submit(request.params.freezeId, principal(request).principalId)); }
     catch (err) { return error(reply, err.code === 'freeze_not_found' ? 404 : err.code === 'freeze_owner_required' ? 403 : ['freeze_not_draft', 'round_locked', 'manifest_changed'].includes(err.code) ? 409 : 400, err.code ?? 'freeze_submit_failed', err.message); }
   });
 

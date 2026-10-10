@@ -37,6 +37,7 @@ services:
     volumes:
       - ${CAM_EDGE_DATA_DIR:-/var/lib/cloud-artifact-management/edge}:/data
     environment:
+      NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 3101
       DATA_DIR: /data/edge
@@ -65,8 +66,16 @@ services:
     volumes:
       - ${CAM_CORE_DATA_DIR:-/var/lib/cloud-artifact-management/core}:/data
     environment:
+      NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 3102
+      CAM_GATE_SHARED_SECRET: ${CAM_GATE_SHARED_SECRET:-}
+      CAM_CLOUD_API_BASE_URL: ${CAM_CLOUD_API_BASE_URL:-}
+      CAM_CLOUD_API_TOKEN_FILE: ${CAM_CLOUD_API_TOKEN_FILE:-}
+      CAM_CLOUD_CREATE_PATH: ${CAM_CLOUD_CREATE_PATH:-/api/v1/release-approvals}
+      CAM_CLOUD_STATUS_PATH: ${CAM_CLOUD_STATUS_PATH:-/api/v1/release-approvals/{approvalId}}
+      CAM_CLOUD_CLOSE_PATH: ${CAM_CLOUD_CLOSE_PATH:-/api/v1/release-approvals/{approvalId}/close}
+      CAM_CLOUD_TIMEOUT_MS: ${CAM_CLOUD_TIMEOUT_MS:-10000}
     networks:
       - default
     restart: unless-stopped
