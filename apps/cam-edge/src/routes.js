@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, rm, rename, stat } from 'node:fs/promises';
 import { once } from 'node:events';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { assembleChunks } from '../../../libs/cam-transfer/src/transfer.js';
 import { previewCandidateWorkbook } from './candidate-import.js';
 
@@ -118,13 +118,19 @@ function candidateResponse(candidate) {
 export async function finalizeCandidate(store, candidateId) {
   const candidate = store.get(candidateId);
   if (!candidate) throw new Error('candidate not found');
-  if (candidate.status === 'COMPLETED') return candidate;
+  const partsDir = join(store.candidateDir(candidate.candidate_id), 'parts');
+  if (candidate.status === 'COMPLETED') {
+    await rm(partsDir, { recursive: true, force: true });
+    return candidate;
+  }
   const missing = store.missingParts(candidate.candidate_id);
   if (missing.length > 0) throw new Error(`candidate has missing parts: ${missing.join(',')}`);
   store.markAssembling(candidateId);
   const manifest = { size: candidate.expected_size, sha256: candidate.expected_sha256 ?? '', transfer: { chunks: store.listParts(candidate.candidate_id).map((part) => ({ index: part.part_index, offset: part.offset, size: part.size, sha256: part.sha256 })) } };
   const assembled = await assembleChunks({ taskDir: store.candidateDir(candidate.candidate_id), manifest, outputPath: candidate.source_path });
-  return store.complete(candidate.candidate_id, { finalSha256: assembled.sha256, finalMd5: candidate.expected_md5 ? await md5File(assembled.path) : null });
+  const completed = store.complete(candidate.candidate_id, { finalSha256: assembled.sha256, finalMd5: candidate.expected_md5 ? await md5File(assembled.path) : null });
+  await rm(partsDir, { recursive: true, force: true });
+  return completed;
 }
 
 export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes }) {
@@ -615,13 +621,12 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   app.post('/api/v1/candidates/:candidateId/complete', async (request, reply) => {
     const candidate = store.get(request.params.candidateId);
     if (!candidate) return error(reply, 404, 'candidate_not_found', 'candidate not found');
-    if (candidate.status === 'COMPLETED') return reply.send(candidateResponse(candidate));
     try {
       const completed = await finalizeCandidate(store, candidate.candidate_id);
       return reply.send(candidateResponse(completed));
     } catch (err) {
       if (store.missingParts(candidate.candidate_id)?.length > 0) return error(reply, 409, 'parts_missing', err.message);
-      store.fail(candidate.candidate_id, err);
+      if (store.get(candidate.candidate_id)?.status !== 'COMPLETED') store.fail(candidate.candidate_id, err);
       return error(reply, 422, 'candidate_integrity_failed', err.message);
     }
   });

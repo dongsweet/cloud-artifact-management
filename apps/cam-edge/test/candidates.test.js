@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -35,6 +35,13 @@ test('cam-edge accepts resumable candidate parts and finalizes the candidate', a
   assert.equal(completed.statusCode, 200);
   assert.equal(completed.json().status, 'COMPLETED');
   assert.equal(await readFile(join(dataDir, 'candidates', candidate.candidateId, 'source', 'release.bin'), 'utf8'), 'abcdefghij');
+  await assert.rejects(access(join(dataDir, 'candidates', candidate.candidateId, 'parts')));
+  assert.equal(app.candidateStore.listParts(candidate.candidateId).length, 3, 'keep verified chunk metadata for audit and progress');
+  const stalePartsDir = join(dataDir, 'candidates', candidate.candidateId, 'parts');
+  await mkdir(stalePartsDir, { recursive: true });
+  await writeFile(join(stalePartsDir, 'part-000000'), 'stale');
+  assert.equal((await app.inject({ method: 'POST', url: `/api/v1/candidates/${candidate.candidateId}/complete` })).statusCode, 200);
+  await assert.rejects(access(stalePartsDir), 'idempotent completion should clean up legacy parts');
   await app.close();
 
   const reopened = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
@@ -96,6 +103,7 @@ test('candidate digest mismatch reports both expected and actual MD5 values', as
   assert.equal(completed.statusCode, 422);
   assert.match(completed.json().error.message, new RegExp(`expected: ${expectedMd5}`));
   assert.match(completed.json().error.message, new RegExp(`actual: ${actualMd5}`));
+  await access(join(dataDir, 'candidates', candidate.candidateId, 'parts', 'part-000000'));
   await app.close();
 });
 
