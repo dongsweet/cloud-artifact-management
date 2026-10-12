@@ -39,7 +39,8 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret }) {
       const item = store.get(request.params.requestId);
       if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
       if (!item.cloudApprovalId) return error(reply, 409, 'cloud_submission_pending', 'cloud approval has not been created');
-      return reply.send({ item: store.applyCloudStatus(item.requestId, await cloud.getApproval(item.cloudApprovalId)) });
+      if (item.closeStatus === 'CLOSED') return reply.send({ item });
+      return reply.send({ item: store.applyCloudStatus(item.requestId, await cloud.getApproval(item.cloudApprovalId, item)) });
     } catch (err) { store.markError(request.params.requestId, err); return error(reply, err.code === 'cloud_not_configured' ? 503 : 502, err.code ?? 'cloud_sync_failed', err.message); }
   });
 

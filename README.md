@@ -46,6 +46,16 @@ docker compose -f compose.direct.yaml up -d --build
 各安全区的 SQLite 数据库和制品文件。容器只把这些目录绑定到 `/data`，业务数据不再存放在
 Docker volume 中。升级镜像或重建容器前先执行 `sudo -E sh deploy/init-data-directories.sh`。
 
+`cam-core` 对接统一云管时，先将 `deploy/.env.example` 复制为目标主机的 `deploy/.env`，再使用同一个环境文件启动 Compose：
+
+```bash
+cp deploy/.env.example deploy/.env
+${EDITOR:-vi} deploy/.env
+docker compose --env-file deploy/.env up -d --build cam-core
+```
+
+云管的接口基地址、服务身份和密钥只配置在目标主机的 `deploy/.env`；具体 EOMS 接口路径固定在 `cam-core` 代码中，不作为环境配置项。工单级别、来源、业务类型、所属中心和运维团队填写可读的名称/路径，`cam-core` 创建工单前会从当前云管环境实时解析数字 ID，并将本次解析快照留在审批记录中；不要把测试环境或正式环境的数字 ID 写进代码。处理人 ID 用 `CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS` 配置，多个 ID 以英文逗号分隔。
+
 SQLite 文件位于 `${CAM_EDGE_DATA_DIR}/edge/edge.sqlite`、`${CAM_CORE_DATA_DIR}/core/core.sqlite`
 和 `${CAM_AGENT_DATA_DIR}/agent/agent.sqlite`。SQLite 的 WAL、SHM 和制品目录同样位于对应
 本地目录中。备份时应停止写入或停止对应服务后整体备份目录，不能只复制主 `.sqlite` 文件。

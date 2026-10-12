@@ -11,7 +11,7 @@ function required(value, name) {
 
 function response(row) {
   if (!row) return null;
-  return { requestId: row.request_id, freezeId: row.freeze_id, roundId: row.round_id, releaseId: row.release_id, status: row.status, manifestSha256: row.manifest_sha256, reportSha256: row.report_sha256, cloudApprovalId: row.cloud_approval_id, cloudTransferTaskId: row.cloud_transfer_task_id, cloudStatus: row.cloud_status, cloudCheckedAt: row.cloud_checked_at, approvedAt: row.approved_at, expiresAt: row.expires_at, closeStatus: row.close_status, closeCheckedAt: row.close_checked_at, createdAt: row.created_at, updatedAt: row.updated_at, lastError: row.last_error, transferTaskId: row.transfer_task_id };
+  return { requestId: row.request_id, freezeId: row.freeze_id, roundId: row.round_id, releaseId: row.release_id, status: row.status, manifestSha256: row.manifest_sha256, reportSha256: row.report_sha256, cloudApprovalId: row.cloud_approval_id, cloudTransferTaskId: row.cloud_transfer_task_id, cloudStatus: row.cloud_status, cloudWorkflowStep: row.cloud_workflow_step, cloudCheckedAt: row.cloud_checked_at, cloudMappingSnapshot: row.cloud_mapping_json ? JSON.parse(row.cloud_mapping_json) : null, cloudRequestSnapshot: row.cloud_request_json ? JSON.parse(row.cloud_request_json) : null, approvedAt: row.approved_at, expiresAt: row.expires_at, closeStatus: row.close_status, closeCheckedAt: row.close_checked_at, createdAt: row.created_at, updatedAt: row.updated_at, lastError: row.last_error, transferTaskId: row.transfer_task_id };
 }
 
 export class CoreStore {
@@ -21,7 +21,8 @@ export class CoreStore {
       CREATE TABLE IF NOT EXISTS core_approval_requests (
         request_id TEXT PRIMARY KEY, freeze_id TEXT NOT NULL UNIQUE, round_id TEXT NOT NULL, release_id TEXT NOT NULL,
         status TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, report_sha256 TEXT, envelope_json TEXT NOT NULL,
-        cloud_approval_id TEXT, cloud_transfer_task_id TEXT, cloud_status TEXT, cloud_checked_at TEXT,
+        cloud_approval_id TEXT, cloud_transfer_task_id TEXT, cloud_status TEXT, cloud_workflow_step TEXT, cloud_checked_at TEXT,
+        cloud_mapping_json TEXT, cloud_request_json TEXT,
         approved_at TEXT, expires_at TEXT, close_status TEXT, close_checked_at TEXT, last_error TEXT,
         transfer_task_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
@@ -35,6 +36,10 @@ export class CoreStore {
         status TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
     `);
+    const columns = new Set(db.prepare('PRAGMA table_info(core_approval_requests)').all().map((column) => column.name));
+    if (!columns.has('cloud_mapping_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_mapping_json TEXT');
+    if (!columns.has('cloud_request_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_request_json TEXT');
+    if (!columns.has('cloud_workflow_step')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_workflow_step TEXT');
   }
 
   get(requestId) { return response(this.db.prepare('SELECT * FROM core_approval_requests WHERE request_id = ?').get(requestId)); }
@@ -64,7 +69,8 @@ export class CoreStore {
   markCloudSubmitted(requestId, result) {
     const approvalId = required(result.approvalId, 'approvalId');
     const timestamp = now();
-    this.db.prepare("UPDATE core_approval_requests SET cloud_approval_id = ?, cloud_status = ?, status = 'CLOUD_SUBMITTED', last_error = NULL, updated_at = ? WHERE request_id = ?").run(approvalId, result.status ?? 'PENDING', timestamp, requestId);
+    this.db.prepare("UPDATE core_approval_requests SET cloud_approval_id = ?, cloud_status = ?, cloud_mapping_json = ?, cloud_request_json = ?, status = 'CLOUD_SUBMITTED', last_error = NULL, updated_at = ? WHERE request_id = ?")
+      .run(approvalId, result.status ?? 'PENDING', result.mappingSnapshot ? JSON.stringify(result.mappingSnapshot) : null, result.requestBody ? JSON.stringify(result.requestBody) : null, timestamp, requestId);
     return this.get(requestId);
   }
 
@@ -74,12 +80,13 @@ export class CoreStore {
     const cloudStatus = required(result.status, 'status').toUpperCase();
     if (result.approvalId && current.cloudApprovalId && result.approvalId !== current.cloudApprovalId) throw Object.assign(new Error('cloud approval ID does not match request'), { code: 'cloud_identity_mismatch' });
     if (cloudStatus === 'APPROVED') {
-      if (result.manifestSha256 && result.manifestSha256.toLowerCase() !== current.manifestSha256) throw Object.assign(new Error('cloud approved manifest does not match request'), { code: 'cloud_manifest_mismatch' });
+      if (!result.manifestSha256) throw Object.assign(new Error('cloud approved result does not include the approved manifest'), { code: 'cloud_result_invalid' });
+      if (result.manifestSha256.toLowerCase() !== current.manifestSha256) throw Object.assign(new Error('cloud approved manifest does not match request'), { code: 'cloud_manifest_mismatch' });
       if (!result.transferTaskId) throw Object.assign(new Error('approved result must include transferTaskId'), { code: 'cloud_result_invalid' });
     }
-    const status = cloudStatus === 'APPROVED' ? 'APPROVED' : cloudStatus === 'REJECTED' ? 'REJECTED' : 'CLOUD_SUBMITTED';
+    const status = cloudStatus === 'APPROVED' ? 'APPROVED' : cloudStatus === 'REJECTED' ? 'REJECTED' : cloudStatus === 'UNKNOWN' ? 'CLOUD_STATUS_UNCONFIRMED' : 'CLOUD_SUBMITTED';
     const timestamp = now();
-    this.db.prepare("UPDATE core_approval_requests SET status = ?, cloud_status = ?, cloud_approval_id = COALESCE(?, cloud_approval_id), cloud_transfer_task_id = COALESCE(?, cloud_transfer_task_id), cloud_checked_at = ?, approved_at = ?, expires_at = ?, last_error = NULL, updated_at = ? WHERE request_id = ?").run(status, cloudStatus, result.approvalId ?? null, result.transferTaskId ?? null, timestamp, status === 'APPROVED' ? (result.approvedAt ?? timestamp) : null, result.expiresAt ?? null, timestamp, requestId);
+    this.db.prepare("UPDATE core_approval_requests SET status = ?, cloud_status = ?, cloud_workflow_step = ?, cloud_approval_id = COALESCE(?, cloud_approval_id), cloud_transfer_task_id = COALESCE(?, cloud_transfer_task_id), cloud_checked_at = ?, approved_at = ?, expires_at = ?, last_error = NULL, updated_at = ? WHERE request_id = ?").run(status, cloudStatus, result.workflowStep ?? null, result.approvalId ?? null, result.transferTaskId ?? null, timestamp, status === 'APPROVED' ? (result.approvedAt ?? timestamp) : null, result.expiresAt ?? null, timestamp, requestId);
     return this.get(requestId);
   }
 

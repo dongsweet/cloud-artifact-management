@@ -22,9 +22,10 @@ const envelope = {
 test('cam-core only authorizes transfer after cloud approval is queried and matched', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-'));
   const calls = [];
+  let cloudStatus = 'UNKNOWN';
   const cloud = {
-    async createApproval(value) { calls.push(['create', value]); return { approvalId: 'APR-1', status: 'PENDING' }; },
-    async getApproval(id) { calls.push(['get', id]); return { approvalId: id, status: 'APPROVED', transferTaskId: 'TR-1', manifestSha256, expiresAt: new Date(Date.now() + 60_000).toISOString() }; },
+    async createApproval(value) { calls.push(['create', value]); return { approvalId: 'APR-1', status: 'PENDING', mappingSnapshot: { priority: { id: '394' } }, requestBody: { priority: '394' } }; },
+    async getApproval(id) { calls.push(['get', id]); return { approvalId: id, status: cloudStatus, workflowStep: cloudStatus === 'UNKNOWN' ? '已结束' : '工单确认', transferTaskId: cloudStatus === 'APPROVED' ? 'TR-1' : undefined, manifestSha256: cloudStatus === 'APPROVED' ? manifestSha256 : undefined, expiresAt: new Date(Date.now() + 60_000).toISOString() }; },
     async closeApproval(id) { calls.push(['close', id]); return { status: 'CLOSED' }; }
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test' });
@@ -34,13 +35,23 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     assert.equal(received.statusCode, 202, received.body);
     assert.equal(received.json().item.status, 'CLOUD_SUBMITTED');
     assert.deepEqual(calls[0][0], 'create');
+    assert.deepEqual(received.json().item.cloudMappingSnapshot, { priority: { id: '394' } });
+    assert.deepEqual(received.json().item.cloudRequestSnapshot, { priority: '394' });
 
     const beforeSync = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/transfer-authorize', payload: { manifestSha256 } });
     assert.equal(beforeSync.statusCode, 409);
 
     const synced = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/sync', payload: {} });
     assert.equal(synced.statusCode, 200, synced.body);
-    assert.equal(synced.json().item.status, 'APPROVED');
+    assert.equal(synced.json().item.status, 'CLOUD_STATUS_UNCONFIRMED');
+    assert.equal(synced.json().item.cloudWorkflowStep, '已结束');
+    const unconfirmedTransfer = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/transfer-authorize', payload: { manifestSha256 } });
+    assert.equal(unconfirmedTransfer.statusCode, 409);
+
+    cloudStatus = 'APPROVED';
+    const approved = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/sync', payload: {} });
+    assert.equal(approved.statusCode, 200, approved.body);
+    assert.equal(approved.json().item.status, 'APPROVED');
     const authorized = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/transfer-authorize', payload: { manifestSha256 } });
     assert.equal(authorized.statusCode, 200, authorized.body);
     assert.equal(authorized.json().item.transferTaskId, 'TR-1');
@@ -58,6 +69,9 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     assert.equal(closed.statusCode, 200, closed.body);
     assert.equal(closed.json().item.status, 'CLOSED');
     assert.deepEqual(calls.at(-1), ['close', 'APR-1']);
+    const syncAfterClose = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/sync', payload: {} });
+    assert.equal(syncAfterClose.json().item.status, 'CLOSED');
+    assert.equal(calls.filter(([kind]) => kind === 'get').length, 2);
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
