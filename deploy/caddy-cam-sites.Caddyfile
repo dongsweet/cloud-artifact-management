@@ -1,0 +1,38 @@
+# Merge these site blocks into the existing host-network Caddy Caddyfile.
+# Keep the existing global options and AliDNS DNS challenge configuration.
+
+https://cam-edge.cexp.cn:24443 {
+	encode gzip zstd
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options SAMEORIGIN
+	}
+
+	reverse_proxy 127.0.0.1:8088
+}
+
+https://cam-core.cexp.cn:24443 {
+	encode gzip zstd
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options SAMEORIGIN
+	}
+
+	@core_gate path /api/v1/gate/*
+	handle @core_gate {
+		reverse_proxy 127.0.0.1:3102
+	}
+
+	@core_health path /health/live /health/ready
+	handle @core_health {
+		reverse_proxy 127.0.0.1:3102
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+}

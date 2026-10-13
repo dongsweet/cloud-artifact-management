@@ -21,7 +21,7 @@ services:
     networks:
       - default
     ports:
-      - "8088:8080"
+      - "127.0.0.1:8088:8080"
     restart: unless-stopped
 
   cam-edge:
@@ -88,6 +88,8 @@ services:
       CAM_CLOUD_TIMEOUT_MS: ${CAM_CLOUD_TIMEOUT_MS:-10000}
     networks:
       - default
+    ports:
+      - "127.0.0.1:3102:3102"
     restart: unless-stopped
 
   cam-agent:
