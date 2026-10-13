@@ -37,3 +37,17 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
     assert.equal(cookieValue(relogin, 'cam_core_csrf'), coreCsrf);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
+
+test('gate key rotation accepts current and previous keys during overlap, but rejects retired keys', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-gate-rotation-'));
+  const app = await buildCoreApp({ dataDir, gateSecret: 'new-gate-key', previousGateSecret: 'old-gate-key', enableAuth: false, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) } });
+  const payload = { schemaVersion: 1, requestId: 'R-ROTATE', freezeId: 'F-ROTATE', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64) };
+  try {
+    for (const [index, secret] of ['new-gate-key', 'old-gate-key'].entries()) {
+      const response = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: { 'x-cam-gate-secret': secret }, payload });
+      assert.equal(response.statusCode, index === 0 ? 202 : 200, response.body);
+    }
+    const rejected = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: { 'x-cam-gate-secret': 'retired-gate-key' }, payload: { ...payload, requestId: 'R-ROTATE-2', freezeId: 'F-ROTATE-2' } });
+    assert.equal(rejected.statusCode, 401);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});

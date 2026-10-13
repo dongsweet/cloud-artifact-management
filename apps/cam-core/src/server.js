@@ -9,14 +9,14 @@ import { registerCoreAuth, AuthStore } from './auth.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/core' : join(process.cwd(), 'data', 'core'));
 
-export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = new CloudAdapter(), gateSecret = process.env.CAM_GATE_SHARED_SECRET, enableAuth = true } = {}) {
+export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = new CloudAdapter(), gateSecret = process.env.CAM_GATE_SHARED_SECRET, previousGateSecret = process.env.CAM_GATE_PREVIOUS_SHARED_SECRET, enableAuth = true } = {}) {
   const db = await openDatabase(join(dataDir, 'core.sqlite'));
   const store = new CoreStore(db);
   const auth = new AuthStore(db);
   const app = await buildServer({
     service: 'cam-core',
     configure: async (server) => {
-      registerCoreRoutes(server, { store, cloud: cloudAdapter, gateSecret });
+      registerCoreRoutes(server, { store, cloud: cloudAdapter, gateSecret, previousGateSecret });
       if (enableAuth) registerCoreAuth(server, { auth });
       server.addHook('onClose', async () => db.close());
     }

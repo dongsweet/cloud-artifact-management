@@ -2,19 +2,22 @@ import { timingSafeEqual } from 'node:crypto';
 
 function error(reply, status, code, message) { return reply.code(status).send({ error: { code, message } }); }
 
-function gateAuthorized(request, sharedSecret) {
-  if (!sharedSecret) return process.env.NODE_ENV !== 'production';
+function gateAuthorized(request, secrets) {
+  const accepted = Array.isArray(secrets) ? secrets.filter(Boolean) : [secrets].filter(Boolean);
+  if (!accepted.length) return process.env.NODE_ENV !== 'production';
   const received = request.headers['x-cam-gate-secret'];
   if (typeof received !== 'string') return false;
   const actual = Buffer.from(received);
-  const expected = Buffer.from(sharedSecret);
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
+  return accepted.some((secret) => {
+    const expected = Buffer.from(secret);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  });
 }
 
-export function registerCoreRoutes(app, { store, cloud, gateSecret }) {
+export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGateSecret }) {
   app.addHook('onRequest', async (request, reply) => {
     if (!request.url.startsWith('/api/v1/gate/')) return;
-    if (!gateAuthorized(request, gateSecret)) return error(reply, 401, 'gate_auth_required', '受控交换身份校验失败');
+    if (!gateAuthorized(request, [gateSecret, previousGateSecret])) return error(reply, 401, 'gate_auth_required', '受控交换身份校验失败');
   });
 
   app.post('/api/v1/gate/approval-requests', { bodyLimit: 1024 * 1024 }, async (request, reply) => {

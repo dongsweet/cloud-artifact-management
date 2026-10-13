@@ -12,7 +12,8 @@
     "start:edge": "node apps/cam-edge/src/server.js",
     "start:core": "node apps/cam-core/src/server.js",
     "start:agent": "node apps/cam-agent/src/server.js",
-    "gate:simulate": "node tools/cam-gate-simulator.js"
+    "gate:simulate": "node tools/cam-gate-simulator.js",
+    "gate:generate-secret": "node tools/generate-gate-secret.js"
   },
   "dependencies": {
     "fastify": "^5.6.1",
