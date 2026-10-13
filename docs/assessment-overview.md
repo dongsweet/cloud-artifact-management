@@ -26,31 +26,32 @@ flowchart TB
     end
 
     subgraph EXT[统一运维外部交换区]
-        EDGE[cam-edge<br/>候选管理、接收、验证资料、验证交付]
-        DBE[(本区 SQLite 数据库)]
-        FILEE[(候选制品、验证报告和交换暂存文件)]
+        EDGE["cam-edge<br/>候选管理、接收、验证资料、验证交付"]
+        DBE["本区 SQLite 数据库"]
+        FILEE["候选制品、验证报告和交换暂存文件"]
         EDGE --- DBE
         EDGE --- FILEE
     end
 
     subgraph BORDER[跨网安全边界]
-        GATE[山石网闸<br/>受控消息与文件交换]
+        GATE["山石网闸<br/>受控消息与文件交换"]
     end
 
     subgraph INT[统一运维内网]
-        CORE[cam-core<br/>审批联动、正式制品接收与分发编排]
-        DBC[(本区 SQLite 数据库)]
-        REPO[(正式制品存储)]
-        CLOUD[统一云管 / AAA]
+        CORE["cam-core<br/>审批联动、正式制品接收与分发编排"]
+        DBC["本区 SQLite 数据库"]
+        REPO["正式制品存储"]
+        CLOUD["统一云管 / AAA"]
         CORE --- DBC
         CORE --- REPO
-        CORE <-->|工单与审批状态 API| CLOUD
+        CORE -->|创建工单、查询审批状态| CLOUD
+        CLOUD -->|审批处理结果| CORE
     end
 
     subgraph CENTER[各云中心运维管理区]
-        AGENT[cam-agent<br/>任务接收、制品缓存与校验]
-        DBA[(本中心 SQLite 数据库及文件目录)]
-        NODES[云平台控制节点<br/>既有升级程序]
+        AGENT["cam-agent<br/>任务接收、制品缓存与校验"]
+        DBA["本中心 SQLite 数据库及文件目录"]
+        NODES["云平台控制节点<br/>既有升级程序"]
         AGENT --- DBA
         AGENT -->|受控提供已校验制品| NODES
     end
