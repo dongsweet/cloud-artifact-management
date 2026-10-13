@@ -24,6 +24,27 @@ services:
       - "127.0.0.1:8088:8080"
     restart: unless-stopped
 
+  cam-core-web:
+    build:
+      context: .
+      dockerfile: core-web.Dockerfile
+      args:
+        CADDY_BASE_IMAGE: ${CADDY_BASE_IMAGE:-caddy:2.11.4}
+    image: cam-core-web:dev
+    read_only: true
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+      - /data:size=16m,mode=0700,uid=10001,gid=10001
+      - /config:size=4m,mode=0700,uid=10001,gid=10001
+    depends_on:
+      - cam-core
+    networks:
+      - default
+    ports:
+      - "127.0.0.1:8092:8080"
+    restart: unless-stopped
+
   cam-edge:
     build:
       context: .

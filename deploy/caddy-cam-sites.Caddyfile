@@ -22,8 +22,8 @@ https://cam-core.cexp.cn:24443 {
 		X-Frame-Options SAMEORIGIN
 	}
 
-	@core_gate path /api/v1/gate/*
-	handle @core_gate {
+	@core_api path /api/*
+	handle @core_api {
 		reverse_proxy 127.0.0.1:3102
 	}
 
@@ -33,6 +33,6 @@ https://cam-core.cexp.cn:24443 {
 	}
 
 	handle {
-		respond "Not Found" 404
+		reverse_proxy 127.0.0.1:8092
 	}
 }

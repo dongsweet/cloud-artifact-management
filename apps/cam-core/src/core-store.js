@@ -11,7 +11,7 @@ function required(value, name) {
 
 function response(row) {
   if (!row) return null;
-  return { requestId: row.request_id, freezeId: row.freeze_id, roundId: row.round_id, releaseId: row.release_id, status: row.status, manifestSha256: row.manifest_sha256, reportSha256: row.report_sha256, cloudApprovalId: row.cloud_approval_id, cloudTransferTaskId: row.cloud_transfer_task_id, cloudStatus: row.cloud_status, cloudWorkflowStep: row.cloud_workflow_step, cloudCheckedAt: row.cloud_checked_at, cloudMappingSnapshot: row.cloud_mapping_json ? JSON.parse(row.cloud_mapping_json) : null, cloudRequestSnapshot: row.cloud_request_json ? JSON.parse(row.cloud_request_json) : null, approvedAt: row.approved_at, expiresAt: row.expires_at, closeStatus: row.close_status, closeCheckedAt: row.close_checked_at, createdAt: row.created_at, updatedAt: row.updated_at, lastError: row.last_error, transferTaskId: row.transfer_task_id };
+  return { requestId: row.request_id, freezeId: row.freeze_id, roundId: row.round_id, releaseId: row.release_id, status: row.status, manifestSha256: row.manifest_sha256, reportSha256: row.report_sha256, cloudApprovalId: row.cloud_approval_id, cloudTransferTaskId: row.cloud_transfer_task_id, cloudStatus: row.cloud_status, cloudWorkflowStep: row.cloud_workflow_step, cloudCheckedAt: row.cloud_checked_at, cloudMappingSnapshot: row.cloud_mapping_json ? JSON.parse(row.cloud_mapping_json) : null, cloudRequestSnapshot: row.cloud_request_json ? JSON.parse(row.cloud_request_json) : null, approvedAt: row.approved_at, expiresAt: row.expires_at, closeStatus: row.close_status, closeCheckedAt: row.close_checked_at, createdAt: row.created_at, updatedAt: row.updated_at, lastError: row.last_error, transferTaskId: row.transfer_task_id, transferStatus: row.transfer_status ?? null };
 }
 
 export class CoreStore {
@@ -42,7 +42,8 @@ export class CoreStore {
     if (!columns.has('cloud_workflow_step')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_workflow_step TEXT');
   }
 
-  get(requestId) { return response(this.db.prepare('SELECT * FROM core_approval_requests WHERE request_id = ?').get(requestId)); }
+  get(requestId) { return response(this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id WHERE r.request_id = ?').get(requestId)); }
+  list() { return this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id ORDER BY r.created_at DESC LIMIT 500').all().map(response); }
   getByFreeze(freezeId) { return response(this.db.prepare('SELECT * FROM core_approval_requests WHERE freeze_id = ?').get(freezeId)); }
 
   receiveApproval(envelope) {
@@ -127,6 +128,7 @@ export class CoreStore {
   close(requestId, result = {}) {
     const current = this.get(requestId);
     if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
+    if (current.status !== 'APPROVED' || current.transferStatus !== 'RECEIVED') throw Object.assign(new Error('approved artifact transfer receipt is required before closing'), { code: 'transfer_not_received' });
     const timestamp = now();
     const status = result.status ?? 'CLOSED';
     this.db.prepare("UPDATE core_approval_requests SET close_status = ?, close_checked_at = ?, status = CASE WHEN ? = 'CLOSED' THEN 'CLOSED' ELSE status END, updated_at = ? WHERE request_id = ?").run(status, timestamp, status, timestamp, requestId);

@@ -28,7 +28,7 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     async getApproval(id) { calls.push(['get', id]); return { approvalId: id, status: cloudStatus, workflowStep: cloudStatus === 'UNKNOWN' ? '已结束' : '工单确认', transferTaskId: cloudStatus === 'APPROVED' ? 'TR-1' : undefined, manifestSha256: cloudStatus === 'APPROVED' ? manifestSha256 : undefined, expiresAt: new Date(Date.now() + 60_000).toISOString() }; },
     async closeApproval(id) { calls.push(['close', id]); return { status: 'CLOSED' }; }
   };
-  const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test' });
+  const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false });
   const headers = { 'x-cam-gate-secret': 'gate-test' };
   try {
     const received = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: envelope });
@@ -56,6 +56,9 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     assert.equal(authorized.statusCode, 200, authorized.body);
     assert.equal(authorized.json().item.transferTaskId, 'TR-1');
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/transfer-authorize', payload: { manifestSha256 } })).json().item.idempotent, true);
+    const earlyClose = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/close', payload: {} });
+    assert.equal(earlyClose.statusCode, 409);
+    assert.equal(calls.filter(([kind]) => kind === 'close').length, 0);
     const receipt = await app.inject({ method: 'POST', url: '/api/v1/gate/receipts', headers, payload: { requestId: 'FREEZE-1', transferTaskId: 'TR-1', manifestSha256 } });
     assert.equal(receipt.statusCode, 200, receipt.body);
     assert.equal(receipt.json().item.status, 'RECEIVED');
@@ -80,7 +83,7 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
 
 test('gate approval messages require the configured exchange identity', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-auth-'));
-  const app = await buildCoreApp({ dataDir, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) }, gateSecret: 'secret' });
+  const app = await buildCoreApp({ dataDir, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) }, gateSecret: 'secret', enableAuth: false });
   try {
     const response = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', payload: envelope });
     assert.equal(response.statusCode, 401);

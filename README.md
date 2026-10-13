@@ -43,12 +43,25 @@ docker compose -f compose.direct.yaml up -d --build
 该命令只解除 `cam-edge` 对 Hillstone 网络命名空间的依赖，不会删除业务数据目录。
 
 测试环境复用已有 host-network Caddy 提供 HTTPS 时，`cam-edge-web` 和 `cam-core` 仅绑定宿主机
-回环地址，分别为 `127.0.0.1:8088` 和 `127.0.0.1:3102`。将
+回环地址，分别为 `127.0.0.1:8088`、`127.0.0.1:3102` 和 `127.0.0.1:8092`。将
 [`deploy/caddy-cam-sites.Caddyfile`](deploy/caddy-cam-sites.Caddyfile) 中的站点块合并进现有
 Caddyfile，并保留其全局 DNS Challenge 配置。浏览器入口为
-`https://cam-edge.cexp.cn:24443`；`cam-core.cexp.cn:24443` 仅代理网闸联动 API
-`/api/v1/gate/*` 和健康检查路径，其他路径由 Caddy 返回 404。不要将 core 的 3102 端口绑定到
+`https://cam-edge.cexp.cn:24443` 和 `https://cam-core.cexp.cn:24443`。Core 域名的页面请求
+转发到 `cam-core-web`，API 请求转发到 `cam-core`；网闸联动 API 仍由 Core 的受控接口身份
+校验。不要将 core 的 3102 端口绑定到
 `0.0.0.0`。
+
+内网审批页面由独立的 `cam-core-web` 容器提供，测试部署仅绑定 `127.0.0.1:8092`；Caddy 将
+`cam-core.cexp.cn` 的页面请求转发到该容器，API 请求仍转发到 `cam-core:3102`。首次部署 Core
+时，在测试机交互终端执行以下命令创建本地管理员，页面登录后必须修改初始密码：
+
+```bash
+docker compose -f compose.direct.yaml exec -it cam-core node apps/cam-core/src/bootstrap-admin.js
+```
+
+Core 账号
+和会话保存在内网 Core 自己的 SQLite 文件，与 Edge 本地账号隔离；后续 AAA 接入时替换认证
+适配器，不改变审批业务页面。
 
 `CAM_EDGE_DATA_DIR`、`CAM_CORE_DATA_DIR` 和 `CAM_AGENT_DATA_DIR` 是宿主机本地目录，分别保存
 各安全区的 SQLite 数据库和制品文件。容器只把这些目录绑定到 `/data`，业务数据不再存放在

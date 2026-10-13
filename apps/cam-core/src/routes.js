@@ -29,6 +29,8 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret }) {
     } catch (err) { return error(reply, err.code === 'request_conflict' ? 409 : 400, err.code ?? 'approval_request_rejected', err.message); }
   });
 
+  app.get('/api/v1/approval-requests', async (_request, reply) => reply.send({ items: store.list() }));
+
   app.get('/api/v1/approval-requests/:requestId', async (request, reply) => {
     const item = store.get(request.params.requestId);
     return item ? reply.send({ item }) : error(reply, 404, 'request_not_found', 'approval request not found');
@@ -58,8 +60,9 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret }) {
     try {
       const item = store.get(request.params.requestId);
       if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
+      if (item.status !== 'APPROVED' || item.transferStatus !== 'RECEIVED') return error(reply, 409, 'transfer_not_received', '制品接收回执未到达，暂不能关单');
       if (item.cloudApprovalId) await cloud.closeApproval(item.cloudApprovalId, request.body ?? {});
       return reply.send({ item: store.close(item.requestId, { status: 'CLOSED' }) });
-    } catch (err) { store.markError(request.params.requestId, err); return error(reply, err.code === 'cloud_not_configured' ? 503 : 502, err.code ?? 'cloud_close_failed', err.message); }
+    } catch (err) { if (err.code === 'transfer_not_received') return error(reply, 409, err.code, err.message); store.markError(request.params.requestId, err); return error(reply, err.code === 'cloud_not_configured' ? 503 : 502, err.code ?? 'cloud_close_failed', err.message); }
   });
 }
