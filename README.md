@@ -129,3 +129,11 @@ sudo sh ./install-cam-source-route.sh
 正式环境部署前必须确认宿主机支持 `ip_tables`、`iptable_filter`、`iptable_nat`、`iptable_mangle` 和 `/dev/net/tun`。不能只根据容器的 `healthy` 判断 VPN 在线；登录 noVNC 后还要确认 Hillstone 页面显示在线、容器内 `tun0` 为 UP，并能访问研发文件地址。
 
 传输核心位于 `libs/cam-transfer`，包括清单生成、分块摘要、原子写入、合并校验和 SQLite 进度恢复。
+
+测试环境没有实体网闸时，使用 `tools/cam-gate-simulator.js` 模拟网闸的文件摆渡语义。它只在显式的 `outside-to-inside` 或 `inside-to-outside` 单向目录之间传输带 `manifest.json` 的 bundle，逐块校验 SHA-256，支持中断后恢复、幂等重试和 `receipt.json` 回执，并拒绝路径穿越、符号链接、清单方向错误和摘要不匹配。它不模拟网闸管理 API、病毒检测或物理隔离能力，不纳入生产 Compose：
+
+```bash
+node tools/cam-gate-simulator.js --root /tmp/cam-gate-test --direction outside-to-inside --transfer-id TR-20261013-001
+```
+
+网闸模式调研、现场配置前置条件、测试目录约定和云管联调现状见 [`docs/gate-integration-and-simulator.md`](docs/gate-integration-and-simulator.md)。
