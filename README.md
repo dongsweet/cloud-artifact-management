@@ -136,6 +136,6 @@ sudo sh ./install-cam-source-route.sh
 node tools/cam-gate-simulator.js --root /tmp/cam-gate-test --direction outside-to-inside --transfer-id TR-20261013-001
 ```
 
-网闸模式调研、现场配置前置条件、测试目录约定和云管联调现状见 [`docs/gate-integration-and-simulator.md`](docs/gate-integration-and-simulator.md)。
+生产环境的山石网闸按现场确认采用映射模式：只映射 CAM 指定的虚拟 IP/端口到指定服务端口，并限制源对象、目的对象、协议和方向。网闸模式调研、映射规则建议、测试目录约定和云管联调现状见 [`docs/gate-integration-and-simulator.md`](docs/gate-integration-and-simulator.md)。
 
 跨区受控接口支持短期双密钥轮换：在 Core 容器内生成新值（`docker compose --env-file deploy/.env -f compose.direct.yaml exec cam-core node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url") + "\\n")'`），在 `CAM_GATE_SHARED_SECRET` 配置新值、在 `CAM_GATE_PREVIOUS_SHARED_SECRET` 暂留旧值。待 Edge/网闸侧切换并验证后，清空旧值并重启 Core。两个值都只在目标主机的 `deploy/.env` 中保存，不写 SQLite、交换包或日志；具体双侧密钥安全交接仍须按现场网闸管理流程执行。
