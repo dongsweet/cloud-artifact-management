@@ -13,6 +13,7 @@
     "start:core": "node apps/cam-core/src/server.js",
     "start:agent": "node apps/cam-agent/src/server.js",
     "gate:simulate": "node tools/cam-gate-simulator.js",
+    "gate:mapping-simulate": "node tools/cam-gate-mapping-simulator.js",
     "gate:generate-secret": "node tools/generate-gate-secret.js"
   },
   "dependencies": {

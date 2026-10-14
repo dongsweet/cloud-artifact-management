@@ -1,6 +1,41 @@
 # Direct-connect test deployment. This file intentionally omits Hillstone and
 # runs cam-edge on the ordinary CAM Docker network.
 services:
+  # Test-only mapping-mode stand-in for the Hillstone gateway. This container
+  # has no isolation or inspection capability; it only forwards four fixed
+  # application channels inside the direct-connect test network.
+  cam-gate-sim:
+    build:
+      context: .
+      dockerfile: cam-gate-sim.Dockerfile
+    image: cam-gate-sim:dev
+    read_only: true
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    environment:
+      CAM_GATE_SIM_BIND: 0.0.0.0
+      CAM_GATE_SIM_CORE_CONTROL_PORT: 3201
+      CAM_GATE_SIM_CORE_CONTROL_TARGET: http://cam-core:3102
+      CAM_GATE_SIM_CORE_TRANSFER_PORT: 3202
+      CAM_GATE_SIM_CORE_TRANSFER_TARGET: http://cam-core:3102
+      CAM_GATE_SIM_EDGE_CONTROL_PORT: 3203
+      CAM_GATE_SIM_EDGE_CONTROL_TARGET: http://cam-edge:3101
+      CAM_GATE_SIM_EDGE_TRANSFER_PORT: 3204
+      CAM_GATE_SIM_EDGE_TRANSFER_TARGET: http://cam-edge:3101
+      CAM_GATE_SIM_UPSTREAM_TIMEOUT_MS: ${CAM_GATE_SIM_UPSTREAM_TIMEOUT_MS:-60000}
+    depends_on:
+      - cam-edge
+      - cam-core
+    networks:
+      - default
+    expose:
+      - "3201"
+      - "3202"
+      - "3203"
+      - "3204"
+    restart: unless-stopped
+
   cam-edge-web:
     build:
       context: .
@@ -68,10 +103,10 @@ services:
       CAM_APPROVAL_MODE: ${CAM_APPROVAL_MODE:-cloud}
       CAM_GATE_MODE: ${CAM_GATE_MODE:-mapping}
       CAM_GATE_SHARED_SECRET: ${CAM_GATE_SHARED_SECRET:-}
-      CAM_GATE_CORE_CONTROL_URL: ${CAM_GATE_CORE_CONTROL_URL:-}
-      CAM_GATE_CORE_TRANSFER_URL: ${CAM_GATE_CORE_TRANSFER_URL:-}
-      CAM_GATE_EDGE_CONTROL_URL: ${CAM_GATE_EDGE_CONTROL_URL:-}
-      CAM_GATE_EDGE_TRANSFER_URL: ${CAM_GATE_EDGE_TRANSFER_URL:-}
+      CAM_GATE_CORE_CONTROL_URL: ${CAM_GATE_CORE_CONTROL_URL:-http://cam-gate-sim:3201}
+      CAM_GATE_CORE_TRANSFER_URL: ${CAM_GATE_CORE_TRANSFER_URL:-http://cam-gate-sim:3202}
+      CAM_GATE_EDGE_CONTROL_URL: ${CAM_GATE_EDGE_CONTROL_URL:-http://cam-gate-sim:3203}
+      CAM_GATE_EDGE_TRANSFER_URL: ${CAM_GATE_EDGE_TRANSFER_URL:-http://cam-gate-sim:3204}
       CAM_GATE_CONNECT_TIMEOUT_MS: ${CAM_GATE_CONNECT_TIMEOUT_MS:-10000}
       CAM_GATE_TRANSFER_TIMEOUT_MS: ${CAM_GATE_TRANSFER_TIMEOUT_MS:-60000}
       CAM_GATE_CHUNK_SIZE_BYTES: ${CAM_GATE_CHUNK_SIZE_BYTES:-268435456}
@@ -108,10 +143,10 @@ services:
       CAM_GATE_SHARED_SECRET: ${CAM_GATE_SHARED_SECRET:-}
       CAM_GATE_PREVIOUS_SHARED_SECRET: ${CAM_GATE_PREVIOUS_SHARED_SECRET:-}
       CAM_GATE_MODE: ${CAM_GATE_MODE:-mapping}
-      CAM_GATE_CORE_CONTROL_URL: ${CAM_GATE_CORE_CONTROL_URL:-}
-      CAM_GATE_CORE_TRANSFER_URL: ${CAM_GATE_CORE_TRANSFER_URL:-}
-      CAM_GATE_EDGE_CONTROL_URL: ${CAM_GATE_EDGE_CONTROL_URL:-}
-      CAM_GATE_EDGE_TRANSFER_URL: ${CAM_GATE_EDGE_TRANSFER_URL:-}
+      CAM_GATE_CORE_CONTROL_URL: ${CAM_GATE_CORE_CONTROL_URL:-http://cam-gate-sim:3201}
+      CAM_GATE_CORE_TRANSFER_URL: ${CAM_GATE_CORE_TRANSFER_URL:-http://cam-gate-sim:3202}
+      CAM_GATE_EDGE_CONTROL_URL: ${CAM_GATE_EDGE_CONTROL_URL:-http://cam-gate-sim:3203}
+      CAM_GATE_EDGE_TRANSFER_URL: ${CAM_GATE_EDGE_TRANSFER_URL:-http://cam-gate-sim:3204}
       CAM_GATE_CONNECT_TIMEOUT_MS: ${CAM_GATE_CONNECT_TIMEOUT_MS:-10000}
       CAM_GATE_TRANSFER_TIMEOUT_MS: ${CAM_GATE_TRANSFER_TIMEOUT_MS:-60000}
       CAM_GATE_CHUNK_SIZE_BYTES: ${CAM_GATE_CHUNK_SIZE_BYTES:-268435456}
