@@ -30,6 +30,19 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
     const coreCookie = cookies(relogin);
     const coreCsrf = relogin.json().csrfToken;
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests', headers: { cookie: coreCookie } })).statusCode, 200);
+    const users = await app.inject({ method: 'GET', url: '/api/v1/users', headers: { cookie: coreCookie } });
+    assert.equal(users.statusCode, 200, users.body);
+    assert.equal(users.json().items.length, 1);
+    assert.equal(users.json().roles.CORE_ADMIN, '内网发布审批管理员');
+    const created = await app.inject({ method: 'POST', url: '/api/v1/users', headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: { username: 'operator1', displayName: '发布操作员', password: 'Operator-Password-123', roles: ['CORE_ADMIN'] } });
+    assert.equal(created.statusCode, 201, created.body);
+    const userId = created.json().user.id;
+    const updated = await app.inject({ method: 'PATCH', url: `/api/v1/users/${encodeURIComponent(userId)}`, headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: { displayName: '云管审批操作员', roles: ['CORE_ADMIN'], status: 'ACTIVE' } });
+    assert.equal(updated.statusCode, 200, updated.body);
+    assert.equal(updated.json().user.displayName, '云管审批操作员');
+    const reset = await app.inject({ method: 'POST', url: `/api/v1/users/${encodeURIComponent(userId)}/password`, headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: { password: 'Reset-Password-789' } });
+    assert.equal(reset.statusCode, 200, reset.body);
+    assert.equal(reset.json().mustChangePassword, true);
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/approval-requests/UNKNOWN/sync', headers: { cookie: coreCookie }, payload: {} })).statusCode, 403);
 
     const gate = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: { 'x-cam-gate-secret': 'gate-test' }, payload: { schemaVersion: 1, requestId: 'R-1', freezeId: 'F-1', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64) } });

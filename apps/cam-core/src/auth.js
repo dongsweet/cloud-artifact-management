@@ -43,6 +43,32 @@ export function registerCoreAuth(app, { auth, secureCookies = process.env.CAM_CO
     try { await auth.changePassword(request.principal.id, request.body?.password, request.principal.id, request.body?.oldPassword); clear(reply); return { ok: true, loginRequired: true }; }
     catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'password_failed', err.message); }
   });
+  const adminOnly = (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return fail(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+  };
+  app.get('/api/v1/users', async (request, reply) => {
+    if (adminOnly(request, reply)) return;
+    return { items: auth.listUsers(), roles: ROLE_LABELS };
+  });
+  app.post('/api/v1/users', { bodyLimit: 8192 }, async (request, reply) => {
+    if (adminOnly(request, reply)) return;
+    try {
+      const user = await auth.createUser(request.body ?? {}, request.principal.id);
+      return reply.code(201).send({ user });
+    } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'user_create_failed', err.message); }
+  });
+  app.patch('/api/v1/users/:id', { bodyLimit: 8192 }, async (request, reply) => {
+    if (adminOnly(request, reply)) return;
+    try { return { user: auth.updateUser(request.params.id, request.body ?? {}, request.principal.id) }; }
+    catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'user_update_failed', err.message); }
+  });
+  app.post('/api/v1/users/:id/password', { bodyLimit: 4096 }, async (request, reply) => {
+    if (adminOnly(request, reply)) return;
+    try {
+      await auth.changePassword(request.params.id, request.body?.password, request.principal.id);
+      return { ok: true, mustChangePassword: true };
+    } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'password_reset_failed', err.message); }
+  });
 }
 
 export { AuthStore };
