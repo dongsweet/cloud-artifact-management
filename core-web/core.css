@@ -2,6 +2,25 @@
 .font-monospace { font-size: .82rem; }
 .auth-card { width: 440px; max-width: 95vw; }
 
+/* AdminLTE card-title floats can absorb the header width and displace actions. */
+.app-main .cam-action-header {
+  display: flex !important;
+  align-items: center !important;
+  width: 100%;
+  gap: 1rem;
+}
+.app-main .cam-action-header > .card-title {
+  float: none !important;
+  flex: 0 1 auto !important;
+  width: auto !important;
+  margin: 0 !important;
+}
+.app-main .cam-action-header > .btn { margin-left: auto !important; flex: 0 0 auto; }
+.app-main .cam-actions-cell { text-align: right !important; white-space: nowrap; }
+.app-main .cam-action-buttons { display: flex; justify-content: flex-end; gap: .375rem; }
+#actions { justify-content: flex-end; }
+.app-main .card-footer.d-flex { justify-content: flex-end !important; }
+
 /* Keep authentication screens above AdminLTE's fixed shell and sidebar. */
 #login,
 #password-change {
