@@ -90,7 +90,7 @@ test('CloudAdapter rejects a processor whose department differs from the work or
     throw new Error(`unexpected request ${parsed.pathname}`);
   };
   const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env, fetchImpl });
-  await assert.rejects(adapter.resolveMappings({ ...env, processUserNames: 'zhuren_luan', businessTypePath: 'OpenStack平台系统类/平台类-其他' }), /部门为 ID 230（云管人员接口未返回部门名称），与当前工单部门“成都”（ID 215）不一致，请重新选择同部门审批人/);
+  await assert.rejects(adapter.resolveMappings({ ...env, processUserNames: 'zhuren_luan', businessTypePath: 'OpenStack平台系统类/平台类-其他' }), /所属部门 ID 230 与当前工单部门“成都”（ID 215）不一致，请重新选择同部门审批人/);
 });
 
 test('CloudAdapter rejects ambiguous or non-leaf mappings before creating a work order', async () => {
