@@ -25,11 +25,29 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
       const accepted = store.receiveApproval(request.body ?? {});
       let item = accepted.item;
       if (!accepted.idempotent) {
-        try { item = store.markCloudSubmitted(item.requestId, await cloud.createApproval(request.body ?? {})); }
+        try { item = store.markCloudSubmitted(item.requestId, await cloud.createApproval(request.body ?? {}, store.getCloudConfig())); }
         catch (err) { store.markError(item.requestId, err); }
       }
       return reply.code(accepted.idempotent ? 200 : 202).send({ item, idempotent: accepted.idempotent, cloudSubmission: item.status !== 'CLOUD_PENDING' });
     } catch (err) { return error(reply, err.code === 'request_conflict' ? 409 : 400, err.code ?? 'approval_request_rejected', err.message); }
+  });
+
+  app.get('/api/v1/cloud/config', async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    const item = store.getCloudConfig();
+    return reply.send({ item: item ?? cloud.businessConfig(), source: item ? 'database' : 'environment', secretConfigured: cloud.enabled() });
+  });
+
+  app.put('/api/v1/cloud/config', { bodyLimit: 8192 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    try { return reply.send({ item: store.saveCloudConfig(request.body ?? {}, request.principal?.id) }); }
+    catch (err) { return error(reply, 400, err.code ?? 'cloud_config_invalid', err.message); }
+  });
+
+  app.post('/api/v1/cloud/test', { bodyLimit: 8192 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    try { return reply.send({ mappings: await cloud.resolveMappings(request.body && Object.keys(request.body).length ? request.body : store.getCloudConfig()) }); }
+    catch (err) { return error(reply, err.code === 'cloud_not_configured' ? 503 : 502, err.code ?? 'cloud_test_failed', err.message); }
   });
 
   app.get('/api/v1/approval-requests', async (_request, reply) => reply.send({ items: store.list() }));

@@ -115,7 +115,7 @@ function parseUserIds(value) {
   return [...new Set(ids)];
 }
 
-function readConfig(env = process.env) {
+function readConfig(env = process.env, overrides = undefined) {
   const config = {
     priorityLabel: text(env.CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL),
     priorityValue: text(env.CAM_CLOUD_WORK_ORDER_PRIORITY_VALUE),
@@ -127,6 +127,7 @@ function readConfig(env = process.env) {
     processUserIds: parseUserIds(env.CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS),
     titlePrefix: text(env.CAM_CLOUD_WORK_ORDER_TITLE_PREFIX) || '云平台制品验证报告审批'
   };
+  if (overrides) for (const key of Object.keys(config)) if (overrides[key] !== undefined && overrides[key] !== '') config[key] = key === 'processUserIds' ? parseUserIds(overrides[key]) : text(overrides[key]);
   if (!config.priorityLabel && !config.priorityValue) throw configurationError('CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL or _VALUE is required');
   if (!config.sourceLabel && !config.sourceValue) throw configurationError('CAM_CLOUD_WORK_ORDER_SOURCE_LABEL or _VALUE is required');
   if (!config.businessTypePath) throw configurationError('CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH is required');
@@ -163,6 +164,20 @@ export class CloudAdapter {
 
   enabled() { return Boolean(this.baseUrl && this.authUserId && this.authSecret && this.fetch); }
 
+  businessConfig() {
+    return {
+      priorityLabel: text(this.env.CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL),
+      priorityValue: text(this.env.CAM_CLOUD_WORK_ORDER_PRIORITY_VALUE),
+      sourceLabel: text(this.env.CAM_CLOUD_WORK_ORDER_SOURCE_LABEL),
+      sourceValue: text(this.env.CAM_CLOUD_WORK_ORDER_SOURCE_VALUE),
+      businessTypePath: text(this.env.CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH),
+      deptName: text(this.env.CAM_CLOUD_WORK_ORDER_DEPT_NAME),
+      teamName: text(this.env.CAM_CLOUD_WORK_ORDER_TEAM_NAME),
+      processUserIds: text(this.env.CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS),
+      titlePrefix: text(this.env.CAM_CLOUD_WORK_ORDER_TITLE_PREFIX) || '云平台制品验证报告审批'
+    };
+  }
+
   async request(path, { method = 'GET', query = undefined, body = undefined } = {}) {
     if (!this.enabled()) throw Object.assign(new Error('cloud adapter is not configured'), { code: 'cloud_not_configured' });
     const url = new URL(`${this.baseUrl}${path}`);
@@ -187,8 +202,8 @@ export class CloudAdapter {
     } finally { clearTimeout(timer); }
   }
 
-  async resolveMappings() {
-    const config = readConfig(this.env);
+  async resolveMappings(overrides = undefined) {
+    const config = readConfig(this.env, overrides);
     const [priorityData, sourceData, businessData, deptData, teamData] = await Promise.all([
       this.request(EOMS_PATHS.priorities, { query: { dictType: 'demand_ticket' } }),
       this.request(EOMS_PATHS.sources, { query: { dictType: 'work_order_source' } }),
@@ -220,8 +235,8 @@ export class CloudAdapter {
     };
   }
 
-  buildWorkOrder(envelope, mappings) {
-    const config = readConfig(this.env);
+  buildWorkOrder(envelope, mappings, overrides = undefined) {
+    const config = readConfig(this.env, overrides);
     if (!mappings.processUserIds.length) throw configurationError('CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS must contain at least one numeric user ID before creating a work order');
     const title = `${config.titlePrefix} ${envelope.releaseId ?? ''}/${envelope.roundId ?? ''}`.trim().slice(0, 64);
     const detail = [
@@ -250,9 +265,9 @@ export class CloudAdapter {
     };
   }
 
-  async createApproval(envelope) {
-    const mappings = await this.resolveMappings();
-    const requestBody = this.buildWorkOrder(envelope, mappings);
+  async createApproval(envelope, overrides = undefined) {
+    const mappings = await this.resolveMappings(overrides);
+    const requestBody = this.buildWorkOrder(envelope, mappings, overrides);
     const result = await this.request(EOMS_PATHS.create, { method: 'POST', body: requestBody });
     const workNumber = typeof result === 'string' ? result : valueOf(result, ['workOrderNumber', 'workNumber', 'number']);
     if (!workNumber) throw cloudError('cloud create response does not contain a work order number');

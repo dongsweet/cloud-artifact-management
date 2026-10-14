@@ -35,6 +35,16 @@ export class CoreStore {
         transfer_task_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE REFERENCES core_approval_requests(request_id),
         status TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS core_cloud_config (
+        config_id INTEGER PRIMARY KEY CHECK (config_id = 1),
+        config_json TEXT NOT NULL,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS core_cloud_config_events (
+        event_id TEXT PRIMARY KEY, actor_id TEXT, action TEXT NOT NULL,
+        config_json TEXT NOT NULL, created_at TEXT NOT NULL
+      );
     `);
     const columns = new Set(db.prepare('PRAGMA table_info(core_approval_requests)').all().map((column) => column.name));
     if (!columns.has('cloud_mapping_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_mapping_json TEXT');
@@ -45,6 +55,31 @@ export class CoreStore {
   get(requestId) { return response(this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id WHERE r.request_id = ?').get(requestId)); }
   list() { return this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id ORDER BY r.created_at DESC LIMIT 500').all().map(response); }
   getByFreeze(freezeId) { return response(this.db.prepare('SELECT * FROM core_approval_requests WHERE freeze_id = ?').get(freezeId)); }
+
+  getCloudConfig() {
+    const row = this.db.prepare('SELECT * FROM core_cloud_config WHERE config_id = 1').get();
+    if (!row) return null;
+    return { ...JSON.parse(row.config_json), updatedBy: row.updated_by, updatedAt: row.updated_at };
+  }
+
+  saveCloudConfig(input, actorId) {
+    const keys = ['priorityLabel', 'priorityValue', 'sourceLabel', 'sourceValue', 'businessTypePath', 'deptName', 'teamName', 'processUserIds', 'titlePrefix'];
+    const config = Object.fromEntries(keys.map((key) => [key, String(input?.[key] ?? '').trim()]));
+    if ((!config.priorityLabel && !config.priorityValue) || (!config.sourceLabel && !config.sourceValue) || !config.businessTypePath || !config.deptName || !config.teamName) {
+      throw Object.assign(new Error('工单级别、来源、业务类型、部门和团队不能为空'), { code: 'cloud_config_invalid' });
+    }
+    if (!/^\\d+(,\\d+)*$/.test(config.processUserIds)) throw Object.assign(new Error('审批处理人必须填写数字 ID，多个 ID 用逗号分隔'), { code: 'cloud_config_invalid' });
+    if (!config.titlePrefix) config.titlePrefix = '云平台制品验证报告审批';
+    const timestamp = now();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare(`INSERT INTO core_cloud_config (config_id, config_json, updated_by, updated_at) VALUES (1, ?, ?, ?)
+        ON CONFLICT(config_id) DO UPDATE SET config_json = excluded.config_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at`).run(JSON.stringify(config), actorId ?? null, timestamp);
+      this.db.prepare('INSERT INTO core_cloud_config_events VALUES (?, ?, ?, ?, ?)').run(id('CFG'), actorId ?? null, 'UPDATED', JSON.stringify(config), timestamp);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.getCloudConfig();
+  }
 
   receiveApproval(envelope) {
     const requestId = required(envelope.requestId, 'requestId');
