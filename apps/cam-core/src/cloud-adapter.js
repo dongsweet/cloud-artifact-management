@@ -260,8 +260,9 @@ export class CloudAdapter {
       if (matches.length !== 1) throw cloudError(`云管处理人用户名 ${value} 匹配到 ${matches.length} 个用户`);
       const personDeptId = valueOf(matches[0], ['deptId', 'departmentId']);
       if (personDeptId && personDeptId !== dept.id) {
-        const personDeptName = valueOf(matches[0], ['deptName', 'departmentName', 'depthName']) || `部门 ID ${personDeptId}`;
-        throw cloudError(`审批人 ${value} 所属部门为“${personDeptName}”，与当前工单部门“${dept.label}”不一致，请重新选择同部门审批人`);
+        const personDeptName = valueOf(matches[0], ['deptName', 'departmentName', 'depthName']);
+        const personDepartment = personDeptName ? `“${personDeptName}”（ID ${personDeptId}）` : `ID ${personDeptId}（云管人员接口未返回部门名称）`;
+        throw cloudError(`审批人 ${value} 的部门为 ${personDepartment}，与当前工单部门“${dept.label}”（ID ${dept.id}）不一致，请重新选择同部门审批人`);
       }
       const userId = asId(valueOf(matches[0], ['userId', 'id']), `processUser ${value}.userId`);
       if (!/^\d+$/u.test(userId)) throw cloudError(`云管处理人 ${value} 的 userId 不是数字`);
