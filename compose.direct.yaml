@@ -140,6 +140,7 @@ services:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 3102
+      DATA_DIR: /data/core
       CAM_GATE_SHARED_SECRET: ${CAM_GATE_SHARED_SECRET:-}
       CAM_GATE_PREVIOUS_SHARED_SECRET: ${CAM_GATE_PREVIOUS_SHARED_SECRET:-}
       CAM_GATE_MODE: ${CAM_GATE_MODE:-mapping}
