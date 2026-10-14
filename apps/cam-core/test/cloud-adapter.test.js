@@ -35,7 +35,7 @@ test('CloudAdapter resolves environment-specific IDs and creates an EOMS work or
     if (parsed.pathname === EOMS_PATHS.departments) return response({ defaultCenterDept: 215, centerList: [{ deptId: 215, deptName: '成都' }] });
     if (parsed.pathname === EOMS_PATHS.teams) return response({ rows: [{ id: 3, teamName: 'OpenStack平台运维' }] });
     if (parsed.pathname === EOMS_PATHS.responsiblePersons) {
-      assert.equal(parsed.searchParams.get('deptId'), '215');
+      assert.equal(parsed.searchParams.get('deptId'), null);
       assert.equal(parsed.searchParams.get('isAll'), 'true');
       assert.equal(parsed.searchParams.get('userType'), 'true');
       return response([{ userId: 2308, userName: 'zhuren_luan' }]);
@@ -60,7 +60,7 @@ test('CloudAdapter resolves environment-specific IDs and creates an EOMS work or
   assert.ok(calls.every(({ options }) => options.headers['x-auth-secret'] === 'secret' && options.headers['x-auth-userid'] === '2308'));
 });
 
-test('CloudAdapter accepts decorated two-level business type labels when the shortened path is unique', async () => {
+test('CloudAdapter requires the complete business type path returned by EOMS', async () => {
   const fetchImpl = async (url) => {
     const parsed = new URL(url);
     if (parsed.pathname === EOMS_PATHS.priorities && parsed.searchParams.get('dictType') === 'demand_ticket') return response([{ id: 394, dictLabel: '常规变更', childless: [] }]);
@@ -72,9 +72,10 @@ test('CloudAdapter accepts decorated two-level business type labels when the sho
     throw new Error(`unexpected request ${parsed.pathname}`);
   };
   const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env, fetchImpl });
-  const mappings = await adapter.resolveMappings({ ...env, processUserNames: 'zhuren_luan', businessTypePath: '平台类/其他' });
+  const mappings = await adapter.resolveMappings({ ...env, processUserNames: 'zhuren_luan', businessTypePath: 'OpenStack平台系统类/平台类-其他' });
   assert.equal(mappings.businessType.id, '230');
   assert.equal(mappings.businessType.path, 'OpenStack平台系统类/平台类-其他');
+  await assert.rejects(adapter.resolveMappings({ ...env, processUserNames: 'zhuren_luan', businessTypePath: '平台类/其他' }), /matched 0 leaf dictionary records/);
 });
 
 test('CloudAdapter rejects ambiguous or non-leaf mappings before creating a work order', async () => {

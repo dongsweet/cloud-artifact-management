@@ -72,25 +72,11 @@ function dictionaryItem(nodes, { label, value, path, field }) {
   const expectedValue = normalized(value);
   const expectedPath = normalizedPath(path);
   const leaves = flattenDictionary(nodes);
-  const exactMatches = leaves.filter((item) => {
+  const matches = leaves.filter((item) => {
     if (path && normalizedPath(item.path) !== expectedPath) return false;
     if (label && normalized(item.label) !== expectedLabel) return false;
     if (value && normalized(item.value) !== expectedValue) return false;
     return true;
-  });
-  // EOMS environments sometimes prefix or decorate a level label (for example
-  // "OpenStack平台系统类/平台类-其他"), while the configured business path uses
-  // the shorter UI labels ("平台类/其他"). Accept that form only when it still
-  // identifies one leaf at the same depth; ambiguous paths remain rejected.
-  const matches = exactMatches.length || !path ? exactMatches : leaves.filter((item) => {
-    if (label && normalized(item.label) !== expectedLabel) return false;
-    if (value && normalized(item.value) !== expectedValue) return false;
-    const expectedParts = normalizedPath(path).split('/');
-    const actualParts = normalizedPath(item.path).split('/');
-    if (expectedParts.length !== actualParts.length) return false;
-    if (expectedParts.every((part, index) => actualParts[index].includes(part))) return true;
-    const compactLeaf = expectedParts.length > 1 ? `${expectedParts.at(-2)}-${expectedParts.at(-1)}` : '';
-    return Boolean(compactLeaf && actualParts.at(-1) === compactLeaf);
   });
   if (matches.length !== 1) {
     const description = path || label || value || '(empty)';
@@ -262,7 +248,10 @@ export class CloudAdapter {
     const resolvedProcessors = config.legacyProcessUserIds.map((userId) => ({ userId, username: null }));
     let persons = [];
     if (config.processUserNames.length) {
-      const personsData = await this.request(EOMS_PATHS.responsiblePersons, { query: { deptId: dept.id, isAll: true, userType: true } });
+      // The approval department and the processor's home department can differ.
+      // Query the authorized processor set without restricting it to dept.id;
+      // the cloud API still scopes the result by the authenticated account.
+      const personsData = await this.request(EOMS_PATHS.responsiblePersons, { query: { isAll: true, userType: true } });
       persons = rowsFrom(personsData, ['rows', 'list', 'users', 'records', 'data']);
     }
     for (const value of config.processUserNames) {
