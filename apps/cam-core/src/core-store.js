@@ -63,12 +63,12 @@ export class CoreStore {
   }
 
   saveCloudConfig(input, actorId) {
-    const keys = ['priorityLabel', 'priorityValue', 'sourceLabel', 'sourceValue', 'businessTypePath', 'deptName', 'teamName', 'processUserIds', 'titlePrefix'];
+    const keys = ['priorityLabel', 'priorityValue', 'sourceLabel', 'sourceValue', 'businessTypePath', 'deptName', 'teamName', 'processUserNames', 'titlePrefix'];
     const config = Object.fromEntries(keys.map((key) => [key, String(input?.[key] ?? '').trim()]));
     if ((!config.priorityLabel && !config.priorityValue) || (!config.sourceLabel && !config.sourceValue) || !config.businessTypePath || !config.deptName || !config.teamName) {
       throw Object.assign(new Error('工单级别、来源、业务类型、部门和团队不能为空'), { code: 'cloud_config_invalid' });
     }
-    if (!/^\\d+(,\\d+)*$/.test(config.processUserIds)) throw Object.assign(new Error('审批处理人必须填写数字 ID，多个 ID 用逗号分隔'), { code: 'cloud_config_invalid' });
+    if (!/^[^,\s]+(,[^,\s]+)*$/.test(config.processUserNames) || config.processUserNames.split(',').some((name) => /^\d+$/.test(name))) throw Object.assign(new Error('请填写一个或多个审批处理人用户名，多个用户名用逗号分隔'), { code: 'cloud_config_invalid' });
     if (!config.titlePrefix) config.titlePrefix = '云平台制品验证报告审批';
     const timestamp = now();
     this.db.exec('BEGIN IMMEDIATE');

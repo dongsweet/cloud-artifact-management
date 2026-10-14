@@ -30,6 +30,12 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
     const coreCookie = cookies(relogin);
     const coreCsrf = relogin.json().csrfToken;
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests', headers: { cookie: coreCookie } })).statusCode, 200);
+    const cloudConfig = { priorityLabel: '常规变更', sourceLabel: '内部需求', businessTypePath: '平台类/其他', deptName: '成都', teamName: '运维团队', processUserNames: 'zhuren_luan', titlePrefix: '发布审批' };
+    const configSaved = await app.inject({ method: 'PUT', url: '/api/v1/cloud/config', headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: cloudConfig });
+    assert.equal(configSaved.statusCode, 200, configSaved.body);
+    assert.equal(configSaved.json().item.processUserNames, 'zhuren_luan');
+    const invalidConfig = await app.inject({ method: 'PUT', url: '/api/v1/cloud/config', headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: { ...cloudConfig, processUserNames: '2308' } });
+    assert.equal(invalidConfig.statusCode, 400);
     const users = await app.inject({ method: 'GET', url: '/api/v1/users', headers: { cookie: coreCookie } });
     assert.equal(users.statusCode, 200, users.body);
     assert.equal(users.json().items.length, 1);

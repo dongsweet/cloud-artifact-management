@@ -9,7 +9,8 @@ const EOMS_PATHS = Object.freeze({
   sources: '/system-service/sugon/system/multiLevelDictionary/noAuth/multiLevelDictionaryList',
   businessTypes: '/system-service/sugon/system/multiLevelDictionary/businessType',
   departments: '/system-service/sugon/systemDept/userDeptPermission',
-  teams: '/system-service/sugon/teamRole/list'
+  teams: '/system-service/sugon/teamRole/list',
+  responsiblePersons: '/system-service/sugon/systemUser/responsiblePersons'
 });
 
 const text = (value) => value === undefined || value === null ? '' : String(value).trim();
@@ -109,7 +110,13 @@ function html(value) {
   return text(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
-function parseUserIds(value) {
+function parseProcessorNames(value) {
+  const names = text(value).split(',').map((item) => item.trim()).filter(Boolean);
+  if (names.some((name) => /\s/u.test(name) || /^\d+$/u.test(name))) throw configurationError('请填写有效的云管审批处理人用户名');
+  return [...new Set(names)];
+}
+
+function parseLegacyProcessorIds(value) {
   const ids = text(value).split(',').map((item) => item.trim()).filter(Boolean);
   if (ids.some((id) => !/^\d+$/u.test(id))) throw configurationError('CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS must contain numeric user IDs');
   return [...new Set(ids)];
@@ -124,10 +131,23 @@ function readConfig(env = process.env, overrides = undefined) {
     businessTypePath: text(env.CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH),
     deptName: text(env.CAM_CLOUD_WORK_ORDER_DEPT_NAME),
     teamName: text(env.CAM_CLOUD_WORK_ORDER_TEAM_NAME),
-    processUserIds: parseUserIds(env.CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS),
+    processUserNames: text(env.CAM_CLOUD_WORK_ORDER_PROCESS_USER_NAMES),
+    legacyProcessUserIds: text(env.CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS),
     titlePrefix: text(env.CAM_CLOUD_WORK_ORDER_TITLE_PREFIX) || '云平台制品验证报告审批'
   };
-  if (overrides) for (const key of Object.keys(config)) if (overrides[key] !== undefined && overrides[key] !== '') config[key] = key === 'processUserIds' ? parseUserIds(overrides[key]) : text(overrides[key]);
+  if (overrides) for (const key of ['priorityLabel', 'priorityValue', 'sourceLabel', 'sourceValue', 'businessTypePath', 'deptName', 'teamName', 'titlePrefix']) {
+    if (overrides[key] !== undefined && overrides[key] !== '') config[key] = text(overrides[key]);
+  }
+  if (overrides?.processUserNames !== undefined) {
+    config.processUserNames = text(overrides.processUserNames);
+    config.legacyProcessUserIds = '';
+  } else if (overrides?.processUserIds !== undefined) {
+    // Read older database records during rollout; new UI and saves only use usernames.
+    config.legacyProcessUserIds = text(overrides.processUserIds);
+  }
+  config.processUserNames = parseProcessorNames(config.processUserNames);
+  config.legacyProcessUserIds = parseLegacyProcessorIds(config.legacyProcessUserIds);
+  if (!config.processUserNames.length && !config.legacyProcessUserIds.length) throw configurationError('请填写云管审批处理人用户名');
   if (!config.priorityLabel && !config.priorityValue) throw configurationError('CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL or _VALUE is required');
   if (!config.sourceLabel && !config.sourceValue) throw configurationError('CAM_CLOUD_WORK_ORDER_SOURCE_LABEL or _VALUE is required');
   if (!config.businessTypePath) throw configurationError('CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH is required');
@@ -173,7 +193,7 @@ export class CloudAdapter {
       businessTypePath: text(this.env.CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH),
       deptName: text(this.env.CAM_CLOUD_WORK_ORDER_DEPT_NAME),
       teamName: text(this.env.CAM_CLOUD_WORK_ORDER_TEAM_NAME),
-      processUserIds: text(this.env.CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS),
+      processUserNames: text(this.env.CAM_CLOUD_WORK_ORDER_PROCESS_USER_NAMES),
       titlePrefix: text(this.env.CAM_CLOUD_WORK_ORDER_TITLE_PREFIX) || '云平台制品验证报告审批'
     };
   }
@@ -224,20 +244,37 @@ export class CloudAdapter {
       nameKeys: ['teamName', 'teamRoleName', 'name', 'label', 'roleName'],
       idKeys: ['teamId', 'id']
     });
+    const processorIds = [...config.legacyProcessUserIds];
+    const resolvedProcessors = config.legacyProcessUserIds.map((userId) => ({ userId, username: null }));
+    let persons = [];
+    if (config.processUserNames.length) {
+      const personsData = await this.request(EOMS_PATHS.responsiblePersons, { query: { deptId: dept.id, isAll: true, userType: true } });
+      persons = rowsFrom(personsData, ['rows', 'list', 'users', 'records', 'data']);
+    }
+    for (const value of config.processUserNames) {
+      const usernameKeys = ['username', 'userName', 'user_name', 'loginName', 'loginname', 'login_name', 'userLoginName', 'userAccount', 'account', 'userCode'];
+      const matches = persons.filter((person) => usernameKeys.some((key) => normalized(valueOf(person, [key])) === normalized(value)));
+      if (matches.length !== 1) throw cloudError(`云管处理人用户名 ${value} 匹配到 ${matches.length} 个用户`);
+      const userId = asId(valueOf(matches[0], ['userId', 'id']), `processUser ${value}.userId`);
+      if (!/^\d+$/u.test(userId)) throw cloudError(`云管处理人 ${value} 的 userId 不是数字`);
+      processorIds.push(userId);
+      resolvedProcessors.push({ userId, username: value });
+    }
     return {
       priority: { id: asId(priority.id, 'priority.id'), label: priority.label, value: priority.value, path: priority.path },
       source: { id: asId(source.id, 'workOrderSource.id'), label: source.label, value: source.value, path: source.path },
       businessType: { id: asId(businessType.id, 'businessType.id'), label: businessType.label, value: businessType.value, path: businessType.path },
       dept,
       team,
-      processUserIds: config.processUserIds,
+      processUserIds: [...new Set(processorIds)],
+      processUsers: resolvedProcessors,
       resolvedAt: new Date().toISOString()
     };
   }
 
   buildWorkOrder(envelope, mappings, overrides = undefined) {
     const config = readConfig(this.env, overrides);
-    if (!mappings.processUserIds.length) throw configurationError('CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS must contain at least one numeric user ID before creating a work order');
+    if (!mappings.processUserIds.length) throw configurationError('请配置云管审批处理人用户名');
     const title = `${config.titlePrefix} ${envelope.releaseId ?? ''}/${envelope.roundId ?? ''}`.trim().slice(0, 64);
     const detail = [
       `<p>${html(config.titlePrefix)}</p>`,

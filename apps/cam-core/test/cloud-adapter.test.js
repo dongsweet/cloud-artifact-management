@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { approvalStatus, CloudAdapter, EOMS_PATHS } from '../src/cloud-adapter.js';
+import { approvalStatus, CloudAdapter, EOMS_PATHS, readConfig } from '../src/cloud-adapter.js';
 
 const env = {
   CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL: '常规变更',
@@ -10,13 +10,19 @@ const env = {
   CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH: '平台类/其他',
   CAM_CLOUD_WORK_ORDER_DEPT_NAME: '成都',
   CAM_CLOUD_WORK_ORDER_TEAM_NAME: 'OpenStack平台运维',
-  CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS: '2308',
+  CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS: '',
   CAM_CLOUD_WORK_ORDER_TITLE_PREFIX: '云平台制品验证报告审批'
 };
 
 function response(data, code = 0, status = 200) {
   return new Response(JSON.stringify({ code, msg: code === 0 ? '操作成功' : '失败', data }), { status, headers: { 'content-type': 'application/json' } });
 }
+
+test('Core business configuration accepts usernames instead of numeric IDs', () => {
+  const config = readConfig(env, { ...env, processUserNames: 'zhuren_luan' });
+  assert.deepEqual(config.processUserNames, ['zhuren_luan']);
+  assert.deepEqual(config.legacyProcessUserIds, []);
+});
 
 test('CloudAdapter resolves environment-specific IDs and creates an EOMS work order', async () => {
   const calls = [];
@@ -28,11 +34,17 @@ test('CloudAdapter resolves environment-specific IDs and creates an EOMS work or
     if (parsed.pathname === EOMS_PATHS.businessTypes) return response([{ id: 230, dictLabel: '平台类', childless: [{ id: 231, dictLabel: '其他', dictValue: 'other', childless: [] }] }]);
     if (parsed.pathname === EOMS_PATHS.departments) return response({ defaultCenterDept: 215, centerList: [{ deptId: 215, deptName: '成都' }] });
     if (parsed.pathname === EOMS_PATHS.teams) return response({ rows: [{ id: 3, teamName: 'OpenStack平台运维' }] });
+    if (parsed.pathname === EOMS_PATHS.responsiblePersons) {
+      assert.equal(parsed.searchParams.get('deptId'), '215');
+      assert.equal(parsed.searchParams.get('isAll'), 'true');
+      assert.equal(parsed.searchParams.get('userType'), 'true');
+      return response([{ userId: 2308, userName: 'zhuren_luan' }]);
+    }
     if (parsed.pathname === EOMS_PATHS.create) return response('20261012D1234');
     throw new Error(`unexpected request ${parsed.pathname}`);
   };
-  const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env, fetchImpl });
-  const result = await adapter.createApproval({ requestId: 'FREEZE-1', releaseId: 'REL-1', roundId: 'ROUND-1', conclusion: 'PASS', manifestSha256: 'a'.repeat(64), reportSha256: 'b'.repeat(64), reportFileName: 'report.pdf' });
+  const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env: { ...env, CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS: '2308' }, fetchImpl });
+  const result = await adapter.createApproval({ requestId: 'FREEZE-1', releaseId: 'REL-1', roundId: 'ROUND-1', conclusion: 'PASS', manifestSha256: 'a'.repeat(64), reportSha256: 'b'.repeat(64), reportFileName: 'report.pdf' }, { ...env, processUserNames: 'zhuren_luan' });
   assert.equal(result.approvalId, '20261012D1234');
   assert.equal(result.mappingSnapshot.priority.id, '394');
   assert.equal(result.mappingSnapshot.businessType.id, '231');
@@ -43,6 +55,8 @@ test('CloudAdapter resolves environment-specific IDs and creates an EOMS work or
   assert.equal(result.requestBody.priority, '394');
   assert.equal(result.requestBody.businessType, '231');
   assert.equal(result.requestBody.workOrderSource, '402');
+  assert.deepEqual(result.mappingSnapshot.processUsers, [{ userId: '2308', username: 'zhuren_luan' }]);
+  assert.ok(calls.some(({ url }) => new URL(url).pathname === EOMS_PATHS.responsiblePersons));
   assert.ok(calls.every(({ options }) => options.headers['x-auth-secret'] === 'secret' && options.headers['x-auth-userid'] === '2308'));
 });
 
@@ -56,8 +70,26 @@ test('CloudAdapter rejects ambiguous or non-leaf mappings before creating a work
     if (path === EOMS_PATHS.teams) return response({ rows: [{ id: 3, teamName: 'OpenStack平台运维' }] });
     throw new Error('create must not be called when mapping is ambiguous');
   };
-  const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env, fetchImpl });
+  const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env: { ...env, CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS: '2308' }, fetchImpl });
   await assert.rejects(adapter.createApproval({ requestId: 'FREEZE-1' }), /priority mapping/);
+});
+
+test('CloudAdapter fails closed when a processor username is missing or ambiguous', async () => {
+  const fetchImpl = async (url) => {
+    const parsed = new URL(url);
+    const path = parsed.pathname;
+    if (path === EOMS_PATHS.priorities && parsed.searchParams.get('dictType') === 'demand_ticket') return response([{ id: 394, dictLabel: '常规变更', childless: [] }]);
+    if (path === EOMS_PATHS.sources && parsed.searchParams.get('dictType') === 'work_order_source') return response([{ id: 402, dictLabel: '内部需求', childless: [] }]);
+    if (path === EOMS_PATHS.businessTypes) return response([{ id: 230, dictLabel: '平台类', childless: [{ id: 231, dictLabel: '其他', childless: [] }] }]);
+    if (path === EOMS_PATHS.departments) return response({ centerList: [{ deptId: 215, deptName: '成都' }] });
+    if (path === EOMS_PATHS.teams) return response({ rows: [{ id: 3, teamName: 'OpenStack平台运维' }] });
+    if (path === EOMS_PATHS.responsiblePersons) return response([{ userId: 1, userName: 'zhuren_luan' }, { userId: 2, userName: 'zhuren_luan' }]);
+    throw new Error('unexpected request');
+  };
+  const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env, fetchImpl });
+  const mappingConfig = { priorityLabel: '常规变更', sourceLabel: '内部需求', businessTypePath: '平台类/其他', deptName: '成都', teamName: 'OpenStack平台运维' };
+  await assert.rejects(adapter.resolveMappings({ ...mappingConfig, processUserNames: 'unknown_user' }), /匹配到 0 个用户/);
+  await assert.rejects(adapter.resolveMappings({ ...mappingConfig, processUserNames: 'zhuren_luan' }), /匹配到 2 个用户/);
 });
 
 test('CloudAdapter refuses to create a work order without a configured processor', async () => {
@@ -74,14 +106,14 @@ test('CloudAdapter refuses to create a work order without a configured processor
   };
   const adapter = new CloudAdapter({
     baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret',
-    env: { ...env, CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS: '' }, fetchImpl
+    env: { ...env, CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS: '', CAM_CLOUD_WORK_ORDER_PROCESS_USER_NAMES: '' }, fetchImpl
   });
   await assert.rejects(adapter.createApproval({ requestId: 'FREEZE-1' }), { code: 'cloud_mapping_not_configured' });
   assert.equal(calls.filter((path) => path === EOMS_PATHS.create).length, 0);
 });
 
 test('CloudAdapter rejects department and team IDs that JavaScript cannot represent exactly', () => {
-  const adapter = new CloudAdapter({ env });
+  const adapter = new CloudAdapter({ env: { ...env, CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS: '2308' } });
   assert.throws(() => adapter.buildWorkOrder({ requestId: 'FREEZE-1' }, {
     priority: { id: '394' },
     businessType: { id: '231' },
