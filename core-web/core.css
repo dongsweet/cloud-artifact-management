@@ -13,6 +13,15 @@
   z-index: 2000 !important;
 }
 
+#login:not(.d-none),
+#password-change:not(.d-none) {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-sizing: border-box;
+  padding: 1rem;
+}
+
 #login > .card,
 #password-change > .card {
   position: relative;
