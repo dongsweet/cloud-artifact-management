@@ -1,5 +1,6 @@
 .app-main .card { min-width: 900px; }
 .font-monospace { font-size: .82rem; }
+.auth-card { width: 440px; max-width: 95vw; }
 
 /* Keep authentication screens above AdminLTE's fixed shell and sidebar. */
 #login,
