@@ -60,6 +60,23 @@ test('CloudAdapter resolves environment-specific IDs and creates an EOMS work or
   assert.ok(calls.every(({ options }) => options.headers['x-auth-secret'] === 'secret' && options.headers['x-auth-userid'] === '2308'));
 });
 
+test('CloudAdapter accepts decorated two-level business type labels when the shortened path is unique', async () => {
+  const fetchImpl = async (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === EOMS_PATHS.priorities && parsed.searchParams.get('dictType') === 'demand_ticket') return response([{ id: 394, dictLabel: '常规变更', childless: [] }]);
+    if (parsed.pathname === EOMS_PATHS.sources && parsed.searchParams.get('dictType') === 'work_order_source') return response([{ id: 402, dictLabel: '内部需求', childless: [] }]);
+    if (parsed.pathname === EOMS_PATHS.businessTypes) return response([{ id: 47, dictLabel: 'OpenStack平台系统类', childless: [{ id: 230, dictLabel: '平台类-其他', childless: [] }] }]);
+    if (parsed.pathname === EOMS_PATHS.departments) return response({ centerList: [{ deptId: 215, deptName: '成都' }] });
+    if (parsed.pathname === EOMS_PATHS.teams) return response({ rows: [{ id: 3, teamName: 'OpenStack平台运维' }] });
+    if (parsed.pathname === EOMS_PATHS.responsiblePersons) return response([{ userId: 2308, userName: 'zhuren_luan' }]);
+    throw new Error(`unexpected request ${parsed.pathname}`);
+  };
+  const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env, fetchImpl });
+  const mappings = await adapter.resolveMappings({ ...env, processUserNames: 'zhuren_luan', businessTypePath: '平台类/其他' });
+  assert.equal(mappings.businessType.id, '230');
+  assert.equal(mappings.businessType.path, 'OpenStack平台系统类/平台类-其他');
+});
+
 test('CloudAdapter rejects ambiguous or non-leaf mappings before creating a work order', async () => {
   const fetchImpl = async (url) => {
     const path = new URL(url).pathname;
