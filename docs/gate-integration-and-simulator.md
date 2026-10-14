@@ -21,6 +21,8 @@ CAM 应为每条业务链路配置独立、最小化的映射规则。建议至�
 
 实际虚拟 IP、目标 IP、端口、入口设备和出口设备由网闸管理员根据现场地址规划填写，不能写死在 CAM 代码中。若现场将审批控制消息和大文件合并为一个 HTTPS 映射端口，应仍在应用层区分消息接口和制品接口，并分别校验权限、摘要和任务编号。
 
+部署配置预留四个映射基地址：`CAM_GATE_CORE_CONTROL_URL`、`CAM_GATE_CORE_TRANSFER_URL`、`CAM_GATE_EDGE_CONTROL_URL` 和 `CAM_GATE_EDGE_TRANSFER_URL`。它们填写山石网闸侧的虚拟地址，不填写容器内网地址；业务路径继续由 CAM 固定。`CAM_GATE_CHUNK_SIZE_BYTES`、`CAM_GATE_RETRY_LIMIT`、`CAM_GATE_CONNECT_TIMEOUT_MS`、`CAM_GATE_TRANSFER_TIMEOUT_MS`、`CAM_GATE_MAX_IN_FLIGHT_CHUNKS` 和 `CAM_GATE_REQUEST_TTL_SECONDS` 分别控制分块、重试、超时、并发和请求有效期。当前版本先保留这些配置契约，映射适配器启用后才会实际发起跨区调用。
+
 在映射模式下，CAM 的应用链路仍应保持异步和幂等：
 
 1. 外部交换区通过映射地址向 `cam-core` 发起受控申请，申请消息带唯一 `requestId`、清单摘要和报告摘要。

@@ -524,6 +524,8 @@ Token 是 bearer secret。只在创建授权时显示一次；数据库仅保存
 
 `cam-edge` 与 `cam-core` 之间只交换审批申请、状态回执、关单指令等必要业务信封及其附件/证据摘要。生产环境通过山石网闸映射模式暴露受控虚拟 IP/端口；每条映射规则绑定源对象、目的对象、协议、端口和方向，控制消息与正式制品传输原则上分离映射。接口层仍定义与设备地址无关的消息信封、摘要校验和幂等处理规则。两侧不共享数据库或可写目录，不建立外区到内网的任意网络连接。
 
+映射部署配置由 `deploy/.env` 提供，不在页面中配置。`CAM_GATE_MODE` 固定选择 `mapping`；`CAM_GATE_CORE_CONTROL_URL`、`CAM_GATE_CORE_TRANSFER_URL` 是 Edge 访问的网闸虚拟地址，`CAM_GATE_EDGE_CONTROL_URL`、`CAM_GATE_EDGE_TRANSFER_URL` 是 Core 回调外部区的网闸虚拟地址。业务 API 路径固定在代码中。`CAM_GATE_CONNECT_TIMEOUT_MS`、`CAM_GATE_TRANSFER_TIMEOUT_MS`、`CAM_GATE_CHUNK_SIZE_BYTES`、`CAM_GATE_RETRY_LIMIT`、`CAM_GATE_MAX_IN_FLIGHT_CHUNKS` 和 `CAM_GATE_REQUEST_TTL_SECONDS` 控制连接、传输、分块、重试、并发和消息有效期。当前这些值先作为部署契约预留，映射适配器尚未启用跨区调用；现场网闸虚拟地址确定后再填入真实 `deploy/.env`。`CAM_GATE_SHARED_SECRET` 及短期轮换用的 `CAM_GATE_PREVIOUS_SHARED_SECRET` 仅配置在受保护的主机环境文件中。
+
 云管连接参数和凭据由 `cam-core` 部署配置管理：普通参数（云管基地址、接口版本、超时、轮询间隔和必要的业务映射）通过受权限保护的环境配置文件提供；口令、令牌、客户端私钥和证书等秘密使用权限受限的只读密钥文件或证书挂载，不写入数据库、镜像、页面或普通日志。管理页面只提供工单提交、状态查询和关单确认等业务操作，不允许用户编辑云管端点或凭据。
 
 工单创建所需的字典和下拉项采用“环境语义配置、运行时解析 ID”的方式。`cam-core` 的 `.env` 只配置工单级别名称/可选 `dictValue`、工单来源名称/可选 `dictValue`、业务类型完整路径、所属中心名称、运维团队名称和处理人 ID；不配置优先级、来源、业务类型、中心或团队的数字 ID。每次创建工单前，适配器使用云管服务身份实时读取当前环境的字典及下拉数据，并要求配置条件恰好匹配一条记录；匹配不到、匹配多条、命中非叶子业务类型或返回 ID 不是安全整数时拒绝创建，避免测试环境和正式环境的 ID 变化造成错投。处理人 ID 是流程责任人的环境配置项，支持逗号分隔的多个数字 ID，不能由页面用户临时修改。
