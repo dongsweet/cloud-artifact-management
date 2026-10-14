@@ -1,1 +1,25 @@
-.app-main .card { min-width: 900px; }.font-monospace { font-size: .82rem; }
+.app-main .card { min-width: 900px; }
+.font-monospace { font-size: .82rem; }
+
+/* Keep authentication screens above AdminLTE's fixed shell and sidebar. */
+#login,
+#password-change {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  min-height: 100dvh;
+  overflow: auto;
+  z-index: 2000 !important;
+}
+
+#login > .card,
+#password-change > .card {
+  position: relative;
+  z-index: 2001;
+  flex: 0 1 auto;
+}
+
+@media (max-width: 960px) {
+  .app-main .card { min-width: 0; }
+}
