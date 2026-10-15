@@ -248,20 +248,17 @@ export class CloudAdapter {
     const resolvedProcessors = config.legacyProcessUserIds.map((userId) => ({ userId, username: null }));
     let persons = [];
     if (config.processUserNames.length) {
-      // The approval department and the processor's home department can differ.
-      // Query the authorized processor set without restricting it to dept.id;
-      // the cloud API still scopes the result by the authenticated account.
-      const personsData = await this.request(EOMS_PATHS.responsiblePersons, { query: { isAll: true, userType: true } });
+      // The endpoint's deptId filter returns processors associated with the
+      // work-order department. A returned user's own deptId may name only their
+      // primary department, so membership in this result is the authoritative
+      // check for multi-department accounts.
+      const personsData = await this.request(EOMS_PATHS.responsiblePersons, { query: { deptId: dept.id, isAll: true, userType: true } });
       persons = rowsFrom(personsData, ['rows', 'list', 'users', 'records', 'data']);
     }
     for (const value of config.processUserNames) {
       const usernameKeys = ['username', 'userName', 'user_name', 'loginName', 'loginname', 'login_name', 'userLoginName', 'userAccount', 'account', 'userCode'];
       const matches = persons.filter((person) => usernameKeys.some((key) => normalized(valueOf(person, [key])) === normalized(value)));
       if (matches.length !== 1) throw cloudError(`云管处理人用户名 ${value} 匹配到 ${matches.length} 个用户`);
-      const personDeptId = valueOf(matches[0], ['deptId', 'departmentId']);
-      if (personDeptId && personDeptId !== dept.id) {
-        throw cloudError(`审批人 ${value} 所属部门 ID ${personDeptId} 与当前工单部门“${dept.label}”（ID ${dept.id}）不一致，请重新选择同部门审批人`);
-      }
       const userId = asId(valueOf(matches[0], ['userId', 'id']), `processUser ${value}.userId`);
       if (!/^\d+$/u.test(userId)) throw cloudError(`云管处理人 ${value} 的 userId 不是数字`);
       processorIds.push(userId);
