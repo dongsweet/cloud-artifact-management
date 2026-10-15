@@ -70,7 +70,7 @@ export function createApprovalDispatcher({ freezes, gateConfig, keyring, fetchIm
       }
       for (const item of freezes.list()) {
         if (closed) break;
-        if (item.status !== 'PENDING_APPROVAL' || item.dispatchStatus !== 'DELIVERED' || !item.coreApprovalId || ['APPROVED', 'REJECTED', 'CLOSED'].includes(item.coreStatus)) continue;
+        if (item.status !== 'PENDING_APPROVAL' || item.dispatchStatus !== 'DELIVERED' || ['APPROVED', 'REJECTED', 'CLOSED'].includes(item.coreStatus)) continue;
         if ((nextStatusPollAt.get(item.freezeId) ?? 0) > Date.now()) continue;
         try { await pollCoreStatus(item); }
         catch (error) {

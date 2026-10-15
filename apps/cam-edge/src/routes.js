@@ -210,8 +210,10 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   app.post('/api/v1/freezes/:freezeId/submit', async (request, reply) => {
     try {
       const submitted = await freezes.submit(request.params.freezeId, principal(request).principalId);
-      const delivered = await approvalDispatcher.dispatchOne(submitted.freezeId);
-      return reply.send(delivered);
+      // Submission only commits the durable outbox record. Delivery across the
+      // mapped channel is deliberately asynchronous and retried by the worker.
+      queueMicrotask(() => { void approvalDispatcher.dispatchOne(submitted.freezeId); });
+      return reply.send(submitted);
     }
     catch (err) { return error(reply, err.code === 'freeze_not_found' ? 404 : err.code === 'freeze_owner_required' ? 403 : ['freeze_not_draft', 'round_locked', 'manifest_changed'].includes(err.code) ? 409 : 400, err.code ?? 'freeze_submit_failed', err.message); }
   });

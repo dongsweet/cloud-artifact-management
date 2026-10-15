@@ -59,6 +59,7 @@ export class CoreStore {
     return row ? JSON.parse(row.envelope_json) : null;
   }
   list() { return this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id ORDER BY r.created_at DESC LIMIT 500').all().map(response); }
+  listCloudPending() { return this.db.prepare("SELECT request_id FROM core_approval_requests WHERE status = 'CLOUD_PENDING' AND cloud_approval_id IS NULL ORDER BY created_at ASC LIMIT 100").all().map((row) => row.request_id); }
   getByFreeze(freezeId) { return response(this.db.prepare('SELECT * FROM core_approval_requests WHERE freeze_id = ?').get(freezeId)); }
 
   getCloudConfig() {

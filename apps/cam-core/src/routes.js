@@ -42,7 +42,28 @@ async function rotateEdgeKey({ keyring, gateConfig }) {
   return keyring.markEdgeConfirmed(pending.id);
 }
 
-export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGateSecret, gateConfig, keyring, enableKeyRotation = false }) {
+export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGateSecret, gateConfig, keyring, enableKeyRotation = false, cloudRetryDelayMs = 30_000 }) {
+  const cloudNextAttempt = new Map();
+  const cloudInFlight = new Set();
+  const submitCloud = async (requestId) => {
+    if (cloudInFlight.has(requestId)) return;
+    cloudInFlight.add(requestId);
+    try {
+      const item = store.get(requestId);
+      if (!item || item.status !== 'CLOUD_PENDING' || item.cloudApprovalId) return;
+      store.markCloudSubmitted(requestId, await cloud.createApproval(store.envelope(requestId), store.getCloudConfig()));
+      cloudNextAttempt.delete(requestId);
+    } catch (err) {
+      store.markError(requestId, err);
+      cloudNextAttempt.set(requestId, Date.now() + cloudRetryDelayMs);
+      app.log.warn?.({ requestId, code: err.code, message: err.message }, '云管工单创建失败，将自动重试');
+    } finally { cloudInFlight.delete(requestId); }
+  };
+  const cloudTimer = setInterval(() => {
+    for (const requestId of store.listCloudPending()) if ((cloudNextAttempt.get(requestId) ?? 0) <= Date.now()) void submitCloud(requestId);
+  }, 5_000);
+  cloudTimer.unref?.();
+  app.addHook('onClose', async () => clearInterval(cloudTimer));
   app.addHook('onRequest', async (request, reply) => {
     const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts');
     if (!exchangePath) return;
@@ -111,11 +132,8 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
     try {
       const accepted = store.receiveApproval(request.body ?? {});
       let item = accepted.item;
-      if (!accepted.idempotent || (item.status === 'CLOUD_PENDING' && !item.cloudApprovalId)) {
-        try { item = store.markCloudSubmitted(item.requestId, await cloud.createApproval(request.body ?? {}, store.getCloudConfig())); }
-        catch (err) { store.markError(item.requestId, err); }
-      }
-      return reply.code(accepted.idempotent ? 200 : 202).send({ item, idempotent: accepted.idempotent, cloudSubmission: item.status !== 'CLOUD_PENDING' });
+      if (!accepted.idempotent || (item.status === 'CLOUD_PENDING' && !item.cloudApprovalId)) queueMicrotask(() => { void submitCloud(item.requestId); });
+      return reply.code(accepted.idempotent ? 200 : 202).send({ item, idempotent: accepted.idempotent, cloudSubmission: false });
     } catch (err) { return error(reply, err.code === 'request_conflict' ? 409 : 400, err.code ?? 'approval_request_rejected', err.message); }
   });
 
@@ -129,7 +147,9 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
       let item = store.get(request.params.requestId);
       if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
       if (!item.cloudApprovalId) {
-        item = store.markCloudSubmitted(item.requestId, await cloud.createApproval(store.envelope(item.requestId), store.getCloudConfig()));
+        cloudNextAttempt.delete(item.requestId);
+        queueMicrotask(() => { void submitCloud(item.requestId); });
+        return reply.send({ item });
       }
       return reply.send({ item: store.applyCloudStatus(item.requestId, await cloud.getApproval(item.cloudApprovalId, item)) });
     } catch (err) { store.markError(request.params.requestId, err); return error(reply, err.code === 'cloud_not_configured' ? 503 : 502, err.code ?? 'cloud_sync_failed', err.message); }

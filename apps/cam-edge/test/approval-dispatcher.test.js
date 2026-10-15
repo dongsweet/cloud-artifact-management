@@ -16,7 +16,7 @@ function fixture() {
     markDispatchAttempt: () => { state.dispatchStatus = 'SENDING'; state.dispatchAttempts += 1; return state; },
     markDispatchSuccess: (_id, response) => { state.dispatchStatus = 'DELIVERED'; state.coreApprovalId = response.item.cloudApprovalId; state.coreStatus = response.item.status; return state; },
     markDispatchFailure: (_id, error) => { state.dispatchStatus = 'FAILED'; state.dispatchLastError = error.message; return state; },
-    markCoreStatus: (_id, response) => { state.coreStatus = response.item.status; return state; }
+    markCoreStatus: (_id, response) => { state.coreApprovalId = response.item.cloudApprovalId ?? state.coreApprovalId; state.coreStatus = response.item.status; return state; }
   };
   return { state, freezes };
 }
@@ -53,5 +53,24 @@ test('approval dispatcher keeps a failed outbox request retryable', async () => 
   assert.equal(result.dispatchStatus, 'FAILED');
   assert.equal(result.dispatchAttempts, 1);
   assert.match(result.dispatchLastError, /connection refused/);
+  await dispatcher.close();
+});
+
+test('approval dispatcher polls Core while cloud work-order creation is pending', async () => {
+  const { state, freezes } = fixture();
+  state.dispatchStatus = 'DELIVERED';
+  state.dispatchAttempts = 1;
+  state.coreStatus = 'CLOUD_PENDING';
+  let requestUrl;
+  const dispatcher = createApprovalDispatcher({
+    freezes,
+    gateConfig: { get: () => ({ coreControlUrl: 'http://gate.example:3201', connectTimeoutMs: 1000 }) },
+    keyring: { currentSecret: async () => Buffer.from('shared-secret') },
+    fetchImpl: async (url) => { requestUrl = url; return { ok: true, status: 200, json: async () => ({ item: { status: 'CLOUD_SUBMITTED', cloudApprovalId: 'APR-1' } }) }; },
+    logger: { warn() {} }
+  });
+  await dispatcher.pump();
+  assert.equal(requestUrl, 'http://gate.example:3201/api/v1/gate/approval-requests/FREEZE-1/sync');
+  assert.equal(state.coreApprovalId, 'APR-1');
   await dispatcher.close();
 });

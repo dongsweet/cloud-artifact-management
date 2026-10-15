@@ -33,10 +33,15 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
   try {
     const received = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: envelope });
     assert.equal(received.statusCode, 202, received.body);
-    assert.equal(received.json().item.status, 'CLOUD_SUBMITTED');
+    assert.equal(received.json().item.status, 'CLOUD_PENDING');
+    assert.equal(received.json().cloudSubmission, false);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const created = app.coreStore.get('FREEZE-1');
+    assert.equal(created.status, 'CLOUD_SUBMITTED');
+    assert.equal(created.cloudApprovalId, 'APR-1');
     assert.deepEqual(calls[0][0], 'create');
-    assert.deepEqual(received.json().item.cloudMappingSnapshot, { priority: { id: '394' } });
-    assert.deepEqual(received.json().item.cloudRequestSnapshot, { priority: '394' });
+    assert.deepEqual(created.cloudMappingSnapshot, { priority: { id: '394' } });
+    assert.deepEqual(created.cloudRequestSnapshot, { priority: '394' });
 
     const beforeSync = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/transfer-authorize', payload: { manifestSha256 } });
     assert.equal(beforeSync.statusCode, 409);
@@ -90,6 +95,23 @@ test('gate approval messages require the configured exchange identity', async ()
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Core acknowledges an approval before a slow cloud work-order create finishes', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-async-create-'));
+  let finishCreate;
+  const cloud = { createApproval: () => new Promise((resolve) => { finishCreate = resolve; }) };
+  const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false });
+  const headers = { 'x-cam-gate-secret': 'gate-test' };
+  try {
+    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: { ...envelope, requestId: 'FREEZE-SLOW', freezeId: 'FREEZE-SLOW' } });
+    assert.equal(accepted.statusCode, 202);
+    assert.equal(accepted.json().item.status, 'CLOUD_PENDING');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    finishCreate({ approvalId: 'APR-SLOW', status: 'PENDING' });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(app.coreStore.get('FREEZE-SLOW').cloudApprovalId, 'APR-SLOW');
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Core retries a failed cloud work-order submission when Edge synchronizes the queued request', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-dispatch-retry-'));
   let createAttempts = 0;
@@ -108,10 +130,13 @@ test('Core retries a failed cloud work-order submission when Edge synchronizes t
     const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload });
     assert.equal(accepted.statusCode, 202);
     assert.equal(accepted.json().item.status, 'CLOUD_PENDING');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(app.coreStore.get('FREEZE-RETRY').lastError, 'temporary cloud outage');
     const synced = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests/FREEZE-RETRY/sync', headers, payload: {} });
     assert.equal(synced.statusCode, 200, synced.body);
-    assert.equal(synced.json().item.cloudApprovalId, 'APR-RETRY');
-    assert.equal(synced.json().item.cloudStatus, 'PENDING');
+    assert.equal(synced.json().item.status, 'CLOUD_PENDING');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(app.coreStore.get('FREEZE-RETRY').cloudApprovalId, 'APR-RETRY');
     assert.equal(createAttempts, 2);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
