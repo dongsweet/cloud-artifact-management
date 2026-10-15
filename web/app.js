@@ -39,7 +39,7 @@ function routeContext() {
   const [viewPart, queryPart = ''] = window.location.hash.slice(1).split('?');
   const params = new URLSearchParams(queryPart);
   return {
-    view: ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'users', 'grants'].includes(viewPart) ? viewPart : 'products',
+    view: ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'gate-config', 'users', 'grants'].includes(viewPart) ? viewPart : 'products',
     productId: params.get('productId'),
     releaseId: params.get('releaseId'),
     roundId: params.get('roundId'),
@@ -53,11 +53,11 @@ function paramsForState(overrides = {}) {
 }
 
 function renderShell(view) {
-  const views = ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'users', 'grants'];
+  const views = ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'gate-config', 'users', 'grants'];
   views.forEach((name) => $(`#view-${name}`).classList.toggle('d-none', name !== view));
   const activeRoute = view === 'release-detail' ? 'rounds' : view === 'candidate-detail' ? 'candidates' : view;
   document.querySelectorAll('.sidebar-menu a').forEach((link) => link.classList.toggle('active', (link.dataset.route ?? link.hash.slice(1)) === activeRoute));
-  const titles = { products: '软件产品', releases: '发布版本', rounds: '候选轮次', candidates: '候选包', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情', users: '账号管理', grants: '下载授权' };
+  const titles = { products: '软件产品', releases: '发布版本', rounds: '候选轮次', candidates: '候选包', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情', 'gate-config': '网闸对接配置', users: '账号管理', grants: '下载授权' };
   $('#page-title').textContent = titles[view] ?? '软件产品';
 }
 
@@ -103,6 +103,16 @@ async function getReleases(productId = null) {
 
 async function getRounds(releaseId) {
   return (await api(`/api/v1/releases/${encodeURIComponent(releaseId)}/rounds`)).items;
+}
+
+async function loadGateConfig() {
+  const form = $('#gate-config-form');
+  try {
+    const result = await api('/api/v1/gate/config'); const item = result.item ?? {};
+    for (const element of form.elements) if (element.name && item[element.name] !== undefined) element.value = item[element.name];
+    $('#gate-secret-status').value = result.secretConfigured ? (result.previousSecretConfigured ? '已配置（轮换过渡中）' : '已配置') : '未配置';
+    $('#gate-config-status').textContent = `配置来源：${item.source === 'database' ? 'Edge 数据库' : '.env 默认值'}；映射模式固定为 mapping。`;
+  } catch (error) { showAlert(error.message, 'danger'); }
 }
 
 function productFilterItems(products) { return products.map((item) => ({ id: item.productId, name: item.name })); }
@@ -605,6 +615,7 @@ async function renderRoute() {
     if (state.view === 'candidates') await loadCandidates(generation);
     if (state.view === 'release-detail') await loadReleaseDetail(generation);
     if (state.view === 'candidate-detail') await loadCandidateDetail(generation);
+    if (state.view === 'gate-config') await loadGateConfig();
     if (generation === state.routeGeneration) renderBreadcrumb();
     if (state.view === 'release-detail' && generation === state.routeGeneration) startRoundQueuePolling();
   } catch (error) {
@@ -685,6 +696,8 @@ $('#receive-button').addEventListener('click', receiveCandidate);
 $('#pause-button').addEventListener('click', pauseCandidate);
 $('#candidate-edit-button').addEventListener('click', openCandidateEditor);
 $('#candidate-delete-button').addEventListener('click', deleteCandidate);
+$('#gate-config-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/config', { method: 'PUT', body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); showAlert('网闸映射配置已保存'); await loadGateConfig(); } catch (error) { showAlert(error.message, 'danger'); } });
+$('#gate-test').addEventListener('click', async () => { const button = $('#gate-test'); button.disabled = true; try { const result = await api('/api/v1/gate/config/test', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData($('#gate-config-form')))) }); $('#gate-config-status').textContent = `控制通道测试成功：${Object.keys(result.checks).map((key) => `${key}=${result.checks[key].service ?? 'ready'}`).join('，')}`; showAlert('网闸映射通道测试成功'); } catch (error) { $('#gate-config-status').textContent = '映射通道测试失败，请检查网闸虚拟地址和策略。'; showAlert(error.message, 'danger'); } finally { button.disabled = false; } });
 window.addEventListener('hashchange', renderRoute);
 
 document.querySelectorAll('[data-modal]').forEach((button) => button.addEventListener('click', async () => {

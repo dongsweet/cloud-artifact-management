@@ -37,6 +37,7 @@ function markup() {
 function applyPermissions() {
   document.querySelectorAll('[data-modal], [data-delete-product], [data-delete-release], [data-round-candidate-delete], [data-candidate-delete], #new-round-button, #new-package-button, #import-packages-button, #batch-receive-button, #candidate-edit-button, #candidate-delete-button, #receive-button, #pause-button').forEach((e) => e.classList.toggle('d-none', !hasRole('CANDIDATE_RECEIVER')));
   $('#users-nav').classList.toggle('d-none', !hasRole('EDGE_ADMIN', 'EDGE_AUDITOR'));
+  $('#gate-config-nav').classList.toggle('d-none', !hasRole('EDGE_ADMIN', 'EDGE_AUDITOR'));
   $('#grants-nav').classList.toggle('d-none', !hasRole('VALIDATOR', 'EDGE_AUDITOR'));
   for (const id of ['round-grant', 'candidate-grant', 'new-grant']) $(`#${id}`).classList.toggle('d-none', !hasRole('VALIDATOR'));
   $('#new-user').classList.toggle('d-none', !hasRole('EDGE_ADMIN'));

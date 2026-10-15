@@ -1,4 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
+import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
+import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/client.js';
 
 function error(reply, status, code, message) { return reply.code(status).send({ error: { code, message } }); }
 
@@ -14,10 +16,32 @@ function gateAuthorized(request, secrets) {
   });
 }
 
-export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGateSecret }) {
+export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGateSecret, gateConfig }) {
   app.addHook('onRequest', async (request, reply) => {
-    if (!request.url.startsWith('/api/v1/gate/')) return;
+    if (!request.url.startsWith('/api/v1/gate/') || request.url.startsWith('/api/v1/gate/config')) return;
     if (!gateAuthorized(request, [gateSecret, previousGateSecret])) return error(reply, 401, 'gate_auth_required', '受控交换身份校验失败');
+  });
+
+  app.get('/api/v1/gate/config', async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置权限');
+    const item = gateConfig.get();
+    return reply.send({ item, secretConfigured: Boolean(gateSecret), previousSecretConfigured: Boolean(previousGateSecret) });
+  });
+  app.put('/api/v1/gate/config', { bodyLimit: 8192 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置管理员权限');
+    try { return reply.send({ item: gateConfig.save(request.body ?? {}, request.principal.id), secretConfigured: Boolean(gateSecret), previousSecretConfigured: Boolean(previousGateSecret) }); }
+    catch (err) { return error(reply, 400, err.code ?? 'gate_config_invalid', err.message); }
+  });
+  app.post('/api/v1/gate/config/test', { bodyLimit: 8192 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置管理员权限');
+    try {
+      const config = normalizeGateConfig(Object.keys(request.body ?? {}).length ? request.body : gateConfig.get(), { requireUrls: true });
+      const checks = {};
+      for (const [name, url] of Object.entries({ edgeControlUrl: config.edgeControlUrl, edgeTransferUrl: config.edgeTransferUrl })) {
+        checks[name] = await checkGateHealth(url, { timeoutMs: config.connectTimeoutMs });
+      }
+      return reply.send({ ok: true, checks });
+    } catch (err) { return error(reply, 502, err.code ?? 'gate_test_failed', err.message); }
   });
 
   app.post('/api/v1/gate/approval-requests', { bodyLimit: 1024 * 1024 }, async (request, reply) => {

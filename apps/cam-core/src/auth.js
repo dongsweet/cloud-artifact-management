@@ -13,7 +13,7 @@ export function registerCoreAuth(app, { auth, secureCookies = process.env.CAM_CO
     const path = request.url.split('?')[0];
     if (!path.startsWith('/api/')) return;
     reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer');
-    if (path.startsWith('/api/v1/gate/')) return;
+    if (path.startsWith('/api/v1/gate/') && !path.startsWith('/api/v1/gate/config')) return;
     const jar = cookies(request);
     request.principal = auth.resolve(jar.cam_core_session);
     if (path === '/api/v1/auth/login' && request.method === 'POST') return;

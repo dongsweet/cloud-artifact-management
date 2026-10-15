@@ -10,6 +10,7 @@ import { DownloadGrantStore } from './download-grant-store.js';
 import { AuthStore } from './auth-store.js';
 import { registerAuth } from './auth.js';
 import { FreezeStore } from './freeze-store.js';
+import { GateConfigStore } from '../../../libs/cam-gate/src/config.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/edge' : join(process.cwd(), 'data', 'edge'));
 
@@ -21,11 +22,12 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   const downloadGrants = new DownloadGrantStore({ db, candidateStore: store });
   const auth = new AuthStore(db);
   const freezes = new FreezeStore({ db, dataDir, candidateStore: store });
+  const gateConfig = new GateConfigStore(db, { table: 'edge_gate_config', eventsTable: 'edge_gate_config_events' });
   const app = await buildServer({
     service: 'cam-edge',
     configure: async (server) => {
       registerAuth(server, { auth, principalProvider, secureCookies });
-      registerCandidateRoutes(server, { store, receiver, scheduler, downloadGrants, auth, freezes });
+      registerCandidateRoutes(server, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig });
       server.addHook('onClose', async () => db.close());
     }
   });
@@ -36,6 +38,7 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   app.decorate('downloadGrantStore', downloadGrants);
   app.decorate('authStore', auth);
   app.decorate('freezeStore', freezes);
+  app.decorate('gateConfigStore', gateConfig);
   queueMicrotask(() => scheduler.start());
   return app;
 }

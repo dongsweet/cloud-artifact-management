@@ -21,7 +21,7 @@ CAM 应为每条业务链路配置独立、最小化的映射规则。建议至�
 
 实际虚拟 IP、目标 IP、端口、入口设备和出口设备由网闸管理员根据现场地址规划填写，不能写死在 CAM 代码中。若现场将审批控制消息和大文件合并为一个 HTTPS 映射端口，应仍在应用层区分消息接口和制品接口，并分别校验权限、摘要和任务编号。
 
-部署配置预留四个映射基地址：`CAM_GATE_CORE_CONTROL_URL`、`CAM_GATE_CORE_TRANSFER_URL`、`CAM_GATE_EDGE_CONTROL_URL` 和 `CAM_GATE_EDGE_TRANSFER_URL`。它们填写山石网闸侧的虚拟地址，不填写容器内网地址；业务路径继续由 CAM 固定。`CAM_GATE_CHUNK_SIZE_BYTES`、`CAM_GATE_RETRY_LIMIT`、`CAM_GATE_CONNECT_TIMEOUT_MS`、`CAM_GATE_TRANSFER_TIMEOUT_MS`、`CAM_GATE_MAX_IN_FLIGHT_CHUNKS` 和 `CAM_GATE_REQUEST_TTL_SECONDS` 分别控制分块、重试、超时、并发和请求有效期。当前版本先保留这些配置契约，映射适配器启用后才会实际发起跨区调用。
+部署配置预留四个映射基地址：`CAM_GATE_CORE_CONTROL_URL`、`CAM_GATE_CORE_TRANSFER_URL`、`CAM_GATE_EDGE_CONTROL_URL` 和 `CAM_GATE_EDGE_TRANSFER_URL`。它们填写山石网闸侧的虚拟地址，不填写容器内网地址；业务路径继续由 CAM 固定。`CAM_GATE_CHUNK_SIZE_BYTES`、`CAM_GATE_RETRY_LIMIT`、`CAM_GATE_CONNECT_TIMEOUT_MS`、`CAM_GATE_TRANSFER_TIMEOUT_MS`、`CAM_GATE_MAX_IN_FLIGHT_CHUNKS` 和 `CAM_GATE_REQUEST_TTL_SECONDS` 分别控制分块、重试、超时、并发和请求有效期。当前版本提供 Edge 和 Core 的“网闸对接配置”页面。页面配置分别保存到本区 SQLite 的 `edge_gate_config` 或 `core_gate_config` 并记录变更审计；页面不能查看或修改共享密钥。共享密钥、上一把密钥、TLS CA 文件和网闸策略仍由部署环境及网闸管理员管理。保存前可调用配置测试接口检查受控映射地址的 `/health/ready`，测试通过后再保存。
 
 在映射模式下，CAM 的应用链路仍应保持异步和幂等：
 
@@ -76,7 +76,7 @@ node tools/cam-gate-simulator.js \
 
 Edge/Core 在此测试 Compose 中通过 `http://cam-gate-sim:<端口>` 访问对应通道。模拟器按流转发请求和响应，不缓存完整请求体；每条通道只允许访问 Compose 中预先指定的单一上游地址，拒绝 CONNECT 和 Upgrade 隧道。镜像使用 Node.js 原生 HTTP 能力，不增加运行依赖。可用 `/healthz` 检查单个映射监听器。
 
-这是应用层端口转发测试替身，只能验证地址、端口、HTTP 消息和大请求流式转发；Edge/Core 仍处于同一 Docker 网络，不能验证物理隔离、网闸策略、抗病毒、协议过滤、网闸审计或安全边界。该服务只加入 `compose.direct.yaml`，不得用于正式部署；`compose.yaml` 不包含该容器。实际跨区 API 联动尚未接入，所以代理可单独验通四条通道，不表示 CAM 业务流程已经通过网闸闭环。
+这是应用层端口转发测试替身，只能验证地址、端口、HTTP 消息和大请求流式转发；Edge/Core 仍处于同一 Docker 网络，不能验证物理隔离、网闸策略、抗病毒、协议过滤、网闸审计或安全边界。该服务只加入 `compose.direct.yaml`，不得用于正式部署；`compose.yaml` 不包含该容器。模拟器可验证四条通道的地址、端口和流式转发。它不模拟山石设备管理 API，也不改变 CAM 的业务接口契约。生产映射通道上的业务接口固定为 `POST /api/v1/gate/approval-requests`、`POST /api/v1/gate/approval-results`、`POST/PUT /api/v1/gate/transfers...` 和 `POST /api/v1/gate/transfer-receipts`；当前实现先提供审批申请和接收回执接口，并为后续结果、制品传输接口保留固定命名，所有请求均要求幂等业务 ID、清单摘要、有效期和共享密钥。
 
 ## 云管工单联调现状与启用条件
 

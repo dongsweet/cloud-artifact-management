@@ -5,6 +5,8 @@ import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 import { assembleChunks } from '../../../libs/cam-transfer/src/transfer.js';
 import { previewCandidateWorkbook } from './candidate-import.js';
+import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
+import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/client.js';
 
 function error(reply, statusCode, code, message) {
   return reply.code(statusCode).send({ error: { code, message } });
@@ -133,7 +135,23 @@ export async function finalizeCandidate(store, candidateId) {
   return completed;
 }
 
-export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes }) {
+export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig }) {
+  app.get('/api/v1/gate/config', async (request, reply) => {
+    const item = gateConfig.get();
+    return reply.send({ item, secretConfigured: Boolean(process.env.CAM_GATE_SHARED_SECRET), previousSecretConfigured: Boolean(process.env.CAM_GATE_PREVIOUS_SHARED_SECRET) });
+  });
+  app.put('/api/v1/gate/config', { bodyLimit: 8192 }, async (request, reply) => {
+    try { return reply.send({ item: gateConfig.save(request.body ?? {}, request.principal?.id), secretConfigured: Boolean(process.env.CAM_GATE_SHARED_SECRET), previousSecretConfigured: Boolean(process.env.CAM_GATE_PREVIOUS_SHARED_SECRET) }); }
+    catch (err) { return error(reply, 400, err.code ?? 'gate_config_invalid', err.message); }
+  });
+  app.post('/api/v1/gate/config/test', { bodyLimit: 8192 }, async (request, reply) => {
+    try {
+      const config = normalizeGateConfig(Object.keys(request.body ?? {}).length ? request.body : gateConfig.get(), { requireUrls: true });
+      const checks = {};
+      for (const [name, url] of Object.entries({ coreControlUrl: config.coreControlUrl, coreTransferUrl: config.coreTransferUrl })) checks[name] = await checkGateHealth(url, { timeoutMs: config.connectTimeoutMs });
+      return reply.send({ ok: true, checks });
+    } catch (err) { return error(reply, 502, err.code ?? 'gate_test_failed', err.message); }
+  });
   app.get('/api/v1/rounds/:roundId/freezes', async (request, reply) => {
     if (!store.getRound(request.params.roundId)) return error(reply, 404, 'round_not_found', 'round not found');
     return reply.send({ item: freezes.latest(request.params.roundId) });

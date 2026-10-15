@@ -524,7 +524,9 @@ Token 是 bearer secret。只在创建授权时显示一次；数据库仅保存
 
 `cam-edge` 与 `cam-core` 之间只交换审批申请、状态回执、关单指令等必要业务信封及其附件/证据摘要。生产环境通过山石网闸映射模式暴露受控虚拟 IP/端口；每条映射规则绑定源对象、目的对象、协议、端口和方向，控制消息与正式制品传输原则上分离映射。接口层仍定义与设备地址无关的消息信封、摘要校验和幂等处理规则。两侧不共享数据库或可写目录，不建立外区到内网的任意网络连接。
 
-映射部署配置由 `deploy/.env` 提供，不在页面中配置。`CAM_GATE_MODE` 固定选择 `mapping`；`CAM_GATE_CORE_CONTROL_URL`、`CAM_GATE_CORE_TRANSFER_URL` 是 Edge 访问的网闸虚拟地址，`CAM_GATE_EDGE_CONTROL_URL`、`CAM_GATE_EDGE_TRANSFER_URL` 是 Core 回调外部区的网闸虚拟地址。业务 API 路径固定在代码中。`CAM_GATE_CONNECT_TIMEOUT_MS`、`CAM_GATE_TRANSFER_TIMEOUT_MS`、`CAM_GATE_CHUNK_SIZE_BYTES`、`CAM_GATE_RETRY_LIMIT`、`CAM_GATE_MAX_IN_FLIGHT_CHUNKS` 和 `CAM_GATE_REQUEST_TTL_SECONDS` 控制连接、传输、分块、重试、并发和消息有效期。当前这些值先作为部署契约预留，映射适配器尚未启用跨区调用；现场网闸虚拟地址确定后再填入真实 `deploy/.env`。`CAM_GATE_SHARED_SECRET` 及短期轮换用的 `CAM_GATE_PREVIOUS_SHARED_SECRET` 仅配置在受保护的主机环境文件中。
+`CAM_GATE_MODE` 固定选择 `mapping`。四个映射基地址和连接、传输、分块、重试、并发、有效期参数可由两端“网闸对接配置”页面维护并保存到本区 SQLite；部署环境的 `CAM_GATE_*` 变量作为首次启动默认值。业务 API 路径固定在代码中。`CAM_GATE_SHARED_SECRET` 及短期轮换用的 `CAM_GATE_PREVIOUS_SHARED_SECRET` 仅配置在受保护的主机环境文件中，页面只显示状态。TLS CA 文件路径、Server Name、网闸虚拟地址和设备侧映射策略仍由部署和网闸管理员管理。
+
+两端页面均提供“网闸对接配置”入口。配置页面只维护四个受控映射基地址、连接/传输超时、分块大小、重试次数、并行分块数和请求有效期；模式固定显示为 `mapping`。Edge 页面测试 Core 控制/传输映射，Core 页面测试 Edge 控制/回执映射。配置写入本侧 SQLite 并记录变更审计，页面只显示共享密钥是否配置及是否处于双密钥过渡状态，不显示密钥内容。保存前应先测试映射通道；URL 只允许 HTTP/HTTPS 基地址，不允许携带凭据、查询参数、任意代理路径或 CONNECT/Upgrade。
 
 云管连接地址和服务凭据由 `cam-core` 部署配置管理：API 基地址、超时等普通连接参数由受权限保护的环境配置文件提供；口令、令牌、客户端私钥和证书等秘密使用权限受限的只读密钥文件或证书挂载，不写入镜像、页面或普通日志。管理页面只维护日常变化的工单业务参数，不允许编辑云管端点或凭据。
 

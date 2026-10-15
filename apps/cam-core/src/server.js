@@ -6,6 +6,7 @@ import { CoreStore } from './core-store.js';
 import { CloudAdapter } from './cloud-adapter.js';
 import { registerCoreRoutes } from './routes.js';
 import { registerCoreAuth, AuthStore } from './auth.js';
+import { GateConfigStore } from '../../../libs/cam-gate/src/config.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/core' : join(process.cwd(), 'data', 'core'));
 
@@ -13,10 +14,11 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
   const db = await openDatabase(join(dataDir, 'core.sqlite'));
   const store = new CoreStore(db);
   const auth = new AuthStore(db);
+  const gateConfig = new GateConfigStore(db, { table: 'core_gate_config', eventsTable: 'core_gate_config_events' });
   const app = await buildServer({
     service: 'cam-core',
     configure: async (server) => {
-      registerCoreRoutes(server, { store, cloud: cloudAdapter, gateSecret, previousGateSecret });
+      registerCoreRoutes(server, { store, cloud: cloudAdapter, gateSecret, previousGateSecret, gateConfig });
       if (enableAuth) registerCoreAuth(server, { auth });
       server.addHook('onClose', async () => db.close());
     }
@@ -24,6 +26,7 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
   app.decorate('coreStore', store);
   app.decorate('cloudAdapter', cloudAdapter);
   app.decorate('authStore', auth);
+  app.decorate('gateConfigStore', gateConfig);
   return app;
 }
 

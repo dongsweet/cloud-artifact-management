@@ -40,12 +40,23 @@ async function loadCloudConfig() {
     $('#cloud-status').textContent = `连接参数：${result.secretConfigured ? '已配置' : '未配置'}；业务参数来源：${result.source === 'database' ? 'Core 数据库' : '.env 默认值'}；${mappingStatus}`;
   } catch (error) { message(error.message, 'danger'); }
 }
+async function loadGateConfig() {
+  const form = $('#gate-config-form');
+  try {
+    const result = await api('/api/v1/gate/config');
+    const item = result.item ?? {};
+    for (const element of form.elements) if (element.name && item[element.name] !== undefined) element.value = item[element.name];
+    $('#gate-secret-status').value = result.secretConfigured ? (result.previousSecretConfigured ? '当前密钥已配置（轮换过渡中）' : '已配置') : '未配置';
+    $('#gate-config-status').textContent = `配置来源：${result.item?.source === 'database' ? 'Core 数据库' : '.env 默认值'}；映射模式固定为 mapping。`;
+  } catch (error) { message(error.message, 'danger'); }
+}
 function showPage(page) {
-  const cloud = page === 'cloud-config'; const users = page === 'users';
-  $('#page-requests').classList.toggle('d-none', cloud || users); $('#page-cloud-config').classList.toggle('d-none', !cloud); $('#page-users').classList.toggle('d-none', !users);
-  $('#page-title').textContent = cloud ? '云管对接配置' : users ? '账号管理' : '云管审批请求';
+  const cloud = page === 'cloud-config'; const gate = page === 'gate-config'; const users = page === 'users';
+  $('#page-requests').classList.toggle('d-none', cloud || gate || users); $('#page-cloud-config').classList.toggle('d-none', !cloud); $('#page-gate-config').classList.toggle('d-none', !gate); $('#page-users').classList.toggle('d-none', !users);
+  $('#page-title').textContent = cloud ? '云管对接配置' : gate ? '网闸对接配置' : users ? '账号管理' : '云管审批请求';
   document.querySelectorAll('[data-page]').forEach((link) => link.classList.toggle('active', link.dataset.page === page));
   if (cloud) loadCloudConfig();
+  if (gate) loadGateConfig();
   if (users) loadUsers();
 }
 async function loadUsers() {
@@ -76,4 +87,6 @@ $('#reset-form').addEventListener('submit', async (event) => { event.preventDefa
 $('#cloud-config-form').addEventListener('submit', async (event) => { event.preventDefault(); const body = Object.fromEntries(new FormData(event.currentTarget)); try { const result = await api('/api/v1/cloud/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); renderCloudMappings(result.item.resolvedMappings); message('云管业务参数和匹配 ID 已保存；后续工单将复用这些 ID。'); await loadCloudConfig(); } catch (error) { message(error.message, 'danger'); } });
 $('#cloud-test').addEventListener('click', async () => { const button = $('#cloud-test'); button.disabled = true; try { const config = Object.fromEntries(new FormData($('#cloud-config-form'))); const result = await api('/api/v1/cloud/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(config) }); renderCloudMappings(result.mappings); $('#cloud-status').textContent = '连接和参数校验成功；点击“保存配置”后，匹配 ID 将持久化并供后续工单复用。'; message('云管连接正常，全部工单参数校验成功。'); } catch (error) { renderCloudMappings(); $('#cloud-status').textContent = '校验失败，请检查填写项后重新测试。'; message(`连接或字典解析失败：${error.message}`, 'danger'); } finally { button.disabled = false; } });
 $('#cloud-config-form').addEventListener('input', () => { renderCloudMappings(); $('#cloud-status').textContent = '参数已修改，需重新测试并保存以更新匹配 ID。'; clearMessage(); });
+$('#gate-config-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); message('网闸映射配置已保存'); await loadGateConfig(); } catch (error) { message(error.message, 'danger'); } });
+$('#gate-test').addEventListener('click', async () => { const button = $('#gate-test'); button.disabled = true; try { const result = await api('/api/v1/gate/config/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData($('#gate-config-form')))) }); $('#gate-config-status').textContent = `控制通道测试成功：${Object.keys(result.checks).map((key) => `${key}=${result.checks[key].service ?? 'ready'}`).join('，')}`; message('网闸映射通道测试成功'); } catch (error) { $('#gate-config-status').textContent = '映射通道测试失败，请检查网闸虚拟地址和策略。'; message(error.message, 'danger'); } finally { button.disabled = false; } });
 try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) await load(); } catch { showLogin(); }
