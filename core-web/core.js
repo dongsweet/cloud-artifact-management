@@ -48,7 +48,17 @@ async function loadGateConfig() {
     for (const element of form.elements) if (element.name && item[element.name] !== undefined) element.value = item[element.name];
     $('#gate-secret-status').value = result.secretConfigured ? (result.previousSecretConfigured ? '当前密钥已配置（轮换过渡中）' : '已配置') : '未配置';
     $('#gate-config-status').textContent = `配置来源：${result.item?.source === 'database' ? 'Core 数据库' : '.env 默认值'}；映射模式固定为 mapping。`;
+    await loadGateKeys();
   } catch (error) { message(error.message, 'danger'); }
+}
+async function loadGateKeys() {
+  const result = await api('/api/v1/gate/keys');
+  $('#gate-identity-bundle').value = JSON.stringify(result.identityBundle, null, 2);
+  $('#gate-peer-fingerprint').textContent = result.item.peerTrusted ? result.item.peerFingerprint : '尚未配对';
+  $('#gate-key-state').textContent = result.item.keyConfigured ? `当前密钥 ${result.item.activeKeyId}；${result.item.previousKeyExpiresAt ? `旧密钥过渡至 ${new Date(result.item.previousKeyExpiresAt).toLocaleString()}` : '无旧密钥过渡'}` : '尚未建立共享密钥，完成双端身份配对后可自动初始化';
+  $('#gate-secret-status').value = result.item.keyConfigured ? (result.item.previousKeyExpiresAt ? '自动管理（新旧密钥过渡中）' : '自动管理（已配置）') : '等待 Edge 配对并初始化';
+  $('#gate-rotation-days').value = result.item.rotationIntervalDays;
+  $('#gate-grace-hours').value = result.item.gracePeriodHours;
 }
 function showPage(page) {
   const cloud = page === 'cloud-config'; const gate = page === 'gate-config'; const users = page === 'users';
@@ -89,4 +99,7 @@ $('#cloud-test').addEventListener('click', async () => { const button = $('#clou
 $('#cloud-config-form').addEventListener('input', () => { renderCloudMappings(); $('#cloud-status').textContent = '参数已修改，需重新测试并保存以更新匹配 ID。'; clearMessage(); });
 $('#gate-config-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); message('网闸映射配置已保存'); await loadGateConfig(); } catch (error) { message(error.message, 'danger'); } });
 $('#gate-test').addEventListener('click', async () => { const button = $('#gate-test'); button.disabled = true; try { const result = await api('/api/v1/gate/config/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData($('#gate-config-form')))) }); $('#gate-config-status').textContent = `控制通道测试成功：${Object.keys(result.checks).map((key) => `${key}=${result.checks[key].service ?? 'ready'}`).join('，')}`; message('网闸映射通道测试成功'); } catch (error) { $('#gate-config-status').textContent = '映射通道测试失败，请检查网闸虚拟地址和策略。'; message(error.message, 'danger'); } finally { button.disabled = false; } });
+$('#gate-trust-peer').addEventListener('click', async () => { try { const identityBundle = JSON.parse($('#gate-peer-bundle-input').value); await api('/api/v1/gate/keys/trusted-peer', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identityBundle }) }); $('#gate-peer-bundle-input').value = ''; await loadGateKeys(); message('Edge 身份已配对；Core 将按轮换策略自动建立密钥'); } catch (error) { message(error.message, 'danger'); } });
+$('#gate-schedule').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/keys/schedule', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rotationIntervalDays: Number($('#gate-rotation-days').value), gracePeriodHours: Number($('#gate-grace-hours').value) }) }); await loadGateKeys(); message('自动轮换策略已保存'); } catch (error) { message(error.message, 'danger'); } });
+$('#gate-rotate-now').addEventListener('click', async () => { const button = $('#gate-rotate-now'); button.disabled = true; try { await api('/api/v1/gate/keys/rotate', { method: 'POST', headers: { 'content-type': 'application/json' } }); await loadGateKeys(); message('共享密钥已完成轮换'); } catch (error) { message(error.message, 'danger'); } finally { button.disabled = false; } });
 try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) await load(); } catch { showLogin(); }

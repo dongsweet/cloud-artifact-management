@@ -19,8 +19,8 @@
 先确保宿主机数据目录及权限已配置，使用现有直连部署。初始化命令只在空账号库上可运行，无 HTTP 初始化入口、默认密码或环境变量密码。
 
 ```bash
-docker compose -f compose.direct.yaml up -d --build cam-edge cam-edge-web
-docker compose -f compose.direct.yaml exec -it cam-edge \
+docker compose --env-file deploy/.env -f compose.direct.yaml up -d --build cam-edge cam-edge-web
+docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-edge \
   node apps/cam-edge/src/bootstrap-admin.js
 ```
 

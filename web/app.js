@@ -112,7 +112,16 @@ async function loadGateConfig() {
     for (const element of form.elements) if (element.name && item[element.name] !== undefined) element.value = item[element.name];
     $('#gate-secret-status').value = result.secretConfigured ? (result.previousSecretConfigured ? '已配置（轮换过渡中）' : '已配置') : '未配置';
     $('#gate-config-status').textContent = `配置来源：${item.source === 'database' ? 'Edge 数据库' : '.env 默认值'}；映射模式固定为 mapping。`;
+    await loadGateKeys();
   } catch (error) { showAlert(error.message, 'danger'); }
+}
+
+async function loadGateKeys() {
+  const result = await api('/api/v1/gate/keys');
+  $('#gate-identity-bundle').value = JSON.stringify(result.identityBundle, null, 2);
+  $('#gate-peer-fingerprint').textContent = result.item.peerTrusted ? result.item.peerFingerprint : '尚未配对';
+  $('#gate-secret-status').value = result.item.keyConfigured ? (result.item.previousKeyExpiresAt ? '自动管理（新旧密钥过渡中）' : '自动管理（已配置）') : '等待 Core 配对并初始化';
+  $('#gate-key-state').textContent = result.item.keyConfigured ? `当前密钥 ${result.item.activeKeyId}；${result.item.previousKeyExpiresAt ? `旧密钥过渡至 ${new Date(result.item.previousKeyExpiresAt).toLocaleString()}` : '无旧密钥过渡'}` : '尚未建立共享密钥，完成双端身份配对后由 Core 自动初始化';
 }
 
 function productFilterItems(products) { return products.map((item) => ({ id: item.productId, name: item.name })); }
@@ -698,6 +707,7 @@ $('#candidate-edit-button').addEventListener('click', openCandidateEditor);
 $('#candidate-delete-button').addEventListener('click', deleteCandidate);
 $('#gate-config-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/config', { method: 'PUT', body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); showAlert('网闸映射配置已保存'); await loadGateConfig(); } catch (error) { showAlert(error.message, 'danger'); } });
 $('#gate-test').addEventListener('click', async () => { const button = $('#gate-test'); button.disabled = true; try { const result = await api('/api/v1/gate/config/test', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData($('#gate-config-form')))) }); $('#gate-config-status').textContent = `控制通道测试成功：${Object.keys(result.checks).map((key) => `${key}=${result.checks[key].service ?? 'ready'}`).join('，')}`; showAlert('网闸映射通道测试成功'); } catch (error) { $('#gate-config-status').textContent = '映射通道测试失败，请检查网闸虚拟地址和策略。'; showAlert(error.message, 'danger'); } finally { button.disabled = false; } });
+$('#gate-trust-peer').addEventListener('click', async () => { try { const identityBundle = JSON.parse($('#gate-peer-bundle-input').value); await api('/api/v1/gate/keys/trusted-peer', { method: 'PUT', body: JSON.stringify({ identityBundle }) }); $('#gate-peer-bundle-input').value = ''; await loadGateKeys(); showAlert('Core 身份已配对；Core 将按轮换策略自动建立密钥'); } catch (error) { showAlert(error.message, 'danger'); } });
 window.addEventListener('hashchange', renderRoute);
 
 document.querySelectorAll('[data-modal]').forEach((button) => button.addEventListener('click', async () => {

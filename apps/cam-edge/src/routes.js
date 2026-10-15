@@ -135,13 +135,14 @@ export async function finalizeCandidate(store, candidateId) {
   return completed;
 }
 
-export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig }) {
+export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring }) {
   app.get('/api/v1/gate/config', async (request, reply) => {
     const item = gateConfig.get();
-    return reply.send({ item, secretConfigured: Boolean(process.env.CAM_GATE_SHARED_SECRET), previousSecretConfigured: Boolean(process.env.CAM_GATE_PREVIOUS_SHARED_SECRET) });
+    const keys = await keyring.status();
+    return reply.send({ item, secretConfigured: keys.keyConfigured, previousSecretConfigured: Boolean(keys.previousKeyExpiresAt) });
   });
   app.put('/api/v1/gate/config', { bodyLimit: 8192 }, async (request, reply) => {
-    try { return reply.send({ item: gateConfig.save(request.body ?? {}, request.principal?.id), secretConfigured: Boolean(process.env.CAM_GATE_SHARED_SECRET), previousSecretConfigured: Boolean(process.env.CAM_GATE_PREVIOUS_SHARED_SECRET) }); }
+    try { const item = gateConfig.save(request.body ?? {}, request.principal?.id); const keys = await keyring.status(); return reply.send({ item, secretConfigured: keys.keyConfigured, previousSecretConfigured: Boolean(keys.previousKeyExpiresAt) }); }
     catch (err) { return error(reply, 400, err.code ?? 'gate_config_invalid', err.message); }
   });
   app.post('/api/v1/gate/config/test', { bodyLimit: 8192 }, async (request, reply) => {
@@ -151,6 +152,26 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       for (const [name, url] of Object.entries({ coreControlUrl: config.coreControlUrl, coreTransferUrl: config.coreTransferUrl })) checks[name] = await checkGateHealth(url, { timeoutMs: config.connectTimeoutMs });
       return reply.send({ ok: true, checks });
     } catch (err) { return error(reply, 502, err.code ?? 'gate_test_failed', err.message); }
+  });
+  app.get('/api/v1/gate/keys', async (request, reply) => {
+    if (!request.principal?.roles?.includes('EDGE_ADMIN')) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置权限');
+    return { item: await keyring.status(), identityBundle: await keyring.identity() };
+  });
+  app.put('/api/v1/gate/keys/trusted-peer', { bodyLimit: 16 * 1024 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('EDGE_ADMIN')) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
+    try { return { item: await keyring.trustPeer(request.body?.identityBundle) }; }
+    catch (err) { return error(reply, 400, err.code ?? 'gate_peer_invalid', err.message); }
+  });
+  app.post('/api/v1/gate/key-rotation/proposals', { bodyLimit: 16 * 1024 }, async (request, reply) => {
+    if (!await keyring.verifySecret(request.headers['x-cam-gate-secret'])) return error(reply, 401, 'gate_auth_required', '网闸密钥轮换身份校验失败');
+    try { return await keyring.acceptProposal(request.body ?? {}); }
+    catch (err) { return error(reply, 401, err.code ?? 'gate_rotation_rejected', err.message); }
+  });
+  app.post('/api/v1/gate/key-rotation/proposals/:keyId/confirm', { bodyLimit: 4096 }, async (request, reply) => {
+    if (!await keyring.verifySecret(request.headers['x-cam-gate-secret'], { includePending: true })) return error(reply, 401, 'gate_auth_required', '网闸密钥确认身份校验失败');
+    if (request.body?.keyId !== request.params.keyId) return error(reply, 400, 'gate_rotation_state_invalid', '轮换密钥 ID 不匹配');
+    try { return { item: await keyring.confirmAtEdge(request.params.keyId) }; }
+    catch (err) { return error(reply, 409, err.code ?? 'gate_rotation_state_invalid', err.message); }
   });
   app.get('/api/v1/rounds/:roundId/freezes', async (request, reply) => {
     if (!store.getRound(request.params.roundId)) return error(reply, 404, 'round_not_found', 'round not found');

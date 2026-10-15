@@ -11,6 +11,7 @@ import { AuthStore } from './auth-store.js';
 import { registerAuth } from './auth.js';
 import { FreezeStore } from './freeze-store.js';
 import { GateConfigStore } from '../../../libs/cam-gate/src/config.js';
+import { GateKeyring } from '../../../libs/cam-gate/src/keyring.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/edge' : join(process.cwd(), 'data', 'edge'));
 
@@ -23,11 +24,13 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   const auth = new AuthStore(db);
   const freezes = new FreezeStore({ db, dataDir, candidateStore: store });
   const gateConfig = new GateConfigStore(db, { table: 'edge_gate_config', eventsTable: 'edge_gate_config_events', requiredUrlFields: ['coreControlUrl', 'coreTransferUrl'] });
+  const keyring = new GateKeyring({ filePath: join(dataDir, 'gate-keyring.json'), role: 'edge', bootstrapSecret: process.env.CAM_GATE_SHARED_SECRET, bootstrapPreviousSecret: process.env.CAM_GATE_PREVIOUS_SHARED_SECRET });
+  await keyring.ready;
   const app = await buildServer({
     service: 'cam-edge',
     configure: async (server) => {
       registerAuth(server, { auth, principalProvider, secureCookies });
-      registerCandidateRoutes(server, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig });
+      registerCandidateRoutes(server, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring });
       server.addHook('onClose', async () => db.close());
     }
   });
@@ -39,6 +42,7 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   app.decorate('authStore', auth);
   app.decorate('freezeStore', freezes);
   app.decorate('gateConfigStore', gateConfig);
+  app.decorate('gateKeyring', keyring);
   queueMicrotask(() => scheduler.start());
   return app;
 }

@@ -21,7 +21,7 @@ CAM 应为每条业务链路配置独立、最小化的映射规则。建议至�
 
 实际虚拟 IP、目标 IP、端口、入口设备和出口设备由网闸管理员根据现场地址规划填写，不能写死在 CAM 代码中。若现场将审批控制消息和大文件合并为一个 HTTPS 映射端口，应仍在应用层区分消息接口和制品接口，并分别校验权限、摘要和任务编号。
 
-部署配置按通信方向区分映射地址：Edge 的 `.env` 配置 `CAM_GATE_CORE_CONTROL_URL` 和 `CAM_GATE_CORE_TRANSFER_URL`，即 Edge 外侧访问的 Core 控制与制品传输虚拟地址；Core 的 `.env` 配置 `CAM_GATE_EDGE_CONTROL_URL` 和 `CAM_GATE_EDGE_TRANSFER_URL`，即 Core 内侧访问的 Edge 控制与制品/回执虚拟地址。地址填写山石网闸提供的本区可达虚拟地址，不填写对端容器内网地址；业务路径继续由 CAM 固定。`CAM_GATE_CHUNK_SIZE_BYTES`、`CAM_GATE_RETRY_LIMIT`、`CAM_GATE_CONNECT_TIMEOUT_MS`、`CAM_GATE_TRANSFER_TIMEOUT_MS`、`CAM_GATE_MAX_IN_FLIGHT_CHUNKS` 和 `CAM_GATE_REQUEST_TTL_SECONDS` 分别控制分块、重试、超时、并发和请求有效期。当前版本提供 Edge 和 Core 的“网闸对接配置”页面。Edge 页面填写外侧访问 Core 的控制/制品传输地址，Core 页面填写内侧访问 Edge 的控制/制品回执地址；两类配置分别保存到本区 SQLite 的 `edge_gate_config` 或 `core_gate_config` 并记录变更审计。页面不能查看或修改共享密钥。共享密钥、上一把密钥、TLS CA 文件和网闸策略仍由部署环境及网闸管理员管理。保存前可调用配置测试接口检查受控映射地址的 `/health/ready`，测试通过后再保存。
+部署配置按通信方向区分映射地址：Edge 配置 `CAM_GATE_CORE_CONTROL_URL` 和 `CAM_GATE_CORE_TRANSFER_URL`，即 Edge 外侧访问的 Core 控制与制品传输虚拟地址；Core 配置 `CAM_GATE_EDGE_CONTROL_URL` 和 `CAM_GATE_EDGE_TRANSFER_URL`，即 Core 内侧访问的 Edge 控制与制品/回执虚拟地址。地址填写山石网闸提供的本区可达虚拟地址，不填写对端容器内网地址；业务路径继续由 CAM 固定。`CAM_GATE_CHUNK_SIZE_BYTES`、`CAM_GATE_RETRY_LIMIT`、`CAM_GATE_CONNECT_TIMEOUT_MS`、`CAM_GATE_TRANSFER_TIMEOUT_MS`、`CAM_GATE_MAX_IN_FLIGHT_CHUNKS` 和 `CAM_GATE_REQUEST_TTL_SECONDS` 分别控制分块、重试、超时、并发和请求有效期。当前版本提供 Edge 和 Core 的“网闸对接配置”页面。Edge 页面填写外侧访问 Core 的控制/制品传输地址，Core 页面填写内侧访问 Edge 的控制/制品回执地址；两类配置分别保存到本区 SQLite 的 `edge_gate_config` 或 `core_gate_config` 并记录变更审计。首次使用通过页面互相配对身份包，之后由 Core 自动生成并轮换共享密钥；私钥和密钥环分别持久化在各自安全区的数据目录中，页面不会展示密钥内容。
 
 在映射模式下，CAM 的应用链路仍应保持异步和幂等：
 
@@ -84,4 +84,4 @@ Edge/Core 在此测试 Compose 中通过 `http://cam-gate-sim:<端口>` 访问�
 
 测试机当前 `cam-core` 中，云管 API 基地址和服务身份已配置；但级别、来源、业务类型、所属中心、运维团队和处理人映射均未配置。只读字典请求尝试还遇到 socket 层错误，当前 VPN 网络路径也未验证成功。因而目前不能可靠创建工单。真实工单会写入云管业务系统，需等只读接口连通、映射检查通过后，由用户明确确认再做创建测试。
 
-启用工单提交流程前还必须完成 Edge 审批申请与 Core 之间的文件消息交付、审批状态回传、正式制品传输和接收回执闭环。共享密钥应在该联动定型后实施版本化轮换：Core 生成新密钥，短期双密钥过渡，Edge 确认切换后撤销旧密钥；新旧密钥不写日志，轮换与撤销写审计记录。密钥如何通过隔离区安全分发须与网闸管理员共同定规，不能把明文密钥直接放入普通文件摆渡包。
+共享密钥轮换通过 Edge/Core 映射控制通道完成：Core 用 Edge 已配对的 X25519 公钥加密新密钥，并用已配对的 Ed25519 身份密钥签名提案；Edge 验签、解密后回传新密钥持有证明。双方进入配置的短期双密钥窗口，Core 使用新密钥确认 Edge 已切换，随后旧密钥在宽限期结束后自动撤销。轮换失败时保留旧密钥并重试；密钥材料不写日志或摆渡包，轮换事件记录 key ID、时间和结果。

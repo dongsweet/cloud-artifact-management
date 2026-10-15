@@ -37,7 +37,7 @@ curl http://127.0.0.1:3103/health/live
 测试机暂时不使用 Hillstone 时，使用直连覆盖文件启动外部交换区页面和 API：
 
 ```bash
-docker compose -f compose.direct.yaml up -d --build
+docker compose --env-file deploy/.env -f compose.direct.yaml up -d --build
 ```
 
 该命令只解除 `cam-edge` 对 Hillstone 网络命名空间的依赖，不会删除业务数据目录。
@@ -56,7 +56,7 @@ Caddyfile，并保留其全局 DNS Challenge 配置。浏览器入口为
 时，在测试机交互终端执行以下命令创建本地管理员，页面登录后必须修改初始密码：
 
 ```bash
-docker compose -f compose.direct.yaml exec -it cam-core node apps/cam-core/src/bootstrap-admin.js
+docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-core node apps/cam-core/src/bootstrap-admin.js
 ```
 
 Core 账号
@@ -90,7 +90,7 @@ SQLite 文件位于 `${CAM_EDGE_DATA_DIR}/edge/edge.sqlite`、`${CAM_CORE_DATA_D
 测试机更新 `cam-core` 时使用常规直连部署文件：
 
 ```bash
-docker compose -f compose.direct.yaml up -d --build cam-core
+docker compose --env-file deploy/.env -f compose.direct.yaml up -d --build cam-core
 ```
 
 容器重建或 IP 变化后，需要重新运行外部脚本的 `route-on`，更新来源 IP 规则。确认方式：
@@ -138,4 +138,4 @@ node tools/cam-gate-simulator.js --root /tmp/cam-gate-test --direction outside-t
 
 生产环境的山石网闸按现场确认采用映射模式：只映射 CAM 指定的虚拟 IP/端口到指定服务端口，并限制源对象、目的对象、协议和方向。网闸模式调研、映射规则建议、测试目录约定和云管联调现状见 [`docs/gate-integration-and-simulator.md`](docs/gate-integration-and-simulator.md)。
 
-跨区受控接口支持短期双密钥轮换：在 Core 容器内生成新值（`docker compose --env-file deploy/.env -f compose.direct.yaml exec cam-core node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url") + "\\n")'`），在 `CAM_GATE_SHARED_SECRET` 配置新值、在 `CAM_GATE_PREVIOUS_SHARED_SECRET` 暂留旧值。待 Edge/网闸侧切换并验证后，清空旧值并重启 Core。两个值都只在目标主机的 `deploy/.env` 中保存，不写 SQLite、交换包或日志；具体双侧密钥安全交接仍须按现场网闸管理流程执行。
+跨区受控接口的共享密钥由 Core 的密钥环自动管理。首次配对前，`CAM_GATE_SHARED_SECRET` 仅作为一次性引导密钥注入两端；完成 Edge/Core 身份配对后，Core 按页面配置的轮换周期生成新密钥，经加密提案、双端确认和短期新旧密钥过渡自动完成轮换。密钥环保存在各安全区数据目录的 `gate-keyring.json`，不写 SQLite、交换包或日志；`.env` 中不再手工维护日常轮换值。
