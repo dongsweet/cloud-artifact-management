@@ -225,6 +225,12 @@ export class CloudAdapter {
       if (!response.ok) throw cloudError(value?.msg ?? value?.message ?? value?.error ?? `cloud API returned ${response.status}`, response.status);
       if (value && value.code !== undefined && String(value.code) !== '0') throw cloudError(value.msg ?? value.message ?? `cloud API returned business code ${value.code}`, response.status);
       return dataOf(value);
+    } catch (error) {
+      if (error.code === 'cloud_api_error') throw error;
+      const causeCode = error.cause?.code ?? error.code;
+      if (error.name === 'AbortError' || causeCode === 'UND_ERR_ABORTED') throw cloudError(`云管 API 请求超时（${url.host}）`);
+      if (causeCode) throw cloudError(`云管 API 连接失败（${url.host}）：${causeCode}`);
+      throw error;
     } finally { clearTimeout(timer); }
   }
 

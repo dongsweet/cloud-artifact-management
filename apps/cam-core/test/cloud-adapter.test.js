@@ -16,6 +16,18 @@ function response(data, code = 0, status = 200) {
   return new Response(JSON.stringify({ code, msg: code === 0 ? '操作成功' : '失败', data }), { status, headers: { 'content-type': 'application/json' } });
 }
 
+test('CloudAdapter keeps upstream socket failure details without exposing credentials', async () => {
+  const adapter = new CloudAdapter({
+    baseUrl: 'http://100.127.2.35:9006', authUserId: '2308', authSecret: 'hidden-secret', env,
+    fetchImpl: async () => { throw Object.assign(new TypeError('fetch failed', { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) }), { code: 'FETCH_FAILED' }); }
+  });
+  await assert.rejects(() => adapter.request('/probe'), (error) => {
+    assert.match(error.message, /100\.127\.2\.35:9006.*UND_ERR_SOCKET/);
+    assert.doesNotMatch(error.message, /hidden-secret/);
+    return true;
+  });
+});
+
 test('Core business configuration accepts usernames instead of numeric IDs', () => {
   const config = readConfig(env, { ...env, processUserNames: 'zhuren_luan' });
   assert.deepEqual(config.processUserNames, ['zhuren_luan']);
