@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, rm, rename, stat } from 'node:fs/promises';
+import { mkdir, rm, rename, stat, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 import { assembleChunks } from '../../../libs/cam-transfer/src/transfer.js';
@@ -136,6 +136,22 @@ export async function finalizeCandidate(store, candidateId) {
 }
 
 export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher }) {
+  // 专用于 Core 通过网闸映射拉取验证报告。该地址只接受当前轮换密钥，
+  // 不经过浏览器会话和外部区账号权限，且申请编号绑定报告路径。
+  app.get('/api/v1/gate/transfer/reports/:requestId', async (request, reply) => {
+    if (!await keyring.verifySecret(request.headers['x-cam-gate-secret'])) return error(reply, 401, 'gate_auth_required', '报告传输身份校验失败');
+    const freeze = freezes.get(request.params.requestId);
+    const path = freezes.reportPath(request.params.requestId);
+    if (!freeze || !path || freeze.status === 'DRAFT') return error(reply, 404, 'report_not_found', 'verification report not found');
+    try {
+      const info = await stat(path);
+      const range = parseRange(request.headers.range, info.size);
+      if (range === 'invalid') return reply.code(416).header('Content-Range', `bytes */${info.size}`).send();
+      reply.type('application/pdf').header('Accept-Ranges', 'bytes').header('Content-Length', String(range ? range.end - range.start + 1 : info.size)).header('X-Report-Sha256', freeze.reportSha256);
+      if (!range) return reply.header('Content-Disposition', `attachment; filename="${encodeURIComponent(freeze.reportFileName)}"`).send(createReadStream(path));
+      return reply.code(206).header('Content-Range', `bytes ${range.start}-${range.end}/${info.size}`).send(createReadStream(path, { start: range.start, end: range.end }));
+    } catch { return error(reply, 404, 'report_not_found', 'verification report not found'); }
+  });
   app.get('/api/v1/gate/config', async (request, reply) => {
     const item = gateConfig.get();
     const keys = await keyring.status();
@@ -467,7 +483,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
 
   app.post('/api/v1/releases/:releaseId/rounds', async (request, reply) => {
-    try { return reply.code(201).send(store.createRound(request.params.releaseId, request.body ?? {})); }
+    try { return reply.code(201).send(store.createRound(request.params.releaseId, { ...(request.body ?? {}), createdBy: principal(request).principalId })); }
     catch (err) { return error(reply, 400, 'invalid_round', err.message); }
   });
 
@@ -478,7 +494,40 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.get('/api/v1/rounds/:roundId', async (request, reply) => {
     const round = store.getRound(request.params.roundId);
-    return round ? reply.send(round) : error(reply, 404, 'round_not_found', 'round not found');
+    if (!round) return error(reply, 404, 'round_not_found', 'round not found');
+    return reply.send({ ...round, attachments: store.listRoundAttachments(request.params.roundId) });
+  });
+
+  app.post('/api/v1/rounds/:roundId/attachments', { bodyLimit: 20 * 1024 * 1024 }, async (request, reply) => {
+    const round = store.getRound(request.params.roundId);
+    if (!round) return error(reply, 404, 'round_not_found', 'round not found');
+    if (freezes.locked(round.roundId)) return error(reply, 409, 'round_locked', '轮次审批或固化期间不能变更留痕附件');
+    const chunks = []; let size = 0;
+    for await (const chunk of request.raw) { size += chunk.length; if (size > 20 * 1024 * 1024) return error(reply, 413, 'attachment_too_large', '单个轮次附件不能超过 20 MiB'); chunks.push(Buffer.from(chunk)); }
+    const bytes = Buffer.concat(chunks);
+    let fileName; try { fileName = decodeURIComponent(request.headers['x-attachment-filename'] ?? ''); } catch { return error(reply, 400, 'attachment_invalid', '附件文件名编码无效'); }
+    if (!fileName || fileName.length > 180 || /[\\/\0]/u.test(fileName) || !/\.(pdf|docx?|xlsx?|txt|png|jpe?g)$/iu.test(fileName)) return error(reply, 400, 'attachment_invalid', '附件仅支持 PDF、Office 文档、TXT、PNG、JPG，文件名不超过 180 字');
+    if (!bytes.length) return error(reply, 400, 'attachment_invalid', '附件不能为空');
+    const contentType = String(request.headers['content-type'] ?? 'application/octet-stream').split(';')[0];
+    const attachmentId = `RATT-${Date.now()}-${randomUUID()}`;
+    const dir = join(store.dataDir, 'round-attachments', round.roundId);
+    const path = join(dir, `${attachmentId}-${fileName}`);
+    try {
+      await mkdir(dir, { recursive: true });
+      const temporary = `${path}.tmp`;
+      await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
+      await rename(temporary, path);
+      const item = store.addRoundAttachment(round.roundId, { fileName, contentType, fileSize: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), filePath: path, uploadedBy: principal(request).principalId });
+      return reply.code(201).send({ item });
+    } catch (err) { await rm(path, { force: true }); return error(reply, 400, 'attachment_save_failed', err.message); }
+  });
+
+  app.get('/api/v1/round-attachments/:attachmentId/file', async (request, reply) => {
+    const item = store.getRoundAttachment(request.params.attachmentId);
+    if (!item) return error(reply, 404, 'attachment_not_found', 'round attachment not found');
+    const path = store.roundAttachmentPath(item.attachmentId);
+    if (!path) return error(reply, 404, 'attachment_not_found', 'round attachment file not found');
+    return reply.type(item.contentType).header('Content-Length', String(item.fileSize)).header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.fileName)}`).send(createReadStream(path));
   });
 
   app.get('/api/v1/rounds/:roundId/candidates', async (request, reply) => {

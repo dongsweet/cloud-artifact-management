@@ -1,4 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
 import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/client.js';
 
@@ -42,16 +43,59 @@ async function rotateEdgeKey({ keyring, gateConfig }) {
   return keyring.markEdgeConfirmed(pending.id);
 }
 
-export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGateSecret, gateConfig, keyring, enableKeyRotation = false, cloudRetryDelayMs = 30_000 }) {
+export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGateSecret, gateConfig, keyring, enableKeyRotation = false, cloudRetryDelayMs = 30_000, fetchImpl = fetch }) {
   const cloudNextAttempt = new Map();
   const cloudInFlight = new Set();
+  const ensureCloudReport = async (requestId, envelope) => {
+    // Older control envelopes may contain only a report name/digest. New Edge
+    // envelopes include reportSize and therefore require the binary transfer.
+    if (!envelope?.reportFileName || !Number.isSafeInteger(envelope.reportSize)) return envelope;
+    let path = store.reportPath(requestId);
+    if (!path) {
+      const config = gateConfig.get();
+      if (!config.edgeTransferUrl) throw Object.assign(new Error('请先配置 Core 内侧访问 Edge 报告/回执映射地址'), { code: 'gate_address_missing' });
+      const secret = await keyring.currentSecret();
+      if (!secret) throw Object.assign(new Error('网闸共享密钥尚未初始化'), { code: 'gate_key_not_configured' });
+      const reportUrl = `${config.edgeTransferUrl.replace(/\/$/u, '')}/api/v1/gate/transfer/reports/${encodeURIComponent(requestId)}`;
+      const chunks = []; let offset = 0; const expected = envelope.reportSize; let reportResponseSha = null;
+      while (offset < expected) {
+        let received = false; let lastError = null;
+        for (let attempt = 1; attempt <= 4 && !received; attempt++) try {
+        const end = Math.min(expected - 1, offset + Math.max(1024 * 1024, Math.min(config.chunkSizeBytes, 4 * 1024 * 1024)) - 1);
+        const response = await fetchImpl(reportUrl, { headers: { 'x-cam-gate-secret': secret.toString('base64url'), accept: 'application/pdf', range: `bytes=${offset}-${end}` }, signal: AbortSignal.timeout(config.transferTimeoutMs) });
+        if (!response.ok) throw Object.assign(new Error(`从 Edge 获取验证报告失败（HTTP ${response.status}）`), { code: 'report_transfer_failed' });
+        const body = Buffer.from(await response.arrayBuffer());
+        reportResponseSha = response.headers.get('x-report-sha256') ?? reportResponseSha;
+        if (!body.length || body.length > expected - offset) throw Object.assign(new Error('Edge 返回的报告分块大小无效'), { code: 'report_transfer_failed' });
+        chunks.push(body); offset += body.length;
+        if (response.status !== 206 && offset < expected) throw Object.assign(new Error('Edge 未按 Range 返回完整报告'), { code: 'report_transfer_failed' });
+        received = true;
+        } catch (error) { lastError = error; if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 250 * attempt)); }
+        if (!received) throw lastError ?? Object.assign(new Error('报告传输失败'), { code: 'report_transfer_failed' });
+      }
+      if (offset !== expected) throw Object.assign(new Error(`验证报告传输未完成（已接收 ${offset}/${expected} 字节）`), { code: 'report_transfer_failed' });
+      const bytes = Buffer.concat(chunks);
+      const saved = await store.saveReport(requestId, bytes);
+      if (reportResponseSha && reportResponseSha.toLowerCase() !== saved.reportReceivedSha256) throw Object.assign(new Error('Edge 报告摘要响应头与实际内容不一致'), { code: 'report_integrity_failed' });
+      path = store.reportPath(requestId);
+    }
+    const item = store.get(requestId);
+    if (!item.reportReceived || item.reportReceivedSha256 !== item.reportSha256) throw Object.assign(new Error('Core 尚未持有经校验的验证报告'), { code: 'report_not_received' });
+    if (item.cloudAttachmentId) return { ...envelope, cloudAttachmentId: item.cloudAttachmentId };
+    if (typeof cloud.uploadApprovalReport !== 'function') throw Object.assign(new Error('云管文件上传协议尚未接入：缺少上传接口路径、请求格式和附件标识解析规则'), { code: 'cloud_attachment_upload_unavailable' });
+    const attachmentId = await cloud.uploadApprovalReport({ path, fileName: item.reportFileName, sha256: item.reportSha256, size: item.reportSize }, store.getCloudConfig());
+    if (typeof attachmentId !== 'string' || !attachmentId.trim()) throw Object.assign(new Error('云管报告上传未返回有效附件标识'), { code: 'cloud_attachment_upload_invalid' });
+    store.markReportAttachment(requestId, attachmentId.trim());
+    return { ...envelope, cloudAttachmentId: attachmentId.trim() };
+  };
   const submitCloud = async (requestId) => {
     if (cloudInFlight.has(requestId)) return;
     cloudInFlight.add(requestId);
     try {
       const item = store.get(requestId);
       if (!item || item.status !== 'CLOUD_PENDING' || item.cloudApprovalId) return;
-      store.markCloudSubmitted(requestId, await cloud.createApproval(store.envelope(requestId), store.getCloudConfig()));
+      const envelope = await ensureCloudReport(requestId, store.envelope(requestId));
+      store.markCloudSubmitted(requestId, await cloud.createApproval(envelope, store.getCloudConfig()));
       cloudNextAttempt.delete(requestId);
     } catch (err) {
       store.markError(requestId, err);
@@ -181,6 +225,13 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
   app.get('/api/v1/approval-requests/:requestId', async (request, reply) => {
     const item = store.get(request.params.requestId);
     return item ? reply.send({ item }) : error(reply, 404, 'request_not_found', 'approval request not found');
+  });
+
+  app.get('/api/v1/approval-requests/:requestId/report-file', async (request, reply) => {
+    const item = store.get(request.params.requestId);
+    const path = store.reportPath(request.params.requestId);
+    if (!item || !path || !item.reportReceived) return error(reply, 404, 'report_not_found', 'verification report not found');
+    return reply.type('application/pdf').header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.reportFileName ?? 'verification-report.pdf')}`).send(createReadStream(path));
   });
 
   app.post('/api/v1/approval-requests/:requestId/sync', async (request, reply) => {

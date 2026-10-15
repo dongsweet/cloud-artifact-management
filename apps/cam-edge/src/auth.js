@@ -12,7 +12,7 @@ export function registerAuth(app, { auth, principalProvider, secureCookies = pro
     const path = request.url.split('?')[0];
     if (!path.startsWith('/api/')) return;
     reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer');
-    if (/^\/api\/v1\/gate\/key-rotation\/proposals(?:\/[^/]+\/confirm)?$/.test(path)) return;
+    if (/^\/api\/v1\/gate\/(?:key-rotation\/proposals(?:\/[^/]+\/confirm)?|transfer\/reports\/[^/]+)$/.test(path)) return;
     const jar = cookies(request);
     request.principal = principalProvider ? await principalProvider(request) : auth.resolve(jar.cam_session);
     const tokenRoute = new RegExp('^/api/v1/downloads/[^/]+/(content|session)$').test(path) || new RegExp('^/api/v1/download-grants/[^/]+/manifest$').test(path);

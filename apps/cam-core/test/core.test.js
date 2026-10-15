@@ -140,3 +140,34 @@ test('Core retries a failed cloud work-order submission when Edge synchronizes t
     assert.equal(createAttempts, 2);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
+
+test('Core receives and verifies the PDF before uploading it and creating the cloud work order', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-report-'));
+  const pdf = Buffer.from('%PDF-1.7\nverification report');
+  const pdfSha = (await import('node:crypto')).createHash('sha256').update(pdf).digest('hex');
+  let uploaded; let created;
+  const cloud = {
+    async uploadApprovalReport(input) { uploaded = input; return '2026/10/report.pdf'; },
+    async createApproval(value) { created = value; return { approvalId: 'APR-WITH-REPORT', status: 'PENDING' }; }
+  };
+  const fetchImpl = async (_url, options) => {
+    assert.equal(options.headers['x-cam-gate-secret'], Buffer.from('gate-test').toString('base64url'));
+    return new Response(pdf, { status: 206, headers: { 'content-type': 'application/pdf', 'content-range': `bytes 0-${pdf.length - 1}/${pdf.length}`, 'x-report-sha256': pdfSha } });
+  };
+  const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false, fetchImpl });
+  app.gateConfigStore.save({ edgeControlUrl: 'http://edge-control', edgeTransferUrl: 'http://edge-transfer' }, 'test');
+  const headers = { 'x-cam-gate-secret': 'gate-test' };
+  try {
+    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: { ...envelope, requestId: 'FREEZE-REPORT', freezeId: 'FREEZE-REPORT', reportSha256: pdfSha, reportFileName: 'verification.pdf', reportSize: pdf.length } });
+    assert.equal(accepted.statusCode, 202, accepted.body);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const item = app.coreStore.get('FREEZE-REPORT');
+    assert.equal(item.reportReceived, true);
+    assert.equal(item.reportReceivedSha256, pdfSha);
+    assert.equal(item.cloudAttachmentId, '2026/10/report.pdf');
+    assert.equal(uploaded.fileName, 'verification.pdf');
+    assert.equal(uploaded.sha256, pdfSha);
+    assert.equal(created.cloudAttachmentId, '2026/10/report.pdf');
+    assert.equal(item.cloudApprovalId, 'APR-WITH-REPORT');
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});

@@ -109,12 +109,25 @@ export class CandidateStore {
         release_id TEXT NOT NULL,
         round_no INTEGER NOT NULL,
         base_round_id TEXT,
+        change_note TEXT NOT NULL DEFAULT '',
+        created_by TEXT,
         status TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(release_id, round_no),
         FOREIGN KEY (release_id) REFERENCES releases(release_id),
         FOREIGN KEY (base_round_id) REFERENCES release_rounds(round_id)
+      );
+      CREATE TABLE IF NOT EXISTS round_attachments (
+        attachment_id TEXT PRIMARY KEY,
+        round_id TEXT NOT NULL REFERENCES release_rounds(round_id),
+        file_name TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        file_size INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        uploaded_by TEXT NOT NULL,
+        created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS round_candidates (
         round_id TEXT NOT NULL,
@@ -177,6 +190,9 @@ export class CandidateStore {
       if (String(error.message).includes('UNIQUE')) throw new Error('product name already exists');
       throw error;
     }
+    const roundColumns = new Set(this.db.prepare('PRAGMA table_info(release_rounds)').all().map((column) => column.name));
+    if (!roundColumns.has('change_note')) this.db.exec("ALTER TABLE release_rounds ADD COLUMN change_note TEXT NOT NULL DEFAULT ''");
+    if (!roundColumns.has('created_by')) this.db.exec('ALTER TABLE release_rounds ADD COLUMN created_by TEXT');
     return this.getProduct(productId);
   }
 
@@ -260,18 +276,20 @@ export class CandidateStore {
     return { releaseId, deleted: true };
   }
 
-  createRound(releaseId, { baseRoundId = null } = {}) {
+  createRound(releaseId, { baseRoundId = null, changeNote = '', createdBy = null } = {}) {
     const release = this.getRelease(releaseId);
     if (!release) throw new Error('release not found');
     const base = baseRoundId ? this.getRound(baseRoundId) : null;
     if (baseRoundId && (!base || base.releaseId !== releaseId)) throw new Error('base round does not belong to release');
+    const note = String(changeNote ?? '').trim();
+    if (!note || note.length > 2000) throw new Error('请填写本轮收集/变更说明（1-2000 字）');
     const latest = this.db.prepare('SELECT MAX(round_no) AS round_no FROM release_rounds WHERE release_id = ?').get(releaseId);
     const roundNo = Number(latest?.round_no ?? 0) + 1;
     const roundId = id('ROUND');
     const timestamp = now();
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare('INSERT INTO release_rounds (round_id, release_id, round_no, base_round_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(roundId, releaseId, roundNo, baseRoundId, 'OPEN', timestamp, timestamp);
+      this.db.prepare('INSERT INTO release_rounds (round_id, release_id, round_no, base_round_id, change_note, created_by, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(roundId, releaseId, roundNo, baseRoundId, note, createdBy, 'OPEN', timestamp, timestamp);
       if (baseRoundId) {
         this.db.prepare(`INSERT INTO round_candidates (round_id, package_key, candidate_id, source, inherited_from_round_id, created_at)
           SELECT ?, package_key, candidate_id, 'INHERITED', ?, ? FROM round_candidates WHERE round_id = ?`).run(roundId, baseRoundId, timestamp, baseRoundId);
@@ -299,12 +317,35 @@ export class CandidateStore {
       version: row.version,
       roundNo: row.round_no,
       baseRoundId: row.base_round_id,
+      changeNote: row.change_note ?? '',
+      createdBy: row.created_by ?? null,
       status: row.status,
       candidateCount: row.candidate_count ?? 0,
       completedCandidateCount: row.completed_candidate_count ?? 0,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
+  }
+
+  addRoundAttachment(roundId, { fileName, contentType, fileSize, sha256, filePath, uploadedBy }) {
+    if (!this.getRound(roundId)) throw new Error('round not found');
+    const attachmentId = id('RATT');
+    const createdAt = now();
+    this.db.prepare('INSERT INTO round_attachments (attachment_id, round_id, file_name, content_type, file_size, sha256, file_path, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(attachmentId, roundId, fileName, contentType, fileSize, sha256, filePath, uploadedBy, createdAt);
+    return this.getRoundAttachment(attachmentId);
+  }
+
+  getRoundAttachment(attachmentId) {
+    const row = this.db.prepare('SELECT * FROM round_attachments WHERE attachment_id = ?').get(attachmentId);
+    return row ? { attachmentId: row.attachment_id, roundId: row.round_id, fileName: row.file_name, contentType: row.content_type, fileSize: row.file_size, sha256: row.sha256, uploadedBy: row.uploaded_by, createdAt: row.created_at } : null;
+  }
+
+  roundAttachmentPath(attachmentId) { return this.db.prepare('SELECT file_path FROM round_attachments WHERE attachment_id = ?').get(attachmentId)?.file_path ?? null; }
+
+  listRoundAttachments(roundId) {
+    if (!this.getRound(roundId)) throw new Error('round not found');
+    return this.db.prepare('SELECT attachment_id FROM round_attachments WHERE round_id = ? ORDER BY created_at').all(roundId).map(({ attachment_id }) => this.getRoundAttachment(attachment_id));
   }
 
   listRounds(releaseId) {

@@ -42,7 +42,8 @@ export class FreezeStore {
       dispatch_at: 'TEXT',
       core_approval_id: 'TEXT',
       core_status: 'TEXT',
-      core_response_json: 'TEXT'
+      core_response_json: 'TEXT',
+      report_size: 'INTEGER'
     };
     for (const [name, definition] of Object.entries(additions)) if (!columns.has(name)) db.exec(`ALTER TABLE round_freezes ADD COLUMN ${name} ${definition}`);
     db.prepare("UPDATE round_freezes SET dispatch_status = 'PENDING' WHERE status = 'PENDING_APPROVAL' AND dispatch_status = 'SENDING'").run();
@@ -96,7 +97,7 @@ export class FreezeStore {
     return {
       freezeId: row.freeze_id, roundId: row.round_id, status: row.status,
       reportTitle: row.report_title, conclusion: row.conclusion, environment: row.environment,
-      reportFileName: row.report_file_name, reportSha256: row.report_sha256,
+      reportFileName: row.report_file_name, reportSha256: row.report_sha256, reportSize: row.report_size ?? null,
       manifest: JSON.parse(row.manifest_json), manifestSha256: row.manifest_sha256,
       submittedBy: row.submitted_by, submittedAt: row.submitted_at,
       decidedBy: row.decided_by, decidedAt: row.decided_at,
@@ -150,8 +151,8 @@ export class FreezeStore {
       await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
       await rename(temporary, destination);
     } catch (error) { await rm(temporary, { force: true }); throw error; }
-    this.db.prepare('UPDATE round_freezes SET report_file_name = ?, report_path = ?, report_sha256 = ?, updated_at = ? WHERE freeze_id = ? AND status = \'DRAFT\'')
-      .run(fileName, destination, hash(bytes), now(), freezeId);
+    this.db.prepare('UPDATE round_freezes SET report_file_name = ?, report_path = ?, report_sha256 = ?, report_size = ?, updated_at = ? WHERE freeze_id = ? AND status = \'DRAFT\'')
+      .run(fileName, destination, hash(bytes), bytes.length, now(), freezeId);
     return this.get(freezeId);
   }
 
@@ -177,6 +178,7 @@ export class FreezeStore {
       manifestSha256: freeze.manifestSha256,
       reportSha256: freeze.reportSha256,
       reportFileName: freeze.reportFileName,
+      reportSize: freeze.reportSize,
       conclusion: freeze.conclusion,
       submittedBy: freeze.submittedBy,
       submittedAt: timestamp
@@ -202,7 +204,7 @@ export class FreezeStore {
       schemaVersion: 1, type: 'VERIFICATION_APPROVAL_REQUEST', requestId: freeze.freezeId,
       freezeId: freeze.freezeId, roundId: freeze.roundId, releaseId: freeze.manifest.releaseId,
       manifestSha256: freeze.manifestSha256, reportSha256: freeze.reportSha256,
-      reportFileName: freeze.reportFileName, conclusion: freeze.conclusion,
+      reportFileName: freeze.reportFileName, reportSize: freeze.reportSize, conclusion: freeze.conclusion,
       submittedBy: freeze.submittedBy, submittedAt: freeze.submittedAt
     };
   }

@@ -330,6 +330,7 @@ async function decideFreeze(decision) {
 
 async function renderRound(round, candidates) {
   $('#round-summary').innerHTML = round ? `<div class="col-md-4"><div class="small-box text-bg-primary"><div class="inner"><h3>${round.roundNo}</h3><p>候选轮次</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-success"><div class="inner"><h3>${round.completedCandidateCount}/${round.candidateCount}</h3><p>已完成候选包</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-secondary"><div class="inner"><h3>${round.baseRoundId ? '继承' : '初始'}</h3><p>轮次来源</p></div></div></div>` : '';
+  $('#round-audit').innerHTML = round ? `<div class="card card-outline card-secondary mb-0"><div class="card-body py-2"><div><strong>本轮说明：</strong>${escapeHtml(round.changeNote || '未填写')}</div><div class="small text-body-secondary mt-1">创建人：${escapeHtml(round.createdBy || '-')}　创建时间：${escapeHtml(round.createdAt || '-')}</div>${round.attachments?.length ? `<div class="small mt-1">留痕附件：${round.attachments.map((item) => `<a class="me-2" href="/api/v1/round-attachments/${encodeURIComponent(item.attachmentId)}/file" target="_blank" rel="noopener">${escapeHtml(item.fileName)}</a><span class="text-body-secondary me-2">(${formatBytes(item.fileSize)})</span>`).join('')}</div>` : '<div class="small text-body-secondary mt-1">暂无留痕附件</div>'}</div></div>` : '';
   $('#round-candidate-rows').innerHTML = candidates.length ? candidates.map((item) => `<tr><td>${escapeHtml(item.type ?? '-')}</td><td>${escapeHtml(item.packageKey ?? item.fileName)}</td><td>${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td class="font-monospace small">${escapeHtml(item.finalSha256 ?? item.expectedSha256 ?? '-')}</td><td><span class="badge ${item.mappingSource === 'INHERITED' ? 'text-bg-info' : 'text-bg-secondary'}">${item.mappingSource === 'INHERITED' ? `继承${item.inheritedFromRoundId ? ` · ${escapeHtml(item.inheritedFromRoundId.slice(-8))}` : ''}` : '本轮新增'}</span></td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><div class="d-flex gap-1"><button class="btn btn-outline-primary btn-sm" data-candidate="${escapeHtml(item.candidateId)}" title="查看候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button><button class="btn btn-outline-warning btn-sm" data-round-candidate-delete="${escapeHtml(item.candidateId)}" title="移出本轮；保留候选记录和文件"><i class="bi bi-dash-circle"></i><span class="visually-hidden">移出本轮</span></button></div></td></tr>`).join('') : '<tr><td colspan="8" class="text-center text-body-secondary py-4">本轮暂无候选包</td></tr>';
   document.querySelectorAll('[data-candidate]').forEach((button) => button.addEventListener('click', () => navigate('candidate-detail', { candidateId: button.dataset.candidate, ...paramsForState() })));
   document.querySelectorAll('[data-round-candidate-delete]').forEach((button) => button.addEventListener('click', () => detachRoundCandidate(button.dataset.roundCandidateDelete)));
@@ -742,12 +743,14 @@ $('#release-form').addEventListener('submit', async (event) => {
   } catch (error) { showAlert(error.message, 'danger'); }
 });
 
-$('#new-round-button').addEventListener('click', async () => {
+$('#new-round-button').addEventListener('click', () => { $('#round-form').reset(); modal('round').show(); });
+$('#round-form').addEventListener('submit', async (event) => {
+  event.preventDefault(); const button = event.currentTarget.querySelector('button[type=submit]'); button.disabled = true;
   try {
-    const round = await api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}/rounds`, { method: 'POST', body: JSON.stringify({ baseRoundId: state.roundId || null }) });
-    showAlert(`第 ${round.roundNo} 轮已创建${round.baseRoundId ? '，已继承上一轮候选包' : ''}`);
-    navigate('release-detail', { releaseId: state.releaseId, roundId: round.roundId });
-  } catch (error) { showAlert(error.message, 'danger'); }
+    const round = await api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}/rounds`, { method: 'POST', body: JSON.stringify({ baseRoundId: state.roundId || null, changeNote: $('#round-change-note').value.trim() }) });
+    for (const file of Array.from($('#round-attachments').files ?? [])) { const headers = { 'x-attachment-filename': encodeURIComponent(file.name), 'content-type': file.type || 'application/octet-stream' }; await api(`/api/v1/rounds/${encodeURIComponent(round.roundId)}/attachments`, { method: 'POST', headers, body: await file.arrayBuffer() }); }
+    modal('round').hide(); showAlert(`第 ${round.roundNo} 轮已创建${round.baseRoundId ? '，已继承上一轮候选包' : ''}`); navigate('release-detail', { releaseId: state.releaseId, roundId: round.roundId });
+  } catch (error) { showAlert(error.message, 'danger'); } finally { button.disabled = false; }
 });
 
 $('#new-package-button').addEventListener('click', () => {

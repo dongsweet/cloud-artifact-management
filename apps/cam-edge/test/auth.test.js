@@ -98,7 +98,7 @@ test('download ownership, token-only calls, revoked recipient and invalid Range 
     const bytes = Buffer.from('test-verified-content');
     const product = app.candidateStore.createProduct({ name: 'Grant scope test' });
     const release = app.candidateStore.createRelease(product.productId, { version: '1.0' });
-    const round = app.candidateStore.createRound(release.releaseId);
+    const round = app.candidateStore.createRound(release.releaseId, { changeNote: '授权范围测试' });
     const c = await app.candidateStore.create({ releaseId: release.releaseId, sourceUrl: 'https://dev.invalid/pkg.bin', fileName: 'pkg.bin', size: bytes.length });
     await writeFile(c.source_path, bytes);
     app.candidateStore.db.prepare("UPDATE candidates SET status = 'COMPLETED', final_sha256 = ? WHERE candidate_id = ?").run(createHash('sha256').update(bytes).digest('hex'), c.candidate_id);

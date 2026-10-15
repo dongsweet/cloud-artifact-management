@@ -14,7 +14,7 @@ test('completed round can be submitted with a PDF report, approved by another us
   const app = await buildEdgeApp({ principalProvider: () => identity, dataDir, defaultChunkSize: 8 });
   const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Stack' } })).json();
   const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '8.0.6.2' } })).json();
-  const round = (await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: {} })).json();
+  const round = (await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: { changeNote: '测试轮次' } })).json();
   const payload = Buffer.from('package');
   const candidate = (await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.roundId}/candidates`, payload: { sourceUrl: 'https://example.invalid/package.tar.gz', fileName: 'package.tar.gz', packageKey: 'core', size: payload.length, chunkSize: 8, targets: ['政务外网'] } })).json();
   const part = await app.inject({ method: 'PUT', url: `/api/v1/candidates/${candidate.candidateId}/parts/0`, headers: { 'content-type': 'application/octet-stream', 'x-chunk-sha256': sha256(payload) }, payload });
@@ -63,7 +63,7 @@ test('freeze requires every candidate to have completed integrity verification',
   const app = await buildEdgeApp({ principalProvider: () => ({ id: 'validator', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER', 'VALIDATOR'] }), dataDir });
   const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Cloud' } })).json();
   const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } })).json();
-  const round = (await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: {} })).json();
+  const round = (await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: { changeNote: '测试轮次' } })).json();
   const incomplete = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.roundId}/candidates`, payload: { sourceUrl: 'https://example.invalid/a.bin', fileName: 'a.bin', size: 2 } });
   assert.equal(incomplete.statusCode, 201);
   const blocked = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.roundId}/freezes`, payload: { reportTitle: 'Report', conclusion: 'PASS', environment: 'Test' } });

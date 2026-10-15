@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}-${Date.now()}-${randomUUID()}`;
@@ -11,16 +13,18 @@ function required(value, name) {
 
 function response(row) {
   if (!row) return null;
-  return { requestId: row.request_id, freezeId: row.freeze_id, roundId: row.round_id, releaseId: row.release_id, status: row.status, manifestSha256: row.manifest_sha256, reportSha256: row.report_sha256, cloudApprovalId: row.cloud_approval_id, cloudTransferTaskId: row.cloud_transfer_task_id, cloudStatus: row.cloud_status, cloudWorkflowStep: row.cloud_workflow_step, cloudCheckedAt: row.cloud_checked_at, cloudMappingSnapshot: row.cloud_mapping_json ? JSON.parse(row.cloud_mapping_json) : null, cloudRequestSnapshot: row.cloud_request_json ? JSON.parse(row.cloud_request_json) : null, approvedAt: row.approved_at, expiresAt: row.expires_at, closeStatus: row.close_status, closeCheckedAt: row.close_checked_at, createdAt: row.created_at, updatedAt: row.updated_at, lastError: row.last_error, transferTaskId: row.transfer_task_id, transferStatus: row.transfer_status ?? null };
+  return { requestId: row.request_id, freezeId: row.freeze_id, roundId: row.round_id, releaseId: row.release_id, status: row.status, manifestSha256: row.manifest_sha256, reportSha256: row.report_sha256, reportFileName: row.report_file_name, reportSize: row.report_size, reportReceived: Boolean(row.report_received_at), reportReceivedSha256: row.report_received_sha256, cloudAttachmentId: row.cloud_attachment_id, cloudApprovalId: row.cloud_approval_id, cloudTransferTaskId: row.cloud_transfer_task_id, cloudStatus: row.cloud_status, cloudWorkflowStep: row.cloud_workflow_step, cloudCheckedAt: row.cloud_checked_at, cloudMappingSnapshot: row.cloud_mapping_json ? JSON.parse(row.cloud_mapping_json) : null, cloudRequestSnapshot: row.cloud_request_json ? JSON.parse(row.cloud_request_json) : null, approvedAt: row.approved_at, expiresAt: row.expires_at, closeStatus: row.close_status, closeCheckedAt: row.close_checked_at, createdAt: row.created_at, updatedAt: row.updated_at, lastError: row.last_error, transferTaskId: row.transfer_task_id, transferStatus: row.transfer_status ?? null };
 }
 
 export class CoreStore {
-  constructor(db) {
+  constructor(db, { dataDir = join(process.cwd(), 'data', 'core') } = {}) {
     this.db = db;
+    this.dataDir = dataDir;
+    this.reportDir = join(dataDir, 'verification-reports');
     db.exec(`
       CREATE TABLE IF NOT EXISTS core_approval_requests (
         request_id TEXT PRIMARY KEY, freeze_id TEXT NOT NULL UNIQUE, round_id TEXT NOT NULL, release_id TEXT NOT NULL,
-        status TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, report_sha256 TEXT, envelope_json TEXT NOT NULL,
+        status TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, report_sha256 TEXT, report_file_name TEXT, report_size INTEGER, report_received_sha256 TEXT, report_path TEXT, report_received_at TEXT, envelope_json TEXT NOT NULL,
         cloud_approval_id TEXT, cloud_transfer_task_id TEXT, cloud_status TEXT, cloud_workflow_step TEXT, cloud_checked_at TEXT,
         cloud_mapping_json TEXT, cloud_request_json TEXT,
         approved_at TEXT, expires_at TEXT, close_status TEXT, close_checked_at TEXT, last_error TEXT,
@@ -50,6 +54,7 @@ export class CoreStore {
     if (!columns.has('cloud_mapping_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_mapping_json TEXT');
     if (!columns.has('cloud_request_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_request_json TEXT');
     if (!columns.has('cloud_workflow_step')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_workflow_step TEXT');
+    for (const [name, definition] of Object.entries({ report_file_name: 'TEXT', report_size: 'INTEGER', report_received_sha256: 'TEXT', report_path: 'TEXT', report_received_at: 'TEXT', cloud_attachment_id: 'TEXT' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
   }
 
   get(requestId) { return response(this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id WHERE r.request_id = ?').get(requestId)); }
@@ -106,9 +111,29 @@ export class CoreStore {
     }
     const timestamp = now();
     this.db.prepare('INSERT INTO core_message_inbox (message_id, message_type, request_id, payload_sha256, received_at, status) VALUES (?, ?, ?, ?, ?, \'ACCEPTED\')').run(id('MSG'), envelope.type ?? 'VERIFICATION_APPROVAL_REQUEST', requestId, payloadSha256, timestamp);
-    this.db.prepare('INSERT INTO core_approval_requests (request_id, freeze_id, round_id, release_id, status, manifest_sha256, report_sha256, envelope_json, created_at, updated_at) VALUES (?, ?, ?, ?, \'CLOUD_PENDING\', ?, ?, ?, ?, ?)').run(requestId, freezeId, roundId, releaseId, manifestSha256, envelope.reportSha256?.toLowerCase() ?? null, payload, timestamp, timestamp);
+    this.db.prepare('INSERT INTO core_approval_requests (request_id, freeze_id, round_id, release_id, status, manifest_sha256, report_sha256, report_file_name, report_size, envelope_json, created_at, updated_at) VALUES (?, ?, ?, ?, \'CLOUD_PENDING\', ?, ?, ?, ?, ?, ?, ?)').run(requestId, freezeId, roundId, releaseId, manifestSha256, envelope.reportSha256?.toLowerCase() ?? null, envelope.reportFileName ?? null, Number.isSafeInteger(envelope.reportSize) ? envelope.reportSize : null, payload, timestamp, timestamp);
     return { item: this.get(requestId), idempotent: false };
   }
+
+  async saveReport(requestId, bytes) {
+    const current = this.db.prepare('SELECT * FROM core_approval_requests WHERE request_id = ?').get(requestId);
+    if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
+    if (!Buffer.isBuffer(bytes) || bytes.length < 5 || bytes.length > 20 * 1024 * 1024) throw Object.assign(new Error('验证报告必须大于 0 且不超过 20 MiB'), { code: 'report_invalid' });
+    if (bytes.subarray(0, 5).toString('ascii') !== '%PDF-') throw Object.assign(new Error('报告文件内容不是有效 PDF'), { code: 'report_invalid' });
+    if (current.report_size && current.report_size !== bytes.length) throw Object.assign(new Error(`报告大小不匹配（声明 ${current.report_size}，实际 ${bytes.length}）`), { code: 'report_integrity_failed' });
+    const actual = digest(bytes);
+    if (current.report_sha256 && current.report_sha256.toLowerCase() !== actual) throw Object.assign(new Error(`报告 SHA-256 不匹配（声明 ${current.report_sha256}，实际 ${actual}）`), { code: 'report_integrity_failed' });
+    await mkdir(this.reportDir, { recursive: true });
+    const destination = join(this.reportDir, `${requestId}.pdf`);
+    const temporary = `${destination}.${randomUUID()}.tmp`;
+    try { await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 }); await rename(temporary, destination); } catch (error) { await rm(temporary, { force: true }); throw error; }
+    const timestamp = now();
+    this.db.prepare('UPDATE core_approval_requests SET report_path = ?, report_received_sha256 = ?, report_received_at = ?, last_error = NULL, updated_at = ? WHERE request_id = ?').run(destination, actual, timestamp, timestamp, requestId);
+    return this.get(requestId);
+  }
+
+  reportPath(requestId) { return this.db.prepare('SELECT report_path FROM core_approval_requests WHERE request_id = ?').get(requestId)?.report_path ?? null; }
+  markReportAttachment(requestId, attachmentId) { this.db.prepare('UPDATE core_approval_requests SET cloud_attachment_id = ?, updated_at = ? WHERE request_id = ?').run(attachmentId, now(), requestId); return this.get(requestId); }
 
   markCloudSubmitted(requestId, result) {
     const approvalId = required(result.approvalId, 'approvalId');

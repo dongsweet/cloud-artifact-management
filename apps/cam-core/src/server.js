@@ -11,9 +11,9 @@ import { GateKeyring } from '../../../libs/cam-gate/src/keyring.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/core' : join(process.cwd(), 'data', 'core'));
 
-export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = new CloudAdapter(), gateSecret = process.env.CAM_GATE_SHARED_SECRET, previousGateSecret = process.env.CAM_GATE_PREVIOUS_SHARED_SECRET, enableAuth = true, enableKeyRotation = process.env.NODE_ENV === 'production' } = {}) {
+export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = new CloudAdapter(), gateSecret = process.env.CAM_GATE_SHARED_SECRET, previousGateSecret = process.env.CAM_GATE_PREVIOUS_SHARED_SECRET, enableAuth = true, enableKeyRotation = process.env.NODE_ENV === 'production', fetchImpl = fetch } = {}) {
   const db = await openDatabase(join(dataDir, 'core.sqlite'));
-  const store = new CoreStore(db);
+  const store = new CoreStore(db, { dataDir });
   const auth = new AuthStore(db);
   const gateConfig = new GateConfigStore(db, { table: 'core_gate_config', eventsTable: 'core_gate_config_events', requiredUrlFields: ['edgeControlUrl', 'edgeTransferUrl'] });
   const keyring = new GateKeyring({ filePath: join(dataDir, 'gate-keyring.json'), role: 'core', bootstrapSecret: gateSecret, bootstrapPreviousSecret: previousGateSecret });
@@ -21,7 +21,7 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
   const app = await buildServer({
     service: 'cam-core',
     configure: async (server) => {
-      registerCoreRoutes(server, { store, cloud: cloudAdapter, gateSecret, previousGateSecret, gateConfig, keyring, enableKeyRotation });
+      registerCoreRoutes(server, { store, cloud: cloudAdapter, gateSecret, previousGateSecret, gateConfig, keyring, enableKeyRotation, fetchImpl });
       if (enableAuth) registerCoreAuth(server, { auth });
       server.addHook('onClose', async () => db.close());
     }
