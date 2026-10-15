@@ -34,7 +34,7 @@ export function registerAuth(app, { auth, principalProvider, secureCookies = pro
     else if (path === '/api/v1/validators') required = ['VALIDATOR'];
     else if (path.startsWith('/api/v1/download-grants')) required = writing ? ['VALIDATOR'] : ['VALIDATOR', 'EDGE_AUDITOR'];
     else if (/^\/api\/v1\/rounds\/[^/]+\/freezes$/.test(path)) required = writing ? ['VALIDATOR'] : ['VALIDATOR', 'RELEASE_APPLICANT', 'EDGE_AUDITOR'];
-    else if (/^\/api\/v1\/freezes\/[^/]+\/(report|submit)$/.test(path)) required = ['VALIDATOR'];
+    else if (/^\/api\/v1\/freezes\/[^/]+\/(report|submit|dispatch)$/.test(path)) required = ['VALIDATOR'];
     else if (/^\/api\/v1\/freezes\/[^/]+\/decision$/.test(path)) required = ['RELEASE_APPLICANT'];
     else if (/^\/api\/v1\/freezes\/[^/]+\/report-file$/.test(path)) required = ['VALIDATOR', 'RELEASE_APPLICANT', 'EDGE_AUDITOR'];
     else required = writing ? ['CANDIDATE_RECEIVER'] : ['CANDIDATE_RECEIVER', 'VALIDATOR', 'RELEASE_APPLICANT', 'EDGE_AUDITOR'];

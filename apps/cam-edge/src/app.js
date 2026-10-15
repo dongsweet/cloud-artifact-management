@@ -12,6 +12,7 @@ import { registerAuth } from './auth.js';
 import { FreezeStore } from './freeze-store.js';
 import { GateConfigStore } from '../../../libs/cam-gate/src/config.js';
 import { GateKeyring } from '../../../libs/cam-gate/src/keyring.js';
+import { createApprovalDispatcher } from './approval-dispatcher.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/edge' : join(process.cwd(), 'data', 'edge'));
 
@@ -26,12 +27,13 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   const gateConfig = new GateConfigStore(db, { table: 'edge_gate_config', eventsTable: 'edge_gate_config_events', requiredUrlFields: ['coreControlUrl', 'coreTransferUrl'] });
   const keyring = new GateKeyring({ filePath: join(dataDir, 'gate-keyring.json'), role: 'edge', bootstrapSecret: process.env.CAM_GATE_SHARED_SECRET, bootstrapPreviousSecret: process.env.CAM_GATE_PREVIOUS_SHARED_SECRET });
   await keyring.ready;
+  const approvalDispatcher = createApprovalDispatcher({ freezes, gateConfig, keyring });
   const app = await buildServer({
     service: 'cam-edge',
     configure: async (server) => {
       registerAuth(server, { auth, principalProvider, secureCookies });
-      registerCandidateRoutes(server, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring });
-      server.addHook('onClose', async () => db.close());
+      registerCandidateRoutes(server, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher });
+      server.addHook('onClose', async () => { await approvalDispatcher.close(); await scheduler.close(); await db.close(); });
     }
   });
   downloadGrants.setLogger(app.log);
@@ -43,7 +45,8 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   app.decorate('freezeStore', freezes);
   app.decorate('gateConfigStore', gateConfig);
   app.decorate('gateKeyring', keyring);
-  queueMicrotask(() => scheduler.start());
+  app.decorate('approvalDispatcher', approvalDispatcher);
+  queueMicrotask(() => { scheduler.start(); approvalDispatcher.start(); });
   return app;
 }
 

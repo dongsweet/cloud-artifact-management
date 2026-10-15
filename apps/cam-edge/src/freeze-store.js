@@ -34,6 +34,18 @@ export class FreezeStore {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS round_freezes_round_idx ON round_freezes(round_id, created_at DESC);`);
+    const columns = new Set(db.prepare('PRAGMA table_info(round_freezes)').all().map((column) => column.name));
+    const additions = {
+      dispatch_status: "TEXT NOT NULL DEFAULT 'PENDING'",
+      dispatch_attempts: 'INTEGER NOT NULL DEFAULT 0',
+      dispatch_last_error: 'TEXT',
+      dispatch_at: 'TEXT',
+      core_approval_id: 'TEXT',
+      core_status: 'TEXT',
+      core_response_json: 'TEXT'
+    };
+    for (const [name, definition] of Object.entries(additions)) if (!columns.has(name)) db.exec(`ALTER TABLE round_freezes ADD COLUMN ${name} ${definition}`);
+    db.prepare("UPDATE round_freezes SET dispatch_status = 'PENDING' WHERE status = 'PENDING_APPROVAL' AND dispatch_status = 'SENDING'").run();
   }
 
   snapshot(roundId) {
@@ -89,12 +101,20 @@ export class FreezeStore {
       submittedBy: row.submitted_by, submittedAt: row.submitted_at,
       decidedBy: row.decided_by, decidedAt: row.decided_at,
       decisionReference: row.decision_reference, decisionComment: row.decision_comment,
+      dispatchStatus: row.dispatch_status ?? 'PENDING', dispatchAttempts: row.dispatch_attempts ?? 0,
+      dispatchLastError: row.dispatch_last_error, dispatchAt: row.dispatch_at,
+      coreApprovalId: row.core_approval_id, coreStatus: row.core_status,
+      coreResponse: row.core_response_json ? JSON.parse(row.core_response_json) : null,
       createdAt: row.created_at, updatedAt: row.updated_at
     };
   }
 
   latest(roundId) {
     return this.parse(this.db.prepare('SELECT * FROM round_freezes WHERE round_id = ? ORDER BY created_at DESC LIMIT 1').get(roundId));
+  }
+
+  list() {
+    return this.db.prepare('SELECT * FROM round_freezes ORDER BY created_at DESC').all().map((row) => this.parse(row));
   }
 
   createDraft(roundId, { reportTitle, conclusion, environment }, actorId) {
@@ -167,11 +187,53 @@ export class FreezeStore {
     try {
       await writeFile(temporary, `${JSON.stringify(envelope)}\n`, { flag: 'wx', mode: 0o600 });
       await rename(temporary, destination);
-      this.db.prepare("UPDATE round_freezes SET status = 'PENDING_APPROVAL', submitted_at = ?, updated_at = ? WHERE freeze_id = ? AND status = 'DRAFT'").run(timestamp, timestamp, freezeId);
+      this.db.prepare("UPDATE round_freezes SET status = 'PENDING_APPROVAL', dispatch_status = 'PENDING', dispatch_attempts = 0, dispatch_last_error = NULL, dispatch_at = NULL, core_approval_id = NULL, core_status = NULL, core_response_json = NULL, submitted_at = ?, updated_at = ? WHERE freeze_id = ? AND status = 'DRAFT'").run(timestamp, timestamp, freezeId);
     } catch (error) {
       await rm(temporary, { force: true });
       throw error;
     }
+    return this.get(freezeId);
+  }
+
+  approvalEnvelope(freezeId) {
+    const freeze = this.get(freezeId);
+    if (!freeze) throw Object.assign(new Error('freeze request not found'), { code: 'freeze_not_found' });
+    return {
+      schemaVersion: 1, type: 'VERIFICATION_APPROVAL_REQUEST', requestId: freeze.freezeId,
+      freezeId: freeze.freezeId, roundId: freeze.roundId, releaseId: freeze.manifest.releaseId,
+      manifestSha256: freeze.manifestSha256, reportSha256: freeze.reportSha256,
+      reportFileName: freeze.reportFileName, conclusion: freeze.conclusion,
+      submittedBy: freeze.submittedBy, submittedAt: freeze.submittedAt
+    };
+  }
+
+  listDispatchPending() {
+    return this.db.prepare("SELECT * FROM round_freezes WHERE status = 'PENDING_APPROVAL' AND dispatch_status IN ('PENDING','FAILED') ORDER BY submitted_at ASC").all().map((row) => this.parse(row));
+  }
+
+  markDispatchAttempt(freezeId) {
+    const timestamp = now();
+    this.db.prepare("UPDATE round_freezes SET dispatch_status = 'SENDING', dispatch_attempts = dispatch_attempts + 1, dispatch_last_error = NULL, updated_at = ? WHERE freeze_id = ? AND status = 'PENDING_APPROVAL' AND dispatch_status IN ('PENDING','FAILED')").run(timestamp, freezeId);
+    return this.get(freezeId);
+  }
+
+  markDispatchSuccess(freezeId, response) {
+    const item = response?.item ?? response ?? {};
+    const timestamp = now();
+    this.db.prepare("UPDATE round_freezes SET dispatch_status = 'DELIVERED', dispatch_at = ?, dispatch_last_error = NULL, core_approval_id = ?, core_status = ?, core_response_json = ?, updated_at = ? WHERE freeze_id = ?").run(timestamp, item.cloudApprovalId ?? null, item.status ?? null, JSON.stringify(response ?? {}), timestamp, freezeId);
+    return this.get(freezeId);
+  }
+
+  markCoreStatus(freezeId, response) {
+    const item = response?.item ?? response ?? {};
+    const timestamp = now();
+    this.db.prepare('UPDATE round_freezes SET core_approval_id = COALESCE(?, core_approval_id), core_status = ?, core_response_json = ?, updated_at = ? WHERE freeze_id = ?').run(item.cloudApprovalId ?? null, item.status ?? null, JSON.stringify(response ?? {}), timestamp, freezeId);
+    return this.get(freezeId);
+  }
+
+  markDispatchFailure(freezeId, error) {
+    const message = String(error?.message ?? error).slice(0, 1000);
+    this.db.prepare("UPDATE round_freezes SET dispatch_status = 'FAILED', dispatch_last_error = ?, updated_at = ? WHERE freeze_id = ? AND status = 'PENDING_APPROVAL'").run(message, now(), freezeId);
     return this.get(freezeId);
   }
 

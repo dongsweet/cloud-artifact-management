@@ -77,6 +77,8 @@ docker compose --env-file deploy/.env up -d --build cam-core
 
 云管的接口基地址、服务身份和密钥只配置在目标主机的 `deploy/.env`；具体 EOMS 接口路径固定在 `cam-core` 代码中，不作为环境配置项。工单级别、来源、业务类型、所属中心、运维团队和审批处理人用户名在 Core 的云管对接配置页填写。管理员测试并保存配置时，`cam-core` 从当前云管环境解析名称对应的数字 ID，并将输入项和解析结果持久化到内网 SQLite；创建工单时复用已保存的 ID，同时在审批记录中留存实际使用的映射快照。云管字典或人员关系调整后，重新测试并保存配置即可刷新映射。
 
+验证报告提交采用持久化 outbox 队列。Edge 先把审批信封原子写入 `exchange/outbox/approval-requests/` 并写入 SQLite，再通过配置的 Core 控制映射地址自动投递；请求使用当前网闸共享密钥认证，投递失败会记录错误并按退避策略重试，服务重启后继续处理。Core 接收后按 `requestId` 幂等处理，并自动调用云管创建工单；云管暂时不可用时，Core 保留待处理记录，后续状态同步会重试创建。
+
 SQLite 文件位于 `${CAM_EDGE_DATA_DIR}/edge/edge.sqlite`、`${CAM_CORE_DATA_DIR}/core/core.sqlite`
 和 `${CAM_AGENT_DATA_DIR}/agent/agent.sqlite`。SQLite 的 WAL、SHM 和制品目录同样位于对应
 本地目录中。备份时应停止写入或停止对应服务后整体备份目录，不能只复制主 `.sqlite` 文件。

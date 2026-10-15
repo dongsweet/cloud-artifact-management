@@ -53,6 +53,11 @@ export class CoreStore {
   }
 
   get(requestId) { return response(this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id WHERE r.request_id = ?').get(requestId)); }
+
+  envelope(requestId) {
+    const row = this.db.prepare('SELECT envelope_json FROM core_approval_requests WHERE request_id = ?').get(requestId);
+    return row ? JSON.parse(row.envelope_json) : null;
+  }
   list() { return this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id ORDER BY r.created_at DESC LIMIT 500').all().map(response); }
   getByFreeze(freezeId) { return response(this.db.prepare('SELECT * FROM core_approval_requests WHERE freeze_id = ?').get(freezeId)); }
 

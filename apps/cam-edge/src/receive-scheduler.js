@@ -4,9 +4,10 @@ export function createReceiveScheduler({ store, receiver, concurrency = Number(p
   const pausing = new Set();
   let pumping = false;
   let started = false;
+  let closed = false;
 
   function pump() {
-    if (pumping) return;
+    if (pumping || closed) return;
     pumping = true;
     try {
       for (const candidateId of store.nextReceiveJobs(concurrency - active.size)) {
@@ -20,7 +21,7 @@ export function createReceiveScheduler({ store, receiver, concurrency = Number(p
         }).finally(() => {
           active.delete(candidateId);
           pausing.delete(candidateId);
-          queueMicrotask(pump);
+          if (!closed) queueMicrotask(pump);
         });
         active.set(candidateId, job);
       }
@@ -69,10 +70,15 @@ export function createReceiveScheduler({ store, receiver, concurrency = Number(p
   }
 
   function start() {
-    if (started) return;
+    if (started || closed) return;
     started = true;
     store.recoverReceiveQueue();
     pump();
+  }
+
+  async function close() {
+    closed = true;
+    while (active.size) await Promise.allSettled([...active.values()]);
   }
 
   return {
@@ -80,6 +86,7 @@ export function createReceiveScheduler({ store, receiver, concurrency = Number(p
     pause,
     resume,
     start,
+    close,
     list: () => store.listReceiveQueue(),
     active,
     concurrency

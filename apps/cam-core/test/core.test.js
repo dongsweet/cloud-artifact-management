@@ -89,3 +89,29 @@ test('gate approval messages require the configured exchange identity', async ()
     assert.equal(response.statusCode, 401);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
+
+test('Core retries a failed cloud work-order submission when Edge synchronizes the queued request', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-dispatch-retry-'));
+  let createAttempts = 0;
+  const cloud = {
+    async createApproval() {
+      createAttempts += 1;
+      if (createAttempts === 1) throw new Error('temporary cloud outage');
+      return { approvalId: 'APR-RETRY', status: 'PENDING' };
+    },
+    async getApproval(approvalId) { return { approvalId, status: 'PENDING', workflowStep: '审批中' }; }
+  };
+  const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false });
+  const headers = { 'x-cam-gate-secret': 'gate-test' };
+  const payload = { schemaVersion: 1, type: 'VERIFICATION_APPROVAL_REQUEST', requestId: 'FREEZE-RETRY', freezeId: 'FREEZE-RETRY', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64), reportSha256: 'b'.repeat(64), reportFileName: 'report.pdf', conclusion: 'PASS' };
+  try {
+    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload });
+    assert.equal(accepted.statusCode, 202);
+    assert.equal(accepted.json().item.status, 'CLOUD_PENDING');
+    const synced = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests/FREEZE-RETRY/sync', headers, payload: {} });
+    assert.equal(synced.statusCode, 200, synced.body);
+    assert.equal(synced.json().item.cloudApprovalId, 'APR-RETRY');
+    assert.equal(synced.json().item.cloudStatus, 'PENDING');
+    assert.equal(createAttempts, 2);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});

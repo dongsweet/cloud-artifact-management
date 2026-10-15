@@ -135,7 +135,7 @@ export async function finalizeCandidate(store, candidateId) {
   return completed;
 }
 
-export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring }) {
+export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher }) {
   app.get('/api/v1/gate/config', async (request, reply) => {
     const item = gateConfig.get();
     const keys = await keyring.status();
@@ -208,8 +208,21 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
 
   app.post('/api/v1/freezes/:freezeId/submit', async (request, reply) => {
-    try { return reply.send(await freezes.submit(request.params.freezeId, principal(request).principalId)); }
+    try {
+      const submitted = await freezes.submit(request.params.freezeId, principal(request).principalId);
+      const delivered = await approvalDispatcher.dispatchOne(submitted.freezeId);
+      return reply.send(delivered);
+    }
     catch (err) { return error(reply, err.code === 'freeze_not_found' ? 404 : err.code === 'freeze_owner_required' ? 403 : ['freeze_not_draft', 'round_locked', 'manifest_changed'].includes(err.code) ? 409 : 400, err.code ?? 'freeze_submit_failed', err.message); }
+  });
+
+  app.post('/api/v1/freezes/:freezeId/dispatch', async (request, reply) => {
+    try {
+      const freeze = freezes.get(request.params.freezeId);
+      if (!freeze) return error(reply, 404, 'freeze_not_found', 'freeze request not found');
+      if (!['PENDING_APPROVAL'].includes(freeze.status)) return error(reply, 409, 'freeze_not_pending', '该申请当前不在待发送或待审批状态');
+      return reply.send(await approvalDispatcher.dispatchOne(freeze.freezeId));
+    } catch (err) { return error(reply, 502, err.code ?? 'freeze_dispatch_failed', err.message); }
   });
 
   app.post('/api/v1/freezes/:freezeId/decision', { bodyLimit: 8192 }, async (request, reply) => {
