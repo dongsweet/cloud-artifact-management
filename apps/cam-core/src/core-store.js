@@ -62,14 +62,16 @@ export class CoreStore {
     return { ...JSON.parse(row.config_json), updatedBy: row.updated_by, updatedAt: row.updated_at };
   }
 
-  saveCloudConfig(input, actorId) {
-    const keys = ['priorityLabel', 'priorityValue', 'sourceLabel', 'sourceValue', 'businessTypePath', 'deptName', 'teamName', 'processUserNames', 'titlePrefix'];
+  saveCloudConfig(input, actorId, resolvedMappings) {
+    const keys = ['priorityLabel', 'sourceLabel', 'businessTypePath', 'deptName', 'teamName', 'processUserNames', 'titlePrefix'];
     const config = Object.fromEntries(keys.map((key) => [key, String(input?.[key] ?? '').trim()]));
-    if ((!config.priorityLabel && !config.priorityValue) || (!config.sourceLabel && !config.sourceValue) || !config.businessTypePath || !config.deptName || !config.teamName) {
+    if (!config.priorityLabel || !config.sourceLabel || !config.businessTypePath || !config.deptName || !config.teamName) {
       throw Object.assign(new Error('工单级别、来源、业务类型、部门和团队不能为空'), { code: 'cloud_config_invalid' });
     }
     if (!/^[^,\s]+(,[^,\s]+)*$/.test(config.processUserNames) || config.processUserNames.split(',').some((name) => /^\d+$/.test(name))) throw Object.assign(new Error('请填写一个或多个审批处理人用户名，多个用户名用逗号分隔'), { code: 'cloud_config_invalid' });
     if (!config.titlePrefix) config.titlePrefix = '云平台制品验证报告审批';
+    if (!resolvedMappings) throw Object.assign(new Error('请先测试云管连接并解析工单参数'), { code: 'cloud_mapping_required' });
+    config.resolvedMappings = resolvedMappings;
     const timestamp = now();
     this.db.exec('BEGIN IMMEDIATE');
     try {

@@ -4,9 +4,7 @@ import { approvalStatus, CloudAdapter, EOMS_PATHS, readConfig } from '../src/clo
 
 const env = {
   CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL: '常规变更',
-  CAM_CLOUD_WORK_ORDER_PRIORITY_VALUE: '',
   CAM_CLOUD_WORK_ORDER_SOURCE_LABEL: '内部需求',
-  CAM_CLOUD_WORK_ORDER_SOURCE_VALUE: '',
   CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH: '平台类/其他',
   CAM_CLOUD_WORK_ORDER_DEPT_NAME: '成都',
   CAM_CLOUD_WORK_ORDER_TEAM_NAME: 'OpenStack平台运维',
@@ -60,6 +58,30 @@ test('CloudAdapter resolves environment-specific IDs and creates an EOMS work or
   assert.deepEqual(result.mappingSnapshot.processUsers, [{ userId: '2308', username: 'zhuren_luan' }]);
   assert.ok(calls.some(({ url }) => new URL(url).pathname === EOMS_PATHS.responsiblePersons));
   assert.ok(calls.every(({ options }) => options.headers['x-auth-secret'] === 'secret' && options.headers['x-auth-userid'] === '2308'));
+});
+
+test('CloudAdapter reuses persisted mapping IDs when creating later work orders', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    const path = new URL(url).pathname;
+    calls.push(path);
+    assert.equal(path, EOMS_PATHS.create);
+    return response('20261015D0001');
+  };
+  const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env, fetchImpl });
+  const resolvedMappings = {
+    priority: { id: '394', label: '常规变更' },
+    source: { id: '402', label: '内部需求' },
+    businessType: { id: '231', label: '其他', path: '平台类/其他' },
+    dept: { id: '215', label: '成都' },
+    team: { id: '3', label: 'OpenStack平台运维' },
+    processUserIds: ['2308'],
+    processUsers: [{ userId: '2308', username: 'zhuren_luan' }]
+  };
+  const result = await adapter.createApproval({ requestId: 'FREEZE-CACHED' }, { ...env, processUserNames: 'zhuren_luan', resolvedMappings });
+  assert.deepEqual(calls, [EOMS_PATHS.create]);
+  assert.equal(result.mappingSnapshot, resolvedMappings);
+  assert.equal(result.requestBody.processWorkOrder, '2308');
 });
 
 test('CloudAdapter requires the complete business type path returned by EOMS', async () => {

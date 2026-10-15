@@ -10,7 +10,10 @@ function cookieValue(response, name) { return response.headers['set-cookie'].map
 
 test('Core local accounts are isolated, require password change, CSRF, and leave gate authentication independent', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-local-auth-'));
-  const app = await buildCoreApp({ dataDir, gateSecret: 'gate-test', cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) } });
+  const app = await buildCoreApp({ dataDir, gateSecret: 'gate-test', cloudAdapter: {
+    createApproval: async () => ({ approvalId: 'APR-1' }),
+    resolveMappings: async () => ({ priority: { id: '394', label: '常规变更' }, source: { id: '402', label: '内部需求' }, businessType: { id: '231', path: '平台类/其他' }, dept: { id: '215', label: '成都' }, team: { id: '3', label: '运维团队' }, processUserIds: ['2308'], processUsers: [{ userId: '2308', username: 'zhuren_luan' }], resolvedAt: new Date().toISOString() })
+  } });
   try {
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests' })).statusCode, 401);
     assert.deepEqual(app.coreStore.list(), []);
@@ -34,6 +37,7 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
     const configSaved = await app.inject({ method: 'PUT', url: '/api/v1/cloud/config', headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: cloudConfig });
     assert.equal(configSaved.statusCode, 200, configSaved.body);
     assert.equal(configSaved.json().item.processUserNames, 'zhuren_luan');
+    assert.deepEqual(configSaved.json().item.resolvedMappings.processUserIds, ['2308']);
     const invalidConfig = await app.inject({ method: 'PUT', url: '/api/v1/cloud/config', headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: { ...cloudConfig, processUserNames: '2308' } });
     assert.equal(invalidConfig.statusCode, 400);
     const users = await app.inject({ method: 'GET', url: '/api/v1/users', headers: { cookie: coreCookie } });

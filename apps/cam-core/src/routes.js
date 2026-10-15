@@ -40,8 +40,11 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
 
   app.put('/api/v1/cloud/config', { bodyLimit: 8192 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
-    try { return reply.send({ item: store.saveCloudConfig(request.body ?? {}, request.principal?.id) }); }
-    catch (err) { return error(reply, 400, err.code ?? 'cloud_config_invalid', err.message); }
+    try {
+      const config = request.body ?? {};
+      const mappings = await cloud.resolveMappings(config);
+      return reply.send({ item: store.saveCloudConfig(config, request.principal?.id, mappings) });
+    } catch (err) { return error(reply, err.code === 'cloud_not_configured' ? 503 : ['cloud_config_invalid', 'cloud_mapping_not_configured'].includes(err.code) ? 400 : 502, err.code ?? 'cloud_config_invalid', err.message); }
   });
 
   app.post('/api/v1/cloud/test', { bodyLimit: 8192 }, async (request, reply) => {

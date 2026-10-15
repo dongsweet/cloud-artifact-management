@@ -4,6 +4,7 @@ let currentUser = null;
 let coreRoles = {};
 let coreUsers = [];
 let resetUserId = null;
+let cloudMappings = null;
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[c]));
 const statusLabels = { CLOUD_PENDING:'待提交云管', CLOUD_SUBMITTED:'云管处理中', APPROVED:'已审批', REJECTED:'已拒绝', CLOUD_STATUS_UNCONFIRMED:'状态未确认', CLOSED:'已关单' };
@@ -16,17 +17,13 @@ function showApp(user) { currentUser = user; forcedPasswordChange = Boolean(user
 function statusBadge(value) { const kind = value === 'APPROVED' ? 'success' : value === 'REJECTED' ? 'danger' : 'warning'; return `<span class="badge text-bg-${kind}">${escapeHtml(statusLabels[value] ?? value)}</span>`; }
 function message(text, type = 'success') { const el = $('#alert'); el.className = `alert alert-${type}`; el.textContent = text; }
 function renderCloudMappings(mappings = null) {
-  const rows = mappings ? [
-    ['工单级别', mappings.priority],
-    ['工单来源', mappings.source],
-    ['业务类型', mappings.businessType],
-    ['部门', mappings.dept],
-    ['处理团队', mappings.team],
-    ...(mappings.processUsers ?? []).map((user) => [`审批人：${user.username ?? '未返回用户名'}`, { id: user.userId, label: user.username ?? user.userId }])
-  ] : [];
-  $('#cloud-mapping-rows').innerHTML = rows.length
-    ? rows.map(([name, item]) => `<tr><th class="fw-normal">${escapeHtml(name)}</th><td>${escapeHtml(item.path ?? item.label ?? '-')}</td><td class="font-monospace">${escapeHtml(item.id ?? '-')}</td></tr>`).join('')
-    : '<tr><td colspan="3" class="text-center text-body-secondary py-3">测试连接与字典后显示匹配结果</td></tr>';
+  cloudMappings = mappings;
+  $('#cloud-id-priority').value = mappings?.priority?.id ?? '';
+  $('#cloud-id-source').value = mappings?.source?.id ?? '';
+  $('#cloud-id-business-type').value = mappings?.businessType?.id ?? '';
+  $('#cloud-id-dept').value = mappings?.dept?.id ?? '';
+  $('#cloud-id-team').value = mappings?.team?.id ?? '';
+  $('#cloud-id-process-users').value = mappings?.processUserIds?.join(', ') ?? '';
 }
 function render(items) { $('#rows').innerHTML = items.length ? items.map((item) => `<tr><td class="font-monospace small">${escapeHtml(item.requestId)}</td><td>${escapeHtml(item.releaseId)}<br><span class="text-body-secondary small">${escapeHtml(item.roundId)}</span></td><td>${statusBadge(item.status)}</td><td>${escapeHtml(item.cloudApprovalId ?? '-')}<br><span class="small text-body-secondary">${escapeHtml(item.cloudStatus ?? '-')}</span></td><td class="font-monospace small" title="${escapeHtml(item.manifestSha256)}">${escapeHtml(item.manifestSha256?.slice(0, 16))}…</td><td>${escapeHtml(item.updatedAt)}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-primary btn-sm detail-button" data-id="${escapeHtml(item.requestId)}">详情</button></div></td></tr>`).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">暂无审批请求</td></tr>'; document.querySelectorAll('.detail-button').forEach((button) => { button.onclick = () => showDetail(button.dataset.id); }); }
 async function load() { try { render((await api('/api/v1/approval-requests')).items); clearMessage(); } catch (error) { message(error.message, 'danger'); } }
@@ -38,7 +35,9 @@ async function loadCloudConfig() {
     const result = await api('/api/v1/cloud/config');
     const item = result.item ?? {};
     for (const element of form.elements) if (element.name) element.value = item[element.name] ?? '';
-    $('#cloud-status').textContent = `连接参数：${result.secretConfigured ? '已配置' : '未配置'}；业务参数来源：${result.source === 'database' ? 'Core 数据库' : '.env 默认值'}`;
+    renderCloudMappings(item.resolvedMappings ?? null);
+    const mappingStatus = item.resolvedMappings ? '匹配 ID 已保存，后续工单会复用；云管字典变化时请重新测试并保存' : '尚无已保存的匹配 ID，请测试并保存配置';
+    $('#cloud-status').textContent = `连接参数：${result.secretConfigured ? '已配置' : '未配置'}；业务参数来源：${result.source === 'database' ? 'Core 数据库' : '.env 默认值'}；${mappingStatus}`;
   } catch (error) { message(error.message, 'danger'); }
 }
 function showPage(page) {
@@ -74,7 +73,7 @@ document.querySelectorAll('[data-page]').forEach((link) => link.addEventListener
 $('#new-user').addEventListener('click', () => openUserEditor()); $('#user-cancel').addEventListener('click', () => $('#user-editor').classList.add('d-none')); $('#reset-cancel').addEventListener('click', () => $('#user-reset').classList.add('d-none'));
 $('#user-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const userId = form.dataset.userId; const roles = [...document.querySelectorAll('#user-roles input:checked')].map((input) => input.value); const body = { username: $('#user-name').value, displayName: $('#user-display').value, status: $('#user-status').value, roles }; if (!userId) body.password = $('#user-password').value; try { const result = await api(userId ? `/api/v1/users/${encodeURIComponent(userId)}` : '/api/v1/users', { method: userId ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); message(userId ? '账号信息已保存；该账号需要重新登录' : `账号 ${result.user.username} 已创建，首次登录须修改初始密码`); $('#user-editor').classList.add('d-none'); if (userId === currentUser?.id) { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); } else await loadUsers(); } catch (error) { $('#user-error').textContent = error.message; $('#user-error').classList.remove('d-none'); } });
 $('#reset-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api(`/api/v1/users/${encodeURIComponent(resetUserId)}/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: $('#reset-password').value }) }); $('#user-reset').classList.add('d-none'); message('密码已重置；该账号下次登录须修改初始密码'); await loadUsers(); } catch (error) { $('#reset-error').textContent = error.message; $('#reset-error').classList.remove('d-none'); } });
-$('#cloud-config-form').addEventListener('submit', async (event) => { event.preventDefault(); const body = Object.fromEntries(new FormData(event.currentTarget)); try { await api('/api/v1/cloud/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); message('云管业务参数已保存'); await loadCloudConfig(); } catch (error) { message(error.message, 'danger'); } });
-$('#cloud-test').addEventListener('click', async () => { const button = $('#cloud-test'); button.disabled = true; try { const config = Object.fromEntries(new FormData($('#cloud-config-form'))); const result = await api('/api/v1/cloud/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(config) }); const mappings = result.mappings; renderCloudMappings(mappings); message('云管连接正常，全部工单参数校验成功。右侧已显示匹配名称和云管 ID。'); } catch (error) { renderCloudMappings(); message(`连接或字典解析失败：${error.message}`, 'danger'); } finally { button.disabled = false; } });
-$('#cloud-config-form').addEventListener('input', () => { renderCloudMappings(); clearMessage(); });
+$('#cloud-config-form').addEventListener('submit', async (event) => { event.preventDefault(); const body = Object.fromEntries(new FormData(event.currentTarget)); try { const result = await api('/api/v1/cloud/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); renderCloudMappings(result.item.resolvedMappings); message('云管业务参数和匹配 ID 已保存；后续工单将复用这些 ID。'); await loadCloudConfig(); } catch (error) { message(error.message, 'danger'); } });
+$('#cloud-test').addEventListener('click', async () => { const button = $('#cloud-test'); button.disabled = true; try { const config = Object.fromEntries(new FormData($('#cloud-config-form'))); const result = await api('/api/v1/cloud/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(config) }); renderCloudMappings(result.mappings); $('#cloud-status').textContent = '连接和参数校验成功；点击“保存配置”后，匹配 ID 将持久化并供后续工单复用。'; message('云管连接正常，全部工单参数校验成功。'); } catch (error) { renderCloudMappings(); $('#cloud-status').textContent = '校验失败，请检查填写项后重新测试。'; message(`连接或字典解析失败：${error.message}`, 'danger'); } finally { button.disabled = false; } });
+$('#cloud-config-form').addEventListener('input', () => { renderCloudMappings(); $('#cloud-status').textContent = '参数已修改，需重新测试并保存以更新匹配 ID。'; clearMessage(); });
 try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) await load(); } catch { showLogin(); }

@@ -125,9 +125,7 @@ function parseLegacyProcessorIds(value) {
 function readConfig(env = process.env, overrides = undefined) {
   const config = {
     priorityLabel: text(env.CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL),
-    priorityValue: text(env.CAM_CLOUD_WORK_ORDER_PRIORITY_VALUE),
     sourceLabel: text(env.CAM_CLOUD_WORK_ORDER_SOURCE_LABEL),
-    sourceValue: text(env.CAM_CLOUD_WORK_ORDER_SOURCE_VALUE),
     businessTypePath: text(env.CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH),
     deptName: text(env.CAM_CLOUD_WORK_ORDER_DEPT_NAME),
     teamName: text(env.CAM_CLOUD_WORK_ORDER_TEAM_NAME),
@@ -135,8 +133,8 @@ function readConfig(env = process.env, overrides = undefined) {
     legacyProcessUserIds: text(env.CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS),
     titlePrefix: text(env.CAM_CLOUD_WORK_ORDER_TITLE_PREFIX) || '云平台制品验证报告审批'
   };
-  if (overrides) for (const key of ['priorityLabel', 'priorityValue', 'sourceLabel', 'sourceValue', 'businessTypePath', 'deptName', 'teamName', 'titlePrefix']) {
-    if (overrides[key] !== undefined && overrides[key] !== '') config[key] = text(overrides[key]);
+  if (overrides) for (const key of ['priorityLabel', 'sourceLabel', 'businessTypePath', 'deptName', 'teamName', 'titlePrefix']) {
+    if (overrides[key] !== undefined) config[key] = text(overrides[key]);
   }
   if (overrides?.processUserNames !== undefined) {
     config.processUserNames = text(overrides.processUserNames);
@@ -148,8 +146,8 @@ function readConfig(env = process.env, overrides = undefined) {
   config.processUserNames = parseProcessorNames(config.processUserNames);
   config.legacyProcessUserIds = parseLegacyProcessorIds(config.legacyProcessUserIds);
   if (!config.processUserNames.length && !config.legacyProcessUserIds.length) throw configurationError('请填写云管审批处理人用户名');
-  if (!config.priorityLabel && !config.priorityValue) throw configurationError('CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL or _VALUE is required');
-  if (!config.sourceLabel && !config.sourceValue) throw configurationError('CAM_CLOUD_WORK_ORDER_SOURCE_LABEL or _VALUE is required');
+  if (!config.priorityLabel) throw configurationError('CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL is required');
+  if (!config.sourceLabel) throw configurationError('CAM_CLOUD_WORK_ORDER_SOURCE_LABEL is required');
   if (!config.businessTypePath) throw configurationError('CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH is required');
   if (!config.deptName) throw configurationError('CAM_CLOUD_WORK_ORDER_DEPT_NAME is required');
   if (!config.teamName) throw configurationError('CAM_CLOUD_WORK_ORDER_TEAM_NAME is required');
@@ -159,6 +157,16 @@ function readConfig(env = process.env, overrides = undefined) {
 function dataOf(value) {
   if (value && typeof value === 'object' && Object.hasOwn(value, 'data')) return value.data;
   return value;
+}
+
+function validatedMappings(mappings) {
+  for (const key of ['priority', 'source', 'businessType', 'dept', 'team']) {
+    if (!/^\d+$/u.test(text(mappings?.[key]?.id))) throw configurationError(`已保存的云管映射缺少有效的 ${key} ID，请重新测试并保存`);
+  }
+  if (!Array.isArray(mappings?.processUserIds) || mappings.processUserIds.length === 0 || mappings.processUserIds.some((value) => !/^\d+$/u.test(text(value)))) {
+    throw configurationError('已保存的云管映射缺少有效的审批人 ID，请重新测试并保存');
+  }
+  return mappings;
 }
 
 export class CloudAdapter {
@@ -187,9 +195,7 @@ export class CloudAdapter {
   businessConfig() {
     return {
       priorityLabel: text(this.env.CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL),
-      priorityValue: text(this.env.CAM_CLOUD_WORK_ORDER_PRIORITY_VALUE),
       sourceLabel: text(this.env.CAM_CLOUD_WORK_ORDER_SOURCE_LABEL),
-      sourceValue: text(this.env.CAM_CLOUD_WORK_ORDER_SOURCE_VALUE),
       businessTypePath: text(this.env.CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH),
       deptName: text(this.env.CAM_CLOUD_WORK_ORDER_DEPT_NAME),
       teamName: text(this.env.CAM_CLOUD_WORK_ORDER_TEAM_NAME),
@@ -231,8 +237,8 @@ export class CloudAdapter {
       this.request(EOMS_PATHS.departments),
       this.request(EOMS_PATHS.teams)
     ]);
-    const priority = dictionaryItem(priorityData, { label: config.priorityLabel, value: config.priorityValue, field: 'priority' });
-    const source = dictionaryItem(sourceData, { label: config.sourceLabel, value: config.sourceValue, field: 'workOrderSource' });
+    const priority = dictionaryItem(priorityData, { label: config.priorityLabel, field: 'priority' });
+    const source = dictionaryItem(sourceData, { label: config.sourceLabel, field: 'workOrderSource' });
     const businessType = dictionaryItem(businessData, { path: config.businessTypePath, field: 'businessType' });
     const departments = rowsFrom(deptData, ['centerList', 'rows', 'list']);
     const teams = rowsFrom(teamData, ['rows', 'list']);
@@ -307,7 +313,9 @@ export class CloudAdapter {
   }
 
   async createApproval(envelope, overrides = undefined) {
-    const mappings = await this.resolveMappings(overrides);
+    const mappings = overrides?.resolvedMappings
+      ? validatedMappings(overrides.resolvedMappings)
+      : await this.resolveMappings(overrides);
     const requestBody = this.buildWorkOrder(envelope, mappings, overrides);
     const result = await this.request(EOMS_PATHS.create, { method: 'POST', body: requestBody });
     const workNumber = typeof result === 'string' ? result : valueOf(result, ['workOrderNumber', 'workNumber', 'number']);

@@ -75,7 +75,7 @@ ${EDITOR:-vi} deploy/.env
 docker compose --env-file deploy/.env up -d --build cam-core
 ```
 
-云管的接口基地址、服务身份和密钥只配置在目标主机的 `deploy/.env`；具体 EOMS 接口路径固定在 `cam-core` 代码中，不作为环境配置项。工单级别、来源、业务类型、所属中心和运维团队填写可读的名称/路径，`cam-core` 创建工单前会从当前云管环境实时解析数字 ID，并将本次解析快照留在审批记录中；不要把测试环境或正式环境的数字 ID 写进代码。处理人 ID 用 `CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS` 配置，多个 ID 以英文逗号分隔。
+云管的接口基地址、服务身份和密钥只配置在目标主机的 `deploy/.env`；具体 EOMS 接口路径固定在 `cam-core` 代码中，不作为环境配置项。工单级别、来源、业务类型、所属中心、运维团队和审批处理人用户名在 Core 的云管对接配置页填写。管理员测试并保存配置时，`cam-core` 从当前云管环境解析名称对应的数字 ID，并将输入项和解析结果持久化到内网 SQLite；创建工单时复用已保存的 ID，同时在审批记录中留存实际使用的映射快照。云管字典或人员关系调整后，重新测试并保存配置即可刷新映射。
 
 SQLite 文件位于 `${CAM_EDGE_DATA_DIR}/edge/edge.sqlite`、`${CAM_CORE_DATA_DIR}/core/core.sqlite`
 和 `${CAM_AGENT_DATA_DIR}/agent/agent.sqlite`。SQLite 的 WAL、SHM 和制品目录同样位于对应
