@@ -22,7 +22,7 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   const downloadGrants = new DownloadGrantStore({ db, candidateStore: store });
   const auth = new AuthStore(db);
   const freezes = new FreezeStore({ db, dataDir, candidateStore: store });
-  const gateConfig = new GateConfigStore(db, { table: 'edge_gate_config', eventsTable: 'edge_gate_config_events' });
+  const gateConfig = new GateConfigStore(db, { table: 'edge_gate_config', eventsTable: 'edge_gate_config_events', requiredUrlFields: ['coreControlUrl', 'coreTransferUrl'] });
   const app = await buildServer({
     service: 'cam-edge',
     configure: async (server) => {

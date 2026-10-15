@@ -12,6 +12,8 @@ test('gate configuration accepts mapping URLs and rejects unsafe URL forms', () 
   assert.equal(config.mode, 'mapping');
   assert.equal(config.coreControlUrl, 'http://gate.example:3201');
   assert.throws(() => normalizeGateConfig({ coreControlUrl: 'http://user:pass@gate.example' }), /不能包含凭据/);
+  assert.doesNotThrow(() => normalizeGateConfig({ coreControlUrl: 'http://gate.example:3201', coreTransferUrl: 'http://gate.example:3202' }, { requireUrls: true, requiredUrlFields: ['coreControlUrl', 'coreTransferUrl'] }));
+  assert.throws(() => normalizeGateConfig({ coreControlUrl: 'http://gate.example:3201' }, { requireUrls: true, requiredUrlFields: ['coreControlUrl', 'coreTransferUrl'] }), /本端需要访问/);
   assert.throws(() => normalizeGateConfig({ coreControlUrl: 'ftp://gate.example' }), /HTTP\/HTTPS/);
 });
 

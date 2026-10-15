@@ -35,7 +35,7 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
   app.post('/api/v1/gate/config/test', { bodyLimit: 8192 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置管理员权限');
     try {
-      const config = normalizeGateConfig(Object.keys(request.body ?? {}).length ? request.body : gateConfig.get(), { requireUrls: true });
+      const config = normalizeGateConfig(Object.keys(request.body ?? {}).length ? request.body : gateConfig.get(), { requireUrls: true, requiredUrlFields: ['edgeControlUrl', 'edgeTransferUrl'] });
       const checks = {};
       for (const [name, url] of Object.entries({ edgeControlUrl: config.edgeControlUrl, edgeTransferUrl: config.edgeTransferUrl })) {
         checks[name] = await checkGateHealth(url, { timeoutMs: config.connectTimeoutMs });

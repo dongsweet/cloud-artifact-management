@@ -14,7 +14,7 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
   const db = await openDatabase(join(dataDir, 'core.sqlite'));
   const store = new CoreStore(db);
   const auth = new AuthStore(db);
-  const gateConfig = new GateConfigStore(db, { table: 'core_gate_config', eventsTable: 'core_gate_config_events' });
+  const gateConfig = new GateConfigStore(db, { table: 'core_gate_config', eventsTable: 'core_gate_config_events', requiredUrlFields: ['edgeControlUrl', 'edgeTransferUrl'] });
   const app = await buildServer({
     service: 'cam-core',
     configure: async (server) => {

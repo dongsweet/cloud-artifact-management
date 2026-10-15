@@ -21,7 +21,7 @@ CAM 应为每条业务链路配置独立、最小化的映射规则。建议至�
 
 实际虚拟 IP、目标 IP、端口、入口设备和出口设备由网闸管理员根据现场地址规划填写，不能写死在 CAM 代码中。若现场将审批控制消息和大文件合并为一个 HTTPS 映射端口，应仍在应用层区分消息接口和制品接口，并分别校验权限、摘要和任务编号。
 
-部署配置预留四个映射基地址：`CAM_GATE_CORE_CONTROL_URL`、`CAM_GATE_CORE_TRANSFER_URL`、`CAM_GATE_EDGE_CONTROL_URL` 和 `CAM_GATE_EDGE_TRANSFER_URL`。它们填写山石网闸侧的虚拟地址，不填写容器内网地址；业务路径继续由 CAM 固定。`CAM_GATE_CHUNK_SIZE_BYTES`、`CAM_GATE_RETRY_LIMIT`、`CAM_GATE_CONNECT_TIMEOUT_MS`、`CAM_GATE_TRANSFER_TIMEOUT_MS`、`CAM_GATE_MAX_IN_FLIGHT_CHUNKS` 和 `CAM_GATE_REQUEST_TTL_SECONDS` 分别控制分块、重试、超时、并发和请求有效期。当前版本提供 Edge 和 Core 的“网闸对接配置”页面。页面配置分别保存到本区 SQLite 的 `edge_gate_config` 或 `core_gate_config` 并记录变更审计；页面不能查看或修改共享密钥。共享密钥、上一把密钥、TLS CA 文件和网闸策略仍由部署环境及网闸管理员管理。保存前可调用配置测试接口检查受控映射地址的 `/health/ready`，测试通过后再保存。
+部署配置按通信方向区分映射地址：Edge 的 `.env` 配置 `CAM_GATE_CORE_CONTROL_URL` 和 `CAM_GATE_CORE_TRANSFER_URL`，即 Edge 外侧访问的 Core 控制与制品传输虚拟地址；Core 的 `.env` 配置 `CAM_GATE_EDGE_CONTROL_URL` 和 `CAM_GATE_EDGE_TRANSFER_URL`，即 Core 内侧访问的 Edge 控制与制品/回执虚拟地址。地址填写山石网闸提供的本区可达虚拟地址，不填写对端容器内网地址；业务路径继续由 CAM 固定。`CAM_GATE_CHUNK_SIZE_BYTES`、`CAM_GATE_RETRY_LIMIT`、`CAM_GATE_CONNECT_TIMEOUT_MS`、`CAM_GATE_TRANSFER_TIMEOUT_MS`、`CAM_GATE_MAX_IN_FLIGHT_CHUNKS` 和 `CAM_GATE_REQUEST_TTL_SECONDS` 分别控制分块、重试、超时、并发和请求有效期。当前版本提供 Edge 和 Core 的“网闸对接配置”页面。Edge 页面填写外侧访问 Core 的控制/制品传输地址，Core 页面填写内侧访问 Edge 的控制/制品回执地址；两类配置分别保存到本区 SQLite 的 `edge_gate_config` 或 `core_gate_config` 并记录变更审计。页面不能查看或修改共享密钥。共享密钥、上一把密钥、TLS CA 文件和网闸策略仍由部署环境及网闸管理员管理。保存前可调用配置测试接口检查受控映射地址的 `/health/ready`，测试通过后再保存。
 
 在映射模式下，CAM 的应用链路仍应保持异步和幂等：
 

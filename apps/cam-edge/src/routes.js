@@ -146,7 +146,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
   app.post('/api/v1/gate/config/test', { bodyLimit: 8192 }, async (request, reply) => {
     try {
-      const config = normalizeGateConfig(Object.keys(request.body ?? {}).length ? request.body : gateConfig.get(), { requireUrls: true });
+      const config = normalizeGateConfig(Object.keys(request.body ?? {}).length ? request.body : gateConfig.get(), { requireUrls: true, requiredUrlFields: ['coreControlUrl', 'coreTransferUrl'] });
       const checks = {};
       for (const [name, url] of Object.entries({ coreControlUrl: config.coreControlUrl, coreTransferUrl: config.coreTransferUrl })) checks[name] = await checkGateHealth(url, { timeoutMs: config.connectTimeoutMs });
       return reply.send({ ok: true, checks });

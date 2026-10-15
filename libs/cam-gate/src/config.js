@@ -26,7 +26,7 @@ function urlValue(value, field) {
   return parsed.toString().replace(/\/$/u, '');
 }
 
-export function normalizeGateConfig(input = {}, { requireUrls = false } = {}) {
+export function normalizeGateConfig(input = {}, { requireUrls = false, requiredUrlFields = URL_FIELDS } = {}) {
   const output = { ...DEFAULTS };
   output.mode = clean(input.mode ?? DEFAULTS.mode);
   for (const field of STRING_FIELDS) output[field] = clean(input[field] ?? '') || '';
@@ -39,7 +39,7 @@ export function normalizeGateConfig(input = {}, { requireUrls = false } = {}) {
   if (output.chunkSizeBytes < 1024 * 1024 || output.chunkSizeBytes > 1024 * 1024 * 1024) throw Object.assign(new Error('chunkSizeBytes 必须在 1 MiB 到 1 GiB 之间'), { code: 'gate_config_invalid' });
   if (output.maxInFlightChunks > 32 || output.retryLimit > 20 || output.requestTtlSeconds > 7 * 86400) throw Object.assign(new Error('分块并发、重试次数或请求有效期超过安全上限'), { code: 'gate_config_invalid' });
   if (output.mode !== 'mapping') throw Object.assign(new Error('当前只支持 mapping（映射模式）'), { code: 'gate_config_invalid' });
-  if (requireUrls && URL_FIELDS.some((field) => !output[field])) throw Object.assign(new Error('请填写全部受控映射通道地址'), { code: 'gate_config_invalid' });
+  if (requireUrls && requiredUrlFields.some((field) => !output[field])) throw Object.assign(new Error('请填写本端需要访问的受控映射通道地址'), { code: 'gate_config_invalid' });
   return output;
 }
 
@@ -62,8 +62,9 @@ export function gateConfigFromEnv(env = process.env) {
 }
 
 export class GateConfigStore {
-  constructor(db, { table = 'gate_config', eventsTable = 'gate_config_events', env = process.env } = {}) {
+  constructor(db, { table = 'gate_config', eventsTable = 'gate_config_events', env = process.env, requiredUrlFields = URL_FIELDS } = {}) {
     this.db = db; this.table = table; this.eventsTable = eventsTable; this.env = env;
+    this.requiredUrlFields = requiredUrlFields;
     db.exec(`CREATE TABLE IF NOT EXISTS ${table} (config_id INTEGER PRIMARY KEY CHECK (config_id = 1), config_json TEXT NOT NULL, updated_by TEXT, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS ${eventsTable} (event_id TEXT PRIMARY KEY, actor_id TEXT, action TEXT NOT NULL, config_json TEXT NOT NULL, created_at TEXT NOT NULL)`);
   }
   get() {
@@ -72,7 +73,7 @@ export class GateConfigStore {
     return { ...normalizeGateConfig(JSON.parse(row.config_json)), source: 'database', updatedBy: row.updated_by, updatedAt: row.updated_at };
   }
   save(input, actorId) {
-    const config = normalizeGateConfig(input, { requireUrls: true });
+    const config = normalizeGateConfig(input, { requireUrls: true, requiredUrlFields: this.requiredUrlFields });
     const timestamp = new Date().toISOString();
     const eventId = `GATECFG-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     this.db.exec('BEGIN IMMEDIATE');
