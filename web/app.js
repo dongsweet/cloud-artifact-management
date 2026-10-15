@@ -697,9 +697,9 @@ $('#freeze-form').addEventListener('submit', async (event) => {
       freezeId = draft.freezeId;
     }
     await api(`/api/v1/freezes/${encodeURIComponent(freezeId)}/report`, { method: 'PUT', headers: { 'content-type': 'application/pdf', 'x-report-filename': encodeURIComponent(file.name) }, body: file });
-    await api(`/api/v1/freezes/${encodeURIComponent(freezeId)}/submit`, { method: 'POST', body: '{}' });
+    const submitted = await api(`/api/v1/freezes/${encodeURIComponent(freezeId)}/submit`, { method: 'POST', body: '{}' });
     modal('freeze').hide();
-    showAlert('验证报告已提交审批，本轮候选清单已锁定');
+    showAlert(submitted.dispatchStatus === 'DELIVERED' && submitted.coreApprovalId ? `申请已送达 Core，云管工单号：${submitted.coreApprovalId}` : submitted.dispatchStatus === 'FAILED' ? '申请已保存，本轮候选清单已锁定；暂未送达 Core，系统将自动重试' : '申请已保存，本轮候选清单已锁定，正在发送到 Core');
     await loadRound(state.routeGeneration);
   } catch (error) { showAlert(error.message, 'danger'); }
   finally { button.disabled = false; }
