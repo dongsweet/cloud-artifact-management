@@ -298,6 +298,10 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
   app.get('/api/v1/approval-requests', async (_request, reply) => reply.send({ items: store.list() }));
 
   app.get('/api/v1/artifacts', async (_request, reply) => reply.send({ items: store.listArtifacts() }));
+  app.get('/api/v1/artifacts/:artifactId', async (request, reply) => {
+    const item = store.getArtifact(request.params.artifactId);
+    return item ? reply.send({ item }) : error(reply, 404, 'artifact_baseline_not_found', '正式发布基线不存在');
+  });
 
   app.post('/api/v1/gate/transfers/:transferTaskId/manifest', { bodyLimit: 8 * 1024 * 1024 }, async (request, reply) => {
     try { return reply.send({ item: store.setTransferManifest(request.params.transferTaskId, request.body?.manifest ?? request.body) }); }

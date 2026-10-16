@@ -501,6 +501,9 @@ transfer-bundle/
 | `cam-core` | `POST /api/v1/gate/receipts` | 登记网闸接收回执 |
 | `cam-core` | `POST /api/v1/gate/approval-requests` | 接收外部区固化申请并创建云管工单 |
 | `cam-core` | `GET /api/v1/approval-requests/:requestId` | 查询审批联动状态 |
+| `cam-core` | `GET /api/v1/artifacts` | 查询已接收的正式版本及其文件清单；按软件和版本归档，不暴露 Edge 固化轮次 |
+| `cam-core` | `GET /api/v1/artifacts/:artifactId` | 查询单个正式版本基线，供后续 `cam-agent` 分发任务引用 |
+| `cam-core` | `GET /api/v1/artifacts/:sha256/content` | 按已授权文件摘要下载正式制品字节 |
 | `cam-core` | `POST /api/v1/approval-requests/:requestId/sync` | 由内网适配器向云管查询并更新审批状态 |
 | `cam-core` | `POST /api/v1/approval-requests/:requestId/transfer-authorize` | 核验云管批准结果并生成内网传输任务 |
 | `cam-core` | `GET /api/v1/gate/transfers/:transferTaskId/manifest` | 在网闸身份校验下返回已批准文件清单及对象是否已存在 |

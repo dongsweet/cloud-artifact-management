@@ -88,10 +88,27 @@
 .cam-artifact-row > i { margin-top: .2rem; }
 .cam-artifact-main { min-width: 0; flex: 1 1 auto; }
 .cam-artifact-row > .badge { flex: 0 0 auto; }
+.cam-artifact-product { min-width: 0 !important; }
+.cam-artifact-version { border: 1px solid var(--bs-border-color-translucent); border-radius: .45rem; overflow: hidden; }
+.cam-artifact-version > summary { display: flex; align-items: center; gap: .75rem; padding: .8rem 1rem; cursor: pointer; list-style: none; background: var(--bs-tertiary-bg); }
+.cam-artifact-version > summary::-webkit-details-marker { display: none; }
+.cam-artifact-version > summary::before { content: '▸'; color: var(--bs-secondary-color); transition: transform .15s ease; }
+.cam-artifact-version[open] > summary::before { transform: rotate(90deg); }
+.cam-artifact-version-name { font-weight: 600; min-width: 9rem; }
+.cam-artifact-version > summary .small { margin-left: auto; }
+.cam-artifact-version-body { padding: 1rem; }
+.cam-artifact-metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem 1rem; margin-bottom: 1rem; }
+.cam-artifact-metadata > span { display: flex; flex-direction: column; gap: .18rem; min-width: 0; }
+.cam-artifact-metadata code, .cam-artifact-digest { overflow-wrap: anywhere; word-break: break-word; }
+.cam-artifact-product .table { font-size: .9rem; }
+.cam-artifact-product .table th { white-space: nowrap; }
 @media (max-width: 576px) {
   .cam-detail-modal { width: calc(100vw - 1rem); max-height: 94vh; }
   .cam-detail-modal .card-body { padding: 1rem; }
   .cam-detail-grid { grid-template-columns: 1fr; }
   .cam-detail-field-wide { grid-column: auto; }
   .cam-detail-title-wrap .card-title { max-width: 62vw; }
+  .cam-artifact-version > summary { flex-wrap: wrap; gap: .45rem .65rem; }
+  .cam-artifact-version > summary .small { width: 100%; margin-left: 1.3rem; }
+  .cam-artifact-metadata { grid-template-columns: 1fr; }
 }

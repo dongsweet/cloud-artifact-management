@@ -47,8 +47,35 @@ function render(items) {
 }
 async function load({ quiet = false } = {}) { try { render((await api('/api/v1/approval-requests')).items); if (!quiet) clearMessage(); if ($('#detail').open && $('#detail').dataset.requestId) await showDetail($('#detail').dataset.requestId); } catch (error) { if (!quiet) message(error.message, 'danger'); } }
 function startRequestPolling() { if (requestPollTimer) return; requestPollTimer = setInterval(() => { if (!$('#app').classList.contains('d-none') && !$('#page-requests').classList.contains('d-none') && !document.hidden) void load({ quiet: true }); }, 5000); }
+function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return '-';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = bytes;
+  let unit = -1;
+  do { size /= 1024; unit++; } while (size >= 1024 && unit < units.length - 1);
+  return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unit]}`;
+}
+function renderArtifactFile(file) {
+  const source = file.source === 'INHERITED' ? '复用已有文件' : '本版本文件';
+  const state = file.stored ? '<span class="badge text-bg-success">已入库</span>' : '<span class="badge text-bg-warning">待入库</span>';
+  const download = file.downloadUrl ? `<a class="btn btn-outline-primary btn-sm" href="${escapeHtml(file.downloadUrl)}" download="${escapeHtml(file.fileName)}">下载</a>` : '<span class="small text-body-secondary">文件尚未入库</span>';
+  return `<tr><td><div class="fw-semibold">${escapeHtml(file.packageKey)}</div><span class="badge text-bg-light border">${escapeHtml(source)}</span></td><td>${escapeHtml(file.fileName)}</td><td class="text-nowrap">${escapeHtml(formatBytes(file.sizeBytes))}</td><td><code class="cam-artifact-digest" title="${escapeHtml(file.sha256)}">${escapeHtml(file.sha256)}</code></td><td>${state}</td><td>${download}</td></tr>`;
+}
 function renderArtifacts(items) {
-  $('#artifact-rows').innerHTML = items.length ? items.map((item) => { const files = item.files ?? []; const stored = files.filter((file) => file.stored).length; return `<tr><td><div class="fw-semibold">${escapeHtml(item.productName ?? '历史产品')} / ${escapeHtml(item.displayVersion ?? item.version ?? '-')}</div><div class="small text-body-secondary">${item.roundNo ? `第 ${escapeHtml(item.roundNo)} 轮` : escapeHtml(item.roundId)}</div></td><td>${escapeHtml(item.releaseId)}</td><td><div>${escapeHtml(item.cloudApprovalId ?? '-')}</div><div class="small text-body-secondary">${escapeHtml(item.transferTaskId ?? item.cloudTransferTaskId ?? '-')}</div></td><td>${files.length ? `<span class="badge text-bg-${stored === files.length ? 'success' : 'warning'}">${stored} / ${files.length} 个文件已入库</span><div class="small text-body-secondary mt-1">${files.filter((file) => file.source === 'INHERITED').length} 个继承项按摘要复用</div>` : '<span class="text-body-secondary">旧版申请未携带文件清单</span>'}</td><td class="font-monospace small" title="${escapeHtml(item.manifestSha256)}">${escapeHtml(item.manifestSha256?.slice(0, 16))}…</td><td>${escapeHtml(displayTime(item.receivedAt))}</td><td><button class="btn btn-outline-primary btn-sm artifact-detail" data-id="${escapeHtml(item.requestId)}">审批记录</button></td></tr>`; }).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">暂无已接收的正式发布基线。审批通过后，完成网闸交付并收到回执后会显示在这里。</td></tr>';
+  const products = new Map();
+  for (const item of items) {
+    const productName = item.productName || '历史产品';
+    if (!products.has(productName)) products.set(productName, []);
+    products.get(productName).push(item);
+  }
+  $('#artifact-rows').innerHTML = products.size ? [...products.entries()].map(([productName, releases]) => `<article class="card cam-artifact-product"><div class="card-header d-flex align-items-center justify-content-between"><h4 class="h6 mb-0"><i class="bi bi-box-seam me-2 text-primary"></i>${escapeHtml(productName)}</h4><span class="small text-body-secondary">${releases.length} 个正式版本</span></div><div class="card-body d-grid gap-3">${releases.map((item, index) => {
+    const files = item.files ?? [];
+    const stored = files.filter((file) => file.stored).length;
+    const version = item.displayVersion ?? item.version ?? '未知版本';
+    return `<details class="cam-artifact-version" ${index === 0 ? 'open' : ''}><summary><span class="cam-artifact-version-name">${escapeHtml(version)}</span><span class="badge text-bg-${stored === files.length && files.length ? 'success' : 'warning'}">${stored} / ${files.length} 个文件已入库</span><span class="small text-body-secondary">接收于 ${escapeHtml(displayTime(item.receivedAt))}</span></summary><div class="cam-artifact-version-body"><div class="cam-artifact-metadata"><span><span class="text-body-secondary">发布标识</span><code>${escapeHtml(item.releaseId ?? '-')}</code></span><span><span class="text-body-secondary">云管审批</span><code>${escapeHtml(item.cloudApprovalId ?? '-')}</code></span><span><span class="text-body-secondary">传输任务</span><code>${escapeHtml(item.transferTaskId ?? '-')}</code></span><span><span class="text-body-secondary">清单 SHA-256</span><code title="${escapeHtml(item.manifestSha256)}">${escapeHtml(item.manifestSha256 ?? '-')}</code></span></div>${files.length ? `<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>包标识 / 来源</th><th>文件名</th><th>大小</th><th>SHA-256</th><th>状态</th><th></th></tr></thead><tbody>${files.map(renderArtifactFile).join('')}</tbody></table></div>` : '<div class="alert alert-warning mb-0">该历史申请未提供正式文件清单。</div>'}<div class="d-flex justify-content-end mt-3"><button class="btn btn-outline-secondary btn-sm artifact-detail" data-id="${escapeHtml(item.requestId)}">查看审批记录</button></div></div></details>`;
+  }).join('')}</div></article>`).join('') : '<div class="text-center text-body-secondary py-5">暂无已接收的正式版本。审批通过并收到制品后，会按软件和版本展示在这里。</div>';
   document.querySelectorAll('.artifact-detail').forEach((button) => { button.onclick = async () => { location.hash = 'requests'; showPage('requests'); await showDetail(button.dataset.id); }; });
 }
 async function loadArtifacts() { try { renderArtifacts((await api('/api/v1/artifacts')).items); clearMessage(); } catch (error) { message(error.message, 'danger'); } }

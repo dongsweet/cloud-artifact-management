@@ -91,10 +91,16 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     assert.equal(artifacts.json().items[0].releaseId, 'REL-1');
     assert.equal(artifacts.json().items[0].productName, '曙光云 Stack');
     assert.equal(artifacts.json().items[0].version, '8.0.6.2');
-    assert.equal(artifacts.json().items[0].roundNo, 2);
+    assert.equal(artifacts.json().items[0].revision, 0);
+    assert.equal(artifacts.json().items[0].displayVersion, '8.0.6.2');
+    assert.equal('roundNo' in artifacts.json().items[0], false, 'formal artifact records do not expose Edge collection rounds');
     assert.equal(artifacts.json().items[0].transferTaskId, 'TR-1');
     assert.equal(artifacts.json().items[0].manifestSha256, manifestSha256);
     assert.ok(artifacts.json().items[0].receivedAt);
+    const artifactDetail = await app.inject({ method: 'GET', url: '/api/v1/artifacts/BASELINE-FREEZE-1' });
+    assert.equal(artifactDetail.statusCode, 200, artifactDetail.body);
+    assert.equal(artifactDetail.json().item.artifactId, 'BASELINE-FREEZE-1');
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/artifacts/BASELINE-NOT-FOUND' })).statusCode, 404);
 
     const replay = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: envelope });
     assert.equal(replay.statusCode, 200);
@@ -291,6 +297,9 @@ test('Core stores approved files by SHA-256 and lets multiple package entries sh
     assert.equal(artifacts.length, 1);
     assert.equal(artifacts[0].files.length, 2);
     assert.ok(artifacts[0].files.every((file) => file.stored && file.sha256 === sha256));
+    assert.ok(artifacts[0].files.every((file) => file.downloadUrl === `/api/v1/artifacts/${sha256}/content`));
+    assert.equal('roundNo' in artifacts[0], false);
+    assert.deepEqual((await app.inject({ method: 'GET', url: `/api/v1/artifacts/${artifacts[0].artifactId}` })).json().item, artifacts[0]);
     const download = await app.inject({ method: 'GET', url: `/api/v1/artifacts/${sha256}/content` });
     assert.equal(download.statusCode, 200);
     assert.deepEqual(download.rawPayload, bytes);

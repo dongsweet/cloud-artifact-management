@@ -234,13 +234,46 @@ export class CoreStore {
     return this.db.prepare(`SELECT r.*, t.status AS transfer_status, t.updated_at AS transfer_received_at
       FROM core_approval_requests r JOIN core_transfer_tasks t ON t.request_id = r.request_id
       WHERE r.status IN ('APPROVED', 'CLOSED') AND t.status = 'RECEIVED'
-      ORDER BY t.updated_at DESC LIMIT 500`).all().map((row) => ({
+      ORDER BY t.updated_at DESC LIMIT 500`).all().map((row) => this.serializeArtifact(row));
+  }
+  getArtifact(artifactId) {
+    const prefix = 'BASELINE-';
+    if (typeof artifactId !== 'string' || !artifactId.startsWith(prefix) || artifactId.length === prefix.length) return null;
+    const row = this.db.prepare(`SELECT r.*, t.status AS transfer_status, t.updated_at AS transfer_received_at
+      FROM core_approval_requests r JOIN core_transfer_tasks t ON t.request_id = r.request_id
+      WHERE r.request_id = ? AND r.status IN ('APPROVED', 'CLOSED') AND t.status = 'RECEIVED'`).get(artifactId.slice(prefix.length));
+    return row ? this.serializeArtifact(row) : null;
+  }
+  serializeArtifact(row) {
+    const files = this.listReleaseArtifacts(row.request_id).map((file) => ({
+      packageKey: file.packageKey,
+      candidateId: file.candidateId,
+      fileName: file.fileName,
+      sizeBytes: file.sizeBytes,
+      sha256: file.sha256,
+      source: file.source,
+      stored: file.stored,
+      downloadUrl: file.stored ? `/api/v1/artifacts/${file.sha256}/content` : null
+    }));
+    const metadata = response(row);
+    return {
       artifactId: `BASELINE-${row.request_id}`,
       artifactType: 'RELEASE_BASELINE',
-      files: this.listReleaseArtifacts(row.request_id),
-      ...response(row),
-      receivedAt: row.transfer_received_at
-    }));
+      requestId: metadata.requestId,
+      freezeId: metadata.freezeId,
+      releaseId: metadata.releaseId,
+      productName: metadata.productName,
+      version: metadata.version,
+      revision: metadata.revision,
+      displayVersion: metadata.displayVersion,
+      status: metadata.status,
+      manifestSha256: metadata.manifestSha256,
+      cloudApprovalId: metadata.cloudApprovalId,
+      transferTaskId: metadata.transferTaskId,
+      approvedAt: metadata.approvedAt,
+      receivedAt: row.transfer_received_at,
+      files
+    };
   }
   listReleaseArtifacts(requestId) {
     return this.db.prepare(`SELECT ra.package_key AS packageKey, ra.candidate_id AS candidateId,
