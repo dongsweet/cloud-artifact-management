@@ -46,6 +46,8 @@ test('completed round report stays immutable while approval is pending and Edge 
   const submitted = await app.inject({ method: 'POST', url: `/api/v1/freezes/${draft.freezeId}/submit`, payload: {} });
   assert.equal(submitted.statusCode, 200, submitted.body);
   assert.equal(submitted.json().status, 'PENDING_APPROVAL');
+  const freezeDetail = (await app.inject({ method: 'GET', url: `/api/v1/rounds/${round.roundId}/freezes` })).json().item;
+  assert.deepEqual([freezeDetail.reportTitle, freezeDetail.conclusion, freezeDetail.environment, freezeDetail.submittedBy], ['Stack 8.0.6.2 验证报告', 'PASS', '验证环境 A', 'validator-1']);
   assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/rounds/${round.roundId}/candidates/${candidate.candidateId}` })).statusCode, 409);
 
   const report = await app.inject({ method: 'GET', url: `/api/v1/freezes/${draft.freezeId}/report-file` });
