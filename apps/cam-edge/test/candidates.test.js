@@ -191,18 +191,18 @@ test('round batch receive is persisted and limits concurrent downloads', async (
   const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: payload.length, allowlist: ['127.0.0.1'] });
   const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Batch test' } });
   const release = await app.inject({ method: 'POST', url: `/api/v1/products/${product.json().productId}/releases`, payload: { version: '1.0.0' } });
-  const round = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.json().releaseId}/rounds`, payload: { changeNote: '测试轮次' } });
+  const round = release.json().initialRound;
   const candidateIds = [];
   for (let index = 0; index < 3; index += 1) {
-    const created = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.json().roundId}/candidates`, payload: { packageKey: `package-${index}`, sourceUrl: `http://127.0.0.1:${port}/package-${index}.bin`, size: payload.length } });
+    const created = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.roundId}/candidates`, payload: { packageKey: `package-${index}`, sourceUrl: `http://127.0.0.1:${port}/package-${index}.bin`, size: payload.length } });
     candidateIds.push(created.json().candidateId);
   }
-  const batch = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.json().roundId}/receive-batch`, payload: {} });
+  const batch = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.roundId}/receive-batch`, payload: {} });
   assert.equal(batch.statusCode, 202);
   assert.equal(batch.json().enqueued, 3);
   assert.equal(batch.json().concurrency, 2);
   assert.equal(batch.json().items.filter((item) => item.status === 'QUEUED').length, 1);
-  const repeatedBatch = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.json().roundId}/receive-batch`, payload: {} });
+  const repeatedBatch = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.roundId}/receive-batch`, payload: {} });
   assert.equal(repeatedBatch.statusCode, 202);
   assert.equal(repeatedBatch.json().enqueued, 0);
   assert.equal(repeatedBatch.json().alreadyActive, 3);
@@ -232,14 +232,14 @@ test('round candidate removal detaches only the current round mapping', async ()
   const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
   const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Round remove test' } });
   const release = await app.inject({ method: 'POST', url: `/api/v1/products/${product.json().productId}/releases`, payload: { version: '1.0.0' } });
-  const round = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.json().releaseId}/rounds`, payload: { changeNote: '测试轮次' } });
-  const created = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.json().roundId}/candidates`, payload: { packageKey: 'base', sourceUrl: 'http://127.0.0.1/base.bin', size: 1 } });
+  const round = release.json().initialRound;
+  const created = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.roundId}/candidates`, payload: { packageKey: 'base', sourceUrl: 'http://127.0.0.1/base.bin', size: 1 } });
   const candidateId = created.json().candidateId;
-  const removed = await app.inject({ method: 'DELETE', url: `/api/v1/rounds/${round.json().roundId}/candidates/${candidateId}` });
+  const removed = await app.inject({ method: 'DELETE', url: `/api/v1/rounds/${round.roundId}/candidates/${candidateId}` });
   assert.equal(removed.statusCode, 204);
-  assert.deepEqual((await app.inject({ method: 'GET', url: `/api/v1/rounds/${round.json().roundId}/candidates` })).json().items, []);
+  assert.deepEqual((await app.inject({ method: 'GET', url: `/api/v1/rounds/${round.roundId}/candidates` })).json().items, []);
   assert.equal((await app.inject({ method: 'GET', url: `/api/v1/candidates/${candidateId}` })).statusCode, 200);
-  assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/rounds/${round.json().roundId}/candidates/${candidateId}` })).statusCode, 404);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/rounds/${round.roundId}/candidates/${candidateId}` })).statusCode, 404);
   await app.close();
 });
 
@@ -404,15 +404,12 @@ test('deletes empty open releases and protects releases with candidate packages'
 
   const emptyRelease = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/releases`, payload: { version: 'draft' } });
   const emptyReleaseId = emptyRelease.json().releaseId;
-  const emptyRound = await app.inject({ method: 'POST', url: `/api/v1/releases/${emptyReleaseId}/rounds`, payload: { changeNote: '测试轮次' } });
-  assert.equal(emptyRound.statusCode, 201);
   assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/releases/${emptyReleaseId}` })).statusCode, 204);
   assert.equal((await app.inject({ method: 'GET', url: `/api/v1/releases/${emptyReleaseId}` })).statusCode, 404);
 
   const usedRelease = await app.inject({ method: 'POST', url: `/api/v1/products/${productId}/releases`, payload: { version: '8.0.6.2' } });
   const usedReleaseId = usedRelease.json().releaseId;
-  const round = await app.inject({ method: 'POST', url: `/api/v1/releases/${usedReleaseId}/rounds`, payload: { changeNote: '测试轮次' } });
-  const candidate = await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.json().roundId}/candidates`, payload: { sourceUrl: 'http://127.0.0.1/package.tar', size: 1 } });
+  const candidate = await app.inject({ method: 'POST', url: `/api/v1/rounds/${usedRelease.json().initialRound.roundId}/candidates`, payload: { sourceUrl: 'http://127.0.0.1/package.tar', size: 1 } });
   assert.equal(candidate.statusCode, 201);
   const blocked = await app.inject({ method: 'DELETE', url: `/api/v1/releases/${usedReleaseId}` });
   assert.equal(blocked.statusCode, 409);
@@ -445,8 +442,7 @@ test('candidate import creates only selected row metadata and refuses package ke
   const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir, defaultChunkSize: 4, allowlist: ['127.0.0.1'] });
   const product = await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: '导入测试产品' } });
   const release = await app.inject({ method: 'POST', url: `/api/v1/products/${product.json().productId}/releases`, payload: { version: '8.0.6.2' } });
-  const round = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.json().releaseId}/rounds`, payload: { changeNote: '测试轮次' } });
-  const roundId = round.json().roundId;
+  const roundId = release.json().initialRound.roundId;
   const payload = { items: [{ packageKey: '系统包 / x86_64', sourceUrl: 'http://127.0.0.1/system.tar.gz', fileName: 'system.tar.gz', architecture: 'x86_64', size: 0, sourceMetadata: { type: '操作系统ISO', applicableProducts: ['Stack', 'SVM'], displaySize: '5.96 GB', sourceSheet: '完整部署包', sourceRow: 3 } }] };
   const imported = await app.inject({ method: 'POST', url: `/api/v1/rounds/${roundId}/import`, payload });
   assert.equal(imported.statusCode, 201);
