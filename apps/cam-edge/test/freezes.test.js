@@ -81,6 +81,8 @@ test('Edge accepts only authenticated, idempotent Core approval-result callbacks
   const app = await buildEdgeApp({ dataDir, gateSecret: 'gate-test', principalProvider: () => ({ id: 'test-admin', type: 'TEST_IDP', roles: ['EDGE_ADMIN', 'CANDIDATE_RECEIVER', 'VALIDATOR'] }) });
   const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Callback product' } })).json();
   const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } })).json();
+  const candidate = (await app.inject({ method: 'POST', url: `/api/v1/rounds/${release.initialRound.roundId}/candidates`, payload: { packageKey: 'base', sourceUrl: 'https://example.invalid/base.tar', fileName: 'base.tar', size: 0 } })).json();
+  app.candidateStore.db.prepare("UPDATE candidates SET status = 'COMPLETED', final_sha256 = ?, completed_at = ? WHERE candidate_id = ?").run('b'.repeat(64), new Date().toISOString(), candidate.candidateId);
   const freezeId = 'FREEZE-CALLBACK';
   const now = new Date().toISOString();
   app.candidateStore.db.prepare(`INSERT INTO round_freezes
@@ -100,6 +102,22 @@ test('Edge accepts only authenticated, idempotent Core approval-result callbacks
     assert.equal(replay.json().idempotent, true);
     const status = await app.inject({ method: 'GET', url: `/api/v1/rounds/${release.initialRound.roundId}/freezes` });
     assert.equal(status.json().item.status, 'APPROVED');
+    assert.equal((await app.inject({ method: 'GET', url: `/api/v1/releases/${release.releaseId}` })).json().status, 'SEALED');
+    const nextRound = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: { changeNote: '封存后不允许继续开轮次' } });
+    assert.equal(nextRound.statusCode, 409);
+    assert.equal(nextRound.json().error.message.includes('已封存'), true);
+    const newPackage = await app.inject({ method: 'POST', url: `/api/v1/rounds/${release.initialRound.roundId}/candidates`, payload: { packageKey: 'other', sourceUrl: 'https://example.invalid/other.tar', size: 0 } });
+    assert.equal(newPackage.statusCode, 409);
+    const revision = await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } });
+    assert.equal(revision.statusCode, 201, revision.body);
+    assert.equal(revision.json().revision, 1);
+    assert.equal(revision.json().displayVersion, '1.0-r1');
+    assert.equal(revision.json().baseReleaseId, release.releaseId);
+    assert.equal(revision.json().initialRound.baseRoundId, release.initialRound.roundId);
+    assert.equal(revision.json().inheritedPackageCount, 1);
+    const inherited = await app.inject({ method: 'GET', url: `/api/v1/rounds/${revision.json().initialRound.roundId}/candidates` });
+    assert.equal(inherited.json().items[0].candidateId, candidate.candidateId);
+    assert.equal(inherited.json().items[0].mappingSource, 'INHERITED');
     assert.equal('coreApprovalId' in status.json().item, false);
     assert.equal('coreStatus' in status.json().item, false);
     assert.equal('dispatchAttempts' in status.json().item, false);

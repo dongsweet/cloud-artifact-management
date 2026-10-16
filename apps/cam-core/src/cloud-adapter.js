@@ -298,12 +298,13 @@ export class CloudAdapter {
     if (!mappings.processUserIds.length) throw configurationError('请配置云管审批处理人用户名');
     const roundLabel = Number.isInteger(envelope.roundNo) ? `第 ${envelope.roundNo} 轮` : (envelope.roundId ?? '候选轮次');
     const productLabel = envelope.productName ?? envelope.releaseId ?? '软件发布';
-    const versionLabel = envelope.version ? ` ${envelope.version}` : '';
+    const displayVersion = envelope.displayVersion ?? envelope.version;
+    const versionLabel = displayVersion ? ` ${displayVersion}` : '';
     const title = `${config.titlePrefix} ${productLabel}${versionLabel} ${roundLabel}固化申请`.trim().slice(0, 64);
     const detail = [
-      `<p>审批事项：${html(productLabel)}${versionLabel ? ` ${html(envelope.version)}` : ''} ${html(roundLabel)}固化申请</p>`,
+      `<p>审批事项：${html(productLabel)}${versionLabel ? ` ${html(displayVersion)}` : ''} ${html(roundLabel)}固化申请</p>`,
       `<p>软件产品：${html(envelope.productName ?? '旧版请求未提供')}</p>`,
-      `<p>软件版本：${html(envelope.version ?? '旧版请求未提供')}</p>`,
+      `<p>软件版本：${html(displayVersion ?? '旧版请求未提供')}</p>`,
       `<p>候选轮次：${Number.isInteger(envelope.roundNo) ? `第 ${envelope.roundNo} 轮` : html(envelope.roundId ?? '旧版请求未提供')}</p>`,
       ...(envelope.reportTitle ? [`<p>验证报告标题：${html(envelope.reportTitle)}</p>`] : []),
       `<p>发布版本标识：${html(envelope.releaseId)}</p>`,

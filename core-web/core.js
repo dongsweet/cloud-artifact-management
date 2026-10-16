@@ -29,7 +29,7 @@ function renderCloudMappings(mappings = null) {
 }
 function requestSubject(item) {
   if (!item.productName || !item.version || !item.roundNo) return '历史审批请求';
-  return `${item.productName} / ${item.version} · 第 ${item.roundNo} 轮固化申请`;
+  return `${item.productName} / ${item.displayVersion ?? item.version} · 第 ${item.roundNo} 轮固化申请`;
 }
 function displayTime(value) {
   const date = new Date(value);
@@ -48,7 +48,7 @@ function render(items) {
 async function load({ quiet = false } = {}) { try { render((await api('/api/v1/approval-requests')).items); if (!quiet) clearMessage(); if ($('#detail').open && $('#detail').dataset.requestId) await showDetail($('#detail').dataset.requestId); } catch (error) { if (!quiet) message(error.message, 'danger'); } }
 function startRequestPolling() { if (requestPollTimer) return; requestPollTimer = setInterval(() => { if (!$('#app').classList.contains('d-none') && !$('#page-requests').classList.contains('d-none') && !document.hidden) void load({ quiet: true }); }, 5000); }
 function renderArtifacts(items) {
-  $('#artifact-rows').innerHTML = items.length ? items.map((item) => `<tr><td><div class="fw-semibold">${escapeHtml(item.productName ?? '历史产品')} / ${escapeHtml(item.version ?? '-')}</div><div class="small text-body-secondary">${item.roundNo ? `第 ${escapeHtml(item.roundNo)} 轮` : escapeHtml(item.roundId)}</div></td><td>${escapeHtml(item.releaseId)}</td><td><div>${escapeHtml(item.cloudApprovalId ?? '-')}</div><div class="small text-body-secondary">${escapeHtml(item.transferTaskId ?? item.cloudTransferTaskId ?? '-')}</div></td><td class="font-monospace small" title="${escapeHtml(item.manifestSha256)}">${escapeHtml(item.manifestSha256?.slice(0, 16))}…</td><td>${escapeHtml(displayTime(item.receivedAt))}</td><td><button class="btn btn-outline-primary btn-sm artifact-detail" data-id="${escapeHtml(item.requestId)}">审批记录</button></td></tr>`).join('') : '<tr><td colspan="6" class="text-center text-body-secondary py-4">暂无已接收的正式发布基线。审批通过后，完成网闸交付并收到回执后会显示在这里。</td></tr>';
+  $('#artifact-rows').innerHTML = items.length ? items.map((item) => { const files = item.files ?? []; const stored = files.filter((file) => file.stored).length; return `<tr><td><div class="fw-semibold">${escapeHtml(item.productName ?? '历史产品')} / ${escapeHtml(item.displayVersion ?? item.version ?? '-')}</div><div class="small text-body-secondary">${item.roundNo ? `第 ${escapeHtml(item.roundNo)} 轮` : escapeHtml(item.roundId)}</div></td><td>${escapeHtml(item.releaseId)}</td><td><div>${escapeHtml(item.cloudApprovalId ?? '-')}</div><div class="small text-body-secondary">${escapeHtml(item.transferTaskId ?? item.cloudTransferTaskId ?? '-')}</div></td><td>${files.length ? `<span class="badge text-bg-${stored === files.length ? 'success' : 'warning'}">${stored} / ${files.length} 个文件已入库</span><div class="small text-body-secondary mt-1">${files.filter((file) => file.source === 'INHERITED').length} 个继承项按摘要复用</div>` : '<span class="text-body-secondary">旧版申请未携带文件清单</span>'}</td><td class="font-monospace small" title="${escapeHtml(item.manifestSha256)}">${escapeHtml(item.manifestSha256?.slice(0, 16))}…</td><td>${escapeHtml(displayTime(item.receivedAt))}</td><td><button class="btn btn-outline-primary btn-sm artifact-detail" data-id="${escapeHtml(item.requestId)}">审批记录</button></td></tr>`; }).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">暂无已接收的正式发布基线。审批通过后，完成网闸交付并收到回执后会显示在这里。</td></tr>';
   document.querySelectorAll('.artifact-detail').forEach((button) => { button.onclick = async () => { location.hash = 'requests'; showPage('requests'); await showDetail(button.dataset.id); }; });
 }
 async function loadArtifacts() { try { renderArtifacts((await api('/api/v1/artifacts')).items); clearMessage(); } catch (error) { message(error.message, 'danger'); } }
@@ -62,7 +62,7 @@ async function showDetail(id) {
     : '-';
   const fields = [
     ['审批事项', requestSubject(item)], ['验证报告标题', item.reportTitle ?? '旧版请求未携带'],
-    ['软件产品', item.productName ?? '-'], ['软件版本', item.version ?? '-'],
+    ['软件产品', item.productName ?? '-'], ['软件版本', item.displayVersion ?? item.version ?? '-'], ['内部修订号', item.revision > 0 ? `r${item.revision}` : '首版（无后缀）'],
     ['候选轮次', item.roundNo ? `第 ${item.roundNo} 轮` : '-'], ['申请编号', item.requestId],
     ['发布版本标识', item.releaseId], ['候选轮次标识', item.roundId],
     ['状态', statusLabels[item.status] ?? item.status], ['云管提交状态', cloudRetryStatus],
@@ -73,6 +73,7 @@ async function showDetail(id) {
     ['报告文件', item.reportReceived ? `<a href="/api/v1/approval-requests/${encodeURIComponent(id)}/report-file" target="_blank" rel="noopener">${escapeHtml(item.reportFileName ?? '下载报告')}</a>` : (item.reportFileName ? `${item.reportFileName}（待接收）` : '-')],
     ['报告 SHA-256', item.reportSha256 ?? '-'],
     ['报告状态', item.reportReceived ? `Core 已校验（${item.reportReceivedSha256 ?? ''}）` : '待从 Edge 接收'],
+    ['正式制品文件', item.artifacts?.length ? `${item.artifacts.filter((file) => file.stored).length} / ${item.artifacts.length} 已入库：${item.artifacts.map((file) => `${file.packageKey} → ${file.fileName}${file.stored ? '' : '（待接收）'}`).join('；')}` : '旧版申请未携带文件清单'],
     ['云管附件标识', item.cloudAttachmentId ?? '待上传'], ['最后错误', item.lastError ?? '-']
   ];
   $('#fields').innerHTML = fields.map(([label, value]) => `<dt class="col-sm-3">${escapeHtml(label)}</dt><dd class="col-sm-9 ${String(value).startsWith('<a ') ? '' : 'font-monospace small'}">${String(value).startsWith('<a ') ? value : escapeHtml(value)}</dd>`).join('');

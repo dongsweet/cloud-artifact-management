@@ -44,7 +44,12 @@ function parseRelease(row) {
     productId: row.product_id,
     productName: row.product_name,
     version: row.version,
+    revision: row.revision ?? 0,
+    displayVersion: row.revision > 0 ? `${row.version}-r${row.revision}` : row.version,
+    baseReleaseId: row.base_release_id ?? null,
+    baseReleaseDisplayVersion: row.base_release_version ? (row.base_release_revision > 0 ? `${row.base_release_version}-r${row.base_release_revision}` : row.base_release_version) : null,
     status: row.status,
+    approvalPending: Boolean(row.approval_pending),
     candidateCount: row.candidate_count ?? 0,
     completedCandidateCount: row.completed_candidate_count ?? 0,
     createdAt: row.created_at,
@@ -73,11 +78,14 @@ export class CandidateStore {
         release_id TEXT PRIMARY KEY,
         product_id TEXT NOT NULL,
         version TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 0,
+        base_release_id TEXT,
         status TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        UNIQUE(product_id, version),
-        FOREIGN KEY (product_id) REFERENCES products(product_id)
+        UNIQUE(product_id, version, revision),
+        FOREIGN KEY (product_id) REFERENCES products(product_id),
+        FOREIGN KEY (base_release_id) REFERENCES releases(release_id)
       );
       CREATE TABLE IF NOT EXISTS candidates (
         candidate_id TEXT PRIMARY KEY,
@@ -175,7 +183,44 @@ export class CandidateStore {
       CREATE INDEX IF NOT EXISTS receive_queue_order_idx ON receive_queue(status, queued_at);
     `);
     this.migrateCandidates();
+    this.migrateReleases();
     this.migrateReleaseRounds();
+  }
+
+  migrateReleases() {
+    const columns = this.db.prepare('PRAGMA table_info(releases)').all();
+    const names = new Set(columns.map((column) => column.name));
+    const uniqueVersion = this.db.prepare('PRAGMA index_list(releases)').all().some((index) => {
+      if (!index.unique) return false;
+      const indexed = this.db.prepare(`PRAGMA index_info("${index.name.replaceAll('"', '""')}")`).all().map((item) => item.name);
+      return indexed.join(',') === 'product_id,version';
+    });
+    if (!names.has('revision') || !names.has('base_release_id') || uniqueVersion) {
+      this.db.exec('PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;');
+      try {
+        this.db.exec(`CREATE TABLE releases_migrated (
+          release_id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL,
+          version TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 0,
+          base_release_id TEXT,
+          status TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(product_id, version, revision),
+          FOREIGN KEY (product_id) REFERENCES products(product_id),
+          FOREIGN KEY (base_release_id) REFERENCES releases_migrated(release_id)
+        );`);
+        const revisionSelect = names.has('revision') ? 'revision' : '0';
+        const baseSelect = names.has('base_release_id') ? 'base_release_id' : 'NULL';
+        this.db.exec(`INSERT INTO releases_migrated (release_id, product_id, version, revision, base_release_id, status, created_at, updated_at)
+          SELECT release_id, product_id, version, ${revisionSelect}, ${baseSelect}, status, created_at, updated_at FROM releases; DROP TABLE releases; ALTER TABLE releases_migrated RENAME TO releases; COMMIT;`);
+      } catch (error) {
+        try { this.db.exec('ROLLBACK;'); } catch {}
+        throw error;
+      } finally { this.db.exec('PRAGMA foreign_keys = ON;'); }
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS releases_product_version_idx ON releases(product_id, version, revision DESC)');
   }
 
   migrateCandidates() {
@@ -232,14 +277,25 @@ export class CandidateStore {
     return { productId, deleted: true };
   }
 
+  nextReleaseRevision(productId, version) {
+    const previous = this.db.prepare('SELECT release_id, revision, status FROM releases WHERE product_id = ? AND version = ? ORDER BY revision DESC LIMIT 1').get(productId, version);
+    if (!previous) return { revision: 0, baseReleaseId: null, baseRoundId: null };
+    if (previous.status !== 'SEALED') throw Object.assign(new Error('该研发版本已有未固化的内部版本，请先完成审批或继续在现有版本中创建轮次'), { code: 'release_version_open' });
+    const approvedRound = this.db.prepare(`SELECT rr.round_id FROM release_rounds rr JOIN round_freezes rf ON rf.round_id = rr.round_id
+      WHERE rr.release_id = ? AND rf.status = 'APPROVED' ORDER BY rr.round_no DESC, rf.decided_at DESC LIMIT 1`).get(previous.release_id);
+    if (!approvedRound) throw Object.assign(new Error('上一内部修订版已封存，但未找到审批通过的固化轮次，不能自动继承'), { code: 'release_baseline_missing' });
+    return { revision: previous.revision + 1, baseReleaseId: previous.release_id, baseRoundId: approvedRound.round_id };
+  }
+
   createRelease(productId, { version }) {
     const product = this.getProduct(productId);
     if (!product) throw new Error('product not found');
     const releaseVersion = safeText(version, 'version', { max: 128 });
+    const { revision, baseReleaseId } = this.nextReleaseRevision(productId, releaseVersion);
     const timestamp = now();
     const releaseId = id('REL');
     try {
-      this.db.prepare('INSERT INTO releases (release_id, product_id, version, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(releaseId, productId, releaseVersion, 'OPEN', timestamp, timestamp);
+      this.db.prepare('INSERT INTO releases (release_id, product_id, version, revision, base_release_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(releaseId, productId, releaseVersion, revision, baseReleaseId, 'OPEN', timestamp, timestamp);
     } catch (error) {
       if (String(error.message).includes('UNIQUE')) throw new Error('release version already exists for this product');
       throw error;
@@ -251,35 +307,45 @@ export class CandidateStore {
     const product = this.getProduct(productId);
     if (!product) throw new Error('product not found');
     const releaseVersion = safeText(version, 'version', { max: 128 });
+    const { revision, baseReleaseId, baseRoundId } = this.nextReleaseRevision(productId, releaseVersion);
     const timestamp = now();
     const releaseId = id('REL');
     const roundId = id('ROUND');
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare('INSERT INTO releases (release_id, product_id, version, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(releaseId, productId, releaseVersion, 'OPEN', timestamp, timestamp);
-      this.db.prepare('INSERT INTO release_rounds (round_id, release_id, round_no, base_round_id, change_note, created_by, status, created_at, updated_at) VALUES (?, ?, 1, NULL, ?, ?, ?, ?, ?)')
-        .run(roundId, releaseId, '发布版本创建，开始第一轮候选包收集', createdBy, 'OPEN', timestamp, timestamp);
+      this.db.prepare('INSERT INTO releases (release_id, product_id, version, revision, base_release_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(releaseId, productId, releaseVersion, revision, baseReleaseId, 'OPEN', timestamp, timestamp);
+      this.db.prepare('INSERT INTO release_rounds (round_id, release_id, round_no, base_round_id, change_note, created_by, status, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)')
+        .run(roundId, releaseId, baseRoundId, baseRoundId ? `内部修订版创建，继承 ${this.displayVersion(baseReleaseId)} 已审批基线` : '发布版本创建，开始第一轮候选包收集', createdBy, 'OPEN', timestamp, timestamp);
+      if (baseRoundId) this.db.prepare(`INSERT INTO round_candidates (round_id, package_key, candidate_id, source, inherited_from_round_id, created_at)
+        SELECT ?, package_key, candidate_id, 'INHERITED', ?, ? FROM round_candidates WHERE round_id = ?`).run(roundId, baseRoundId, timestamp, baseRoundId);
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
       if (String(error.message).includes('UNIQUE')) throw new Error('release version already exists for this product');
       throw error;
     }
-    return { ...this.getRelease(releaseId), initialRound: this.getRound(roundId) };
+    return { ...this.getRelease(releaseId), inheritedPackageCount: baseRoundId ? this.db.prepare('SELECT COUNT(*) AS count FROM round_candidates WHERE round_id = ?').get(roundId).count : 0, initialRound: this.getRound(roundId) };
+  }
+
+  displayVersion(releaseId) {
+    const release = this.db.prepare('SELECT version, revision FROM releases WHERE release_id = ?').get(releaseId);
+    return release ? (release.revision > 0 ? `${release.version}-r${release.revision}` : release.version) : '';
   }
 
   getRelease(releaseId) {
-    return parseRelease(this.db.prepare(`SELECT r.*, p.name AS product_name,
-      (SELECT COUNT(*) FROM candidates c WHERE c.release_id = r.release_id) AS candidate_count,
-      (SELECT COUNT(*) FROM candidates c WHERE c.release_id = r.release_id AND c.status = 'COMPLETED') AS completed_candidate_count
-      FROM releases r JOIN products p ON p.product_id = r.product_id WHERE r.release_id = ?`).get(releaseId));
+    return parseRelease(this.db.prepare(`SELECT r.*, p.name AS product_name, br.version AS base_release_version, br.revision AS base_release_revision,
+      (SELECT COUNT(*) FROM round_candidates rc JOIN release_rounds rr ON rr.round_id = rc.round_id WHERE rr.release_id = r.release_id AND rr.round_no = (SELECT MAX(last_round.round_no) FROM release_rounds last_round WHERE last_round.release_id = r.release_id)) AS candidate_count,
+      (SELECT COUNT(*) FROM round_candidates rc JOIN release_rounds rr ON rr.round_id = rc.round_id JOIN candidates c ON c.candidate_id = rc.candidate_id WHERE rr.release_id = r.release_id AND rr.round_no = (SELECT MAX(last_round.round_no) FROM release_rounds last_round WHERE last_round.release_id = r.release_id) AND c.status = 'COMPLETED') AS completed_candidate_count,
+      EXISTS (SELECT 1 FROM round_freezes rf JOIN release_rounds prr ON prr.round_id = rf.round_id WHERE prr.release_id = r.release_id AND rf.status = 'PENDING_APPROVAL') AS approval_pending
+      FROM releases r JOIN products p ON p.product_id = r.product_id LEFT JOIN releases br ON br.release_id = r.base_release_id WHERE r.release_id = ?`).get(releaseId));
   }
 
   listReleases(productId = null) {
-    const sql = `SELECT r.*, p.name AS product_name,
-      (SELECT COUNT(*) FROM candidates c WHERE c.release_id = r.release_id) AS candidate_count,
-      (SELECT COUNT(*) FROM candidates c WHERE c.release_id = r.release_id AND c.status = 'COMPLETED') AS completed_candidate_count
-      FROM releases r JOIN products p ON p.product_id = r.product_id ${productId ? 'WHERE r.product_id = ?' : ''} ORDER BY r.created_at DESC`;
+    const sql = `SELECT r.*, p.name AS product_name, br.version AS base_release_version, br.revision AS base_release_revision,
+      (SELECT COUNT(*) FROM round_candidates rc JOIN release_rounds rr ON rr.round_id = rc.round_id WHERE rr.release_id = r.release_id AND rr.round_no = (SELECT MAX(last_round.round_no) FROM release_rounds last_round WHERE last_round.release_id = r.release_id)) AS candidate_count,
+      (SELECT COUNT(*) FROM round_candidates rc JOIN release_rounds rr ON rr.round_id = rc.round_id JOIN candidates c ON c.candidate_id = rc.candidate_id WHERE rr.release_id = r.release_id AND rr.round_no = (SELECT MAX(last_round.round_no) FROM release_rounds last_round WHERE last_round.release_id = r.release_id) AND c.status = 'COMPLETED') AS completed_candidate_count,
+      EXISTS (SELECT 1 FROM round_freezes rf JOIN release_rounds prr ON prr.round_id = rf.round_id WHERE prr.release_id = r.release_id AND rf.status = 'PENDING_APPROVAL') AS approval_pending
+      FROM releases r JOIN products p ON p.product_id = r.product_id LEFT JOIN releases br ON br.release_id = r.base_release_id ${productId ? 'WHERE r.product_id = ?' : ''} ORDER BY r.created_at DESC, r.revision DESC`;
     return (productId ? this.db.prepare(sql).all(productId) : this.db.prepare(sql).all()).map(parseRelease);
   }
 
@@ -291,7 +357,7 @@ export class CandidateStore {
       error.code = 'release_not_open';
       throw error;
     }
-    if (release.candidateCount > 0) {
+    if (release.candidateCount > 0 || this.db.prepare('SELECT 1 FROM candidates WHERE release_id = ? LIMIT 1').get(releaseId)) {
       const error = new Error('release has candidate packages and cannot be deleted');
       error.code = 'release_not_empty';
       throw error;
@@ -314,12 +380,14 @@ export class CandidateStore {
   createRound(releaseId, { baseRoundId = null, changeNote = '', createdBy = null, requireBaseChanges = false } = {}) {
     const release = this.getRelease(releaseId);
     if (!release) throw new Error('release not found');
+    this.assertReleaseOpen(releaseId);
     const note = String(changeNote ?? '').trim();
     if (!note || note.length > 2000) throw new Error('请填写本轮收集/变更说明（1-2000 字）');
     const roundId = id('ROUND');
     const timestamp = now();
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      this.assertReleaseOpen(releaseId);
       const latest = this.db.prepare('SELECT round_id, round_no FROM release_rounds WHERE release_id = ? ORDER BY round_no DESC LIMIT 1').get(releaseId);
       if (baseRoundId && (!latest || latest.round_id !== baseRoundId)) throw Object.assign(new Error('只能基于当前最新轮次创建下一轮'), { code: 'round_not_latest' });
       if (!baseRoundId && latest) throw Object.assign(new Error('后续轮次必须继承当前最新轮次'), { code: 'round_base_required' });
@@ -339,10 +407,13 @@ export class CandidateStore {
   }
 
   getRound(roundId) {
-    const row = this.db.prepare(`SELECT rr.*, r.version, r.product_id, p.name AS product_name,
+    const row = this.db.prepare(`SELECT rr.*, r.version, r.revision, r.status AS release_status, r.product_id, p.name AS product_name,
+      EXISTS (SELECT 1 FROM round_freezes pending WHERE pending.round_id IN (SELECT member.round_id FROM release_rounds member WHERE member.release_id = r.release_id) AND pending.status = 'PENDING_APPROVAL') AS approval_pending,
+      base_round.round_no AS base_round_no, base_round.release_id AS base_release_id, base_release.version AS base_release_version, base_release.revision AS base_release_revision,
       (SELECT COUNT(*) FROM round_candidates rc WHERE rc.round_id = rr.round_id) AS candidate_count,
       (SELECT COUNT(*) FROM round_candidates rc JOIN candidates c ON c.candidate_id = rc.candidate_id WHERE rc.round_id = rr.round_id AND c.status = 'COMPLETED') AS completed_candidate_count
       FROM release_rounds rr JOIN releases r ON r.release_id = rr.release_id JOIN products p ON p.product_id = r.product_id
+      LEFT JOIN release_rounds base_round ON base_round.round_id = rr.base_round_id LEFT JOIN releases base_release ON base_release.release_id = base_round.release_id
       WHERE rr.round_id = ?`).get(roundId);
     if (!row) return null;
     const item = {
@@ -351,8 +422,17 @@ export class CandidateStore {
       productId: row.product_id,
       productName: row.product_name,
       version: row.version,
+      revision: row.revision ?? 0,
+      displayVersion: row.revision > 0 ? `${row.version}-r${row.revision}` : row.version,
       roundNo: row.round_no,
       baseRoundId: row.base_round_id,
+      baseRoundNo: row.base_round_no ?? null,
+      baseReleaseId: row.base_release_id ?? null,
+      baseReleaseVersion: row.base_release_version ?? null,
+      baseReleaseRevision: row.base_release_revision ?? null,
+      baseReleaseDisplayVersion: row.base_release_version ? (row.base_release_revision > 0 ? `${row.base_release_version}-r${row.base_release_revision}` : row.base_release_version) : null,
+      releaseStatus: row.release_status,
+      approvalPending: Boolean(row.approval_pending),
       changeNote: row.change_note ?? '',
       createdBy: row.created_by ?? null,
       status: row.status,
@@ -408,10 +488,11 @@ export class CandidateStore {
     return {
       productName: release.productName,
       version: release.version,
+      displayVersion: release.displayVersion,
       roundNo: Number(latestRound?.round_no ?? 0) + 1,
       baseRoundId: latestRound?.round_id ?? null,
-      canCreate: Boolean(latestRound && changes.hasChanges),
-      blockedReason: latestRound && !changes.hasChanges ? '当前最新轮次没有新增、替换或移除候选包，不能继续创建下一轮' : null,
+      canCreate: release.status === 'OPEN' && !this.releaseApprovalPending(releaseId) && Boolean(latestRound && changes.hasChanges),
+      blockedReason: release.status !== 'OPEN' ? '该发布版本已有审批通过的固化基线，已封存；如需更新，请创建内部修订版' : this.releaseApprovalPending(releaseId) ? '该发布版本正在审批中，请等待审批通过或驳回后再创建轮次' : latestRound && !changes.hasChanges ? '当前最新轮次没有新增、替换或移除候选包，不能继续创建下一轮' : null,
       latestRoundNo: Number(latestRound?.round_no ?? 0) || null,
       changeSummary: changes
     };
@@ -452,13 +533,27 @@ export class CandidateStore {
   }
 
   assertRoundWritable(roundId) {
-    if (!this.getRound(roundId)) throw Object.assign(new Error('round not found'), { code: 'round_not_found' });
+    const round = this.getRound(roundId);
+    if (!round) throw Object.assign(new Error('round not found'), { code: 'round_not_found' });
+    this.assertReleaseOpen(round.releaseId);
     if (!this.isRoundLatest(roundId)) throw Object.assign(new Error('已创建后续轮次，本轮只读；请在最新轮次中变更候选包'), { code: 'round_locked' });
   }
 
+  assertReleaseOpen(releaseId) {
+    const release = this.getRelease(releaseId);
+    if (!release) throw Object.assign(new Error('release not found'), { code: 'release_not_found' });
+    if (release.status !== 'OPEN') throw Object.assign(new Error('该发布版本已审批通过并封存，不能继续修改；如需更新，请创建内部修订版'), { code: 'release_sealed' });
+    if (this.releaseApprovalPending(releaseId)) throw Object.assign(new Error('该发布版本正在审批中，请等待审批通过或驳回后再修改'), { code: 'release_approval_pending' });
+  }
+
+  releaseApprovalPending(releaseId) {
+    return Boolean(this.db.prepare(`SELECT 1 FROM round_freezes rf JOIN release_rounds rr ON rr.round_id = rf.round_id WHERE rr.release_id = ? AND rf.status = 'PENDING_APPROVAL' LIMIT 1`).get(releaseId));
+  }
+
   canDeleteEmptyRound(roundId) {
-    const round = this.db.prepare('SELECT release_id, round_no, base_round_id, status FROM release_rounds WHERE round_id = ?').get(roundId);
+    const round = this.db.prepare('SELECT rr.release_id, rr.round_no, rr.base_round_id, rr.status, r.revision FROM release_rounds rr JOIN releases r ON r.release_id = rr.release_id WHERE rr.round_id = ?').get(roundId);
     if (!round || round.status !== 'OPEN' || !round.base_round_id || !this.isRoundLatest(roundId)) return false;
+    if (round.revision > 0 && round.round_no === 1) return false;
     const unchangedEmptyRound = !this.roundHasChanges(roundId).hasChanges;
     const staleEmptyRound = this.isStaleEmptyRound(roundId);
     if (!unchangedEmptyRound && !staleEmptyRound) return false;
@@ -499,11 +594,16 @@ export class CandidateStore {
   listRoundCandidates(roundId) {
     if (!this.getRound(roundId)) throw new Error('round not found');
     return this.db.prepare(`SELECT rc.package_key, rc.source AS mapping_source, rc.inherited_from_round_id,
-      inherited_round.round_no AS inherited_from_round_no, c.*,
+      inherited_round.round_no AS inherited_from_round_no, inherited_release.version AS inherited_from_release_version, inherited_release.revision AS inherited_from_release_revision, c.*,
+      current_release.version AS release_version, current_release.revision AS release_revision, current_product.product_id AS product_id, current_product.name AS product_name,
       (SELECT COUNT(*) FROM candidate_parts p WHERE p.candidate_id = c.candidate_id AND p.status = 'COMPLETED') AS completed_parts,
       (c.chunk_count - (SELECT COUNT(*) FROM candidate_parts p WHERE p.candidate_id = c.candidate_id AND p.status = 'COMPLETED')) AS missing_parts
       FROM round_candidates rc JOIN candidates c ON c.candidate_id = rc.candidate_id
+      JOIN release_rounds current_round ON current_round.round_id = rc.round_id
+      JOIN releases current_release ON current_release.release_id = current_round.release_id
+      JOIN products current_product ON current_product.product_id = current_release.product_id
       LEFT JOIN release_rounds inherited_round ON inherited_round.round_id = rc.inherited_from_round_id
+      LEFT JOIN releases inherited_release ON inherited_release.release_id = inherited_round.release_id
       WHERE rc.round_id = ? ORDER BY rc.package_key`).all(roundId).map(parseCandidate);
   }
 
@@ -550,6 +650,7 @@ export class CandidateStore {
     const effectiveReleaseId = round?.releaseId ?? releaseId;
     const release = effectiveReleaseId ? this.getRelease(effectiveReleaseId) : null;
     if (effectiveReleaseId && !release) throw new Error('release not found');
+    if (effectiveReleaseId) this.assertReleaseOpen(effectiveReleaseId);
     const safeName = fileName ? safeFileName(fileName) : fileNameFromUrl(normalizedUrl);
     const packageVersion = version ? safeText(version, 'version', { max: 128 }) : (release?.version ?? 'UNSPECIFIED');
     const effectivePackageKey = packageKey ? safeText(packageKey, 'packageKey', { max: 255 }) : safeName;
@@ -585,6 +686,7 @@ export class CandidateStore {
   updateCandidate(candidateId, { sourceUrl, fileName, packageKey, version, architecture, targets, size, md5, sha256, expectedMd5, expectedSha256, metadata, sourceMetadata } = {}) {
     const candidate = this.get(candidateId);
     if (!candidate) throw new Error('candidate not found');
+    if (candidate.release_id) this.assertReleaseOpen(candidate.release_id);
     const linkedRoundIds = this.db.prepare('SELECT round_id FROM round_candidates WHERE candidate_id = ?').all(candidateId).map((row) => row.round_id);
     if (linkedRoundIds.some((roundId) => !this.isRoundLatest(roundId))) throw Object.assign(new Error('该候选包已被历史轮次引用，不能原地编辑；请在最新轮次中替换候选包'), { code: 'round_locked' });
     if (['RECEIVING', 'ASSEMBLING', 'COMPLETED'].includes(candidate.status)) { const error = new Error('candidate cannot be edited in its current status'); error.code = 'candidate_not_editable'; throw error; }
@@ -621,6 +723,7 @@ export class CandidateStore {
   deleteCandidate(candidateId) {
     const candidate = this.get(candidateId);
     if (!candidate) return null;
+    if (candidate.release_id) this.assertReleaseOpen(candidate.release_id);
     const linkedRoundIds = this.db.prepare('SELECT round_id FROM round_candidates WHERE candidate_id = ?').all(candidateId).map((row) => row.round_id);
     if (linkedRoundIds.some((roundId) => !this.isRoundLatest(roundId))) throw Object.assign(new Error('该候选包已被历史轮次引用，不能永久删除；请仅从最新轮次移除'), { code: 'round_locked' });
     if (['RECEIVING', 'ASSEMBLING'].includes(candidate.status)) { const error = new Error('candidate is receiving and cannot be deleted'); error.code = 'candidate_busy'; throw error; }
@@ -635,7 +738,7 @@ export class CandidateStore {
   }
 
   get(candidateId) {
-    const row = this.db.prepare(`SELECT c.*, r.version AS release_version, r.product_id, p.name AS product_name,
+    const row = this.db.prepare(`SELECT c.*, r.version AS release_version, r.revision AS release_revision, r.product_id, p.name AS product_name,
       (SELECT rc.package_key FROM round_candidates rc WHERE rc.candidate_id = c.candidate_id ORDER BY rc.created_at LIMIT 1) AS package_key,
       (SELECT COUNT(*) FROM candidate_parts p2 WHERE p2.candidate_id = c.candidate_id AND p2.status = 'COMPLETED') AS completed_parts,
       (c.chunk_count - (SELECT COUNT(*) FROM candidate_parts p2 WHERE p2.candidate_id = c.candidate_id AND p2.status = 'COMPLETED')) AS missing_parts
@@ -649,11 +752,11 @@ export class CandidateStore {
     if (!Number.isInteger(offset) || offset < 0) throw new Error('offset must be a non-negative integer');
     if (status && !['CREATED', 'RECEIVING', 'PARTIAL', 'ASSEMBLING', 'FAILED', 'COMPLETED'].includes(status)) throw new Error('invalid candidate status');
     const conditions = [], args = [];
-    if (releaseId) { conditions.push('c.release_id = ?'); args.push(releaseId); }
+    if (releaseId) { conditions.push('(c.release_id = ? OR EXISTS (SELECT 1 FROM round_candidates rc JOIN release_rounds rr ON rr.round_id = rc.round_id WHERE rc.candidate_id = c.candidate_id AND rr.release_id = ?))'); args.push(releaseId, releaseId); }
     if (status) { conditions.push('c.status = ?'); args.push(status); }
     const filter = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     args.push(limit, offset);
-    const rows = this.db.prepare(`SELECT c.*, r.version AS release_version, r.product_id, p.name AS product_name,
+    const rows = this.db.prepare(`SELECT c.*, r.version AS release_version, r.revision AS release_revision, r.product_id, p.name AS product_name,
       (SELECT rc.package_key FROM round_candidates rc WHERE rc.candidate_id = c.candidate_id ORDER BY rc.created_at LIMIT 1) AS package_key,
       (SELECT COUNT(*) FROM candidate_parts p2 WHERE p2.candidate_id = c.candidate_id AND p2.status = 'COMPLETED') AS completed_parts,
       (c.chunk_count - (SELECT COUNT(*) FROM candidate_parts p2 WHERE p2.candidate_id = c.candidate_id AND p2.status = 'COMPLETED')) AS missing_parts

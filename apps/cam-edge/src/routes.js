@@ -88,11 +88,15 @@ function candidateResponse(candidate) {
     productName: candidate.product_name,
     releaseId: candidate.release_id,
     releaseVersion: candidate.release_version,
+    releaseRevision: candidate.release_revision ?? 0,
+    releaseDisplayVersion: candidate.release_display_version ?? (candidate.release_revision > 0 ? `${candidate.release_version}-r${candidate.release_revision}` : candidate.release_version),
     packageKey: candidate.package_key,
     type: candidate.metadata?.type ?? null,
     mappingSource: candidate.mapping_source,
     inheritedFromRoundId: candidate.inherited_from_round_id,
     inheritedFromRoundNo: candidate.inherited_from_round_no,
+    inheritedFromReleaseVersion: candidate.inherited_from_release_version ?? null,
+    inheritedFromReleaseRevision: candidate.inherited_from_release_revision ?? null,
     sourceUrl: candidate.source_url,
     fileName: candidate.file_name,
     version: candidate.version,
@@ -212,7 +216,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const actor = principal(request);
       return reply.code(201).send(freezes.createDraft(request.params.roundId, request.body ?? {}, actor.principalId));
     } catch (err) {
-      const status = err.code === 'round_not_found' ? 404 : err.code === 'round_locked' ? 409 : 400;
+      const status = err.code === 'round_not_found' ? 404 : ['round_locked', 'release_sealed', 'release_approval_pending'].includes(err.code) ? 409 : 400;
       return error(reply, status, err.code ?? 'freeze_create_failed', err.message);
     }
   });
@@ -251,7 +255,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       queueMicrotask(() => { void approvalDispatcher.dispatchOne(submitted.freezeId); });
       return reply.send(submitted);
     }
-    catch (err) { return error(reply, err.code === 'freeze_not_found' ? 404 : err.code === 'freeze_owner_required' ? 403 : ['freeze_not_draft', 'round_locked', 'manifest_changed'].includes(err.code) ? 409 : 400, err.code ?? 'freeze_submit_failed', err.message); }
+    catch (err) { return error(reply, err.code === 'freeze_not_found' ? 404 : err.code === 'freeze_owner_required' ? 403 : ['freeze_not_draft', 'round_locked', 'manifest_changed', 'release_sealed', 'release_approval_pending'].includes(err.code) ? 409 : 400, err.code ?? 'freeze_submit_failed', err.message); }
   });
 
   app.post('/api/v1/freezes/:freezeId/dispatch', async (request, reply) => {
@@ -476,7 +480,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.post('/api/v1/products/:productId/releases', async (request, reply) => {
     try { return reply.code(201).send(store.createReleaseWithFirstRound(request.params.productId, { ...(request.body ?? {}), createdBy: principal(request).principalId })); }
-    catch (err) { return error(reply, 400, 'invalid_release', err.message); }
+    catch (err) { return error(reply, ['release_version_open', 'release_baseline_missing'].includes(err.code) ? 409 : 400, err.code ?? 'invalid_release', err.message); }
   });
 
   app.get('/api/v1/releases', async (request, reply) => {
@@ -502,7 +506,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.post('/api/v1/releases/:releaseId/rounds', async (request, reply) => {
     try { return reply.code(201).send(store.createNextRound(request.params.releaseId, { changeNote: request.body?.changeNote, createdBy: principal(request).principalId })); }
-    catch (err) { return error(reply, ['round_no_changes', 'round_not_latest', 'round_base_required'].includes(err.code) ? 409 : 400, err.code ?? 'invalid_round', err.message); }
+    catch (err) { return error(reply, ['round_no_changes', 'round_not_latest', 'round_base_required', 'release_sealed', 'release_approval_pending'].includes(err.code) ? 409 : 400, err.code ?? 'invalid_round', err.message); }
   });
 
   app.delete('/api/v1/rounds/:roundId', async (request, reply) => {
@@ -577,7 +581,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       if (freezes.locked(request.params.roundId)) return error(reply, 409, 'round_locked', '该轮次正在审批或已固化，不能修改候选包');
       const candidate = await store.create({ ...(request.body ?? {}), roundId: request.params.roundId });
       return reply.code(201).send(candidateResponse(candidate));
-    } catch (err) { return error(reply, ['round_locked', 'round_not_found'].includes(err.code) ? (err.code === 'round_not_found' ? 404 : 409) : 400, err.code ?? 'invalid_candidate', err.message); }
+    } catch (err) { return error(reply, ['round_locked', 'round_not_found', 'release_sealed', 'release_approval_pending'].includes(err.code) ? (err.code === 'round_not_found' ? 404 : 409) : 400, err.code ?? 'invalid_candidate', err.message); }
   });
 
   app.delete('/api/v1/rounds/:roundId/candidates/:candidateId', async (request, reply) => {
@@ -587,13 +591,14 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const removed = store.detachCandidateFromRound(request.params.roundId, request.params.candidateId);
       if (!removed) return error(reply, 404, 'round_candidate_not_found', 'candidate is not attached to this round');
       return reply.code(204).send();
-    } catch (err) { return error(reply, err.code === 'round_not_found' ? 404 : err.code === 'round_locked' ? 409 : 400, err.code ?? 'invalid_round_candidate_delete', err.message); }
+    } catch (err) { return error(reply, err.code === 'round_not_found' ? 404 : ['round_locked', 'release_sealed', 'release_approval_pending'].includes(err.code) ? 409 : 400, err.code ?? 'invalid_round_candidate_delete', err.message); }
   });
 
   app.post('/api/v1/rounds/:roundId/import-preview', async (request, reply) => {
     const round = store.getRound(request.params.roundId);
     if (!round) return error(reply, 404, 'round_not_found', 'round not found');
-    if (round.readOnly) return error(reply, 409, 'round_locked', round.readOnlyReason);
+    try { store.assertRoundWritable(round.roundId); }
+    catch (err) { return error(reply, 409, err.code ?? 'round_locked', err.message); }
     try {
       const preview = await previewCandidateWorkbook(request.body, {
         sheetName: request.query?.sheet ?? null,
@@ -679,7 +684,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.patch('/api/v1/candidates/:candidateId', async (request, reply) => {
     try { return reply.send(candidateResponse(store.updateCandidate(request.params.candidateId, request.body ?? {}))); }
-    catch (err) { return error(reply, ['candidate_not_editable', 'candidate_has_parts', 'round_locked'].includes(err.code) ? 409 : 400, err.code ?? 'invalid_candidate', err.message); }
+    catch (err) { return error(reply, ['candidate_not_editable', 'candidate_has_parts', 'round_locked', 'release_sealed', 'release_approval_pending'].includes(err.code) ? 409 : 400, err.code ?? 'invalid_candidate', err.message); }
   });
 
   app.delete('/api/v1/candidates/:candidateId', async (request, reply) => {
@@ -691,7 +696,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       if (!deleted) return error(reply, 404, 'candidate_not_found', 'candidate not found');
       await rm(deleted.dataDir, { recursive: true, force: true });
       return reply.code(204).send();
-    } catch (err) { return error(reply, ['candidate_busy', 'round_locked'].includes(err.code) ? 409 : 400, err.code ?? 'candidate_delete_failed', err.message); }
+    } catch (err) { return error(reply, ['candidate_busy', 'round_locked', 'release_sealed', 'release_approval_pending'].includes(err.code) ? 409 : 400, err.code ?? 'candidate_delete_failed', err.message); }
   });
 
   app.get('/api/v1/candidates/:candidateId/parts', async (request, reply) => {

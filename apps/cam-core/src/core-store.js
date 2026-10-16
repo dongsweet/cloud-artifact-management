@@ -18,6 +18,8 @@ function response(row) {
   return {
     requestId: row.request_id, freezeId: row.freeze_id, roundId: row.round_id, releaseId: row.release_id,
     productName: envelope.productName ?? null, version: envelope.version ?? null,
+    revision: Number.isInteger(envelope.revision) ? envelope.revision : 0,
+    displayVersion: envelope.displayVersion ?? (Number.isInteger(envelope.revision) && envelope.revision > 0 ? `${envelope.version}-r${envelope.revision}` : envelope.version),
     roundNo: Number.isInteger(envelope.roundNo) ? envelope.roundNo : null, reportTitle: envelope.reportTitle ?? null,
     status: row.status, manifestSha256: row.manifest_sha256, reportSha256: row.report_sha256,
     reportFileName: row.report_file_name, reportSize: row.report_size,
