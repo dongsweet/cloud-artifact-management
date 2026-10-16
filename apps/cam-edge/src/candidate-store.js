@@ -368,6 +368,7 @@ export class CandidateStore {
     item.isLatestRound = latest?.round_id === roundId;
     item.readOnly = !item.isLatestRound;
     item.readOnlyReason = item.readOnly ? '已创建后续轮次，本轮只读；请在最新轮次中变更候选包' : null;
+    item.staleEmptyBaseline = item.isLatestRound && this.isStaleEmptyRound(roundId);
     item.canDeleteEmpty = this.canDeleteEmptyRound(roundId);
     return item;
   }
@@ -457,10 +458,25 @@ export class CandidateStore {
 
   canDeleteEmptyRound(roundId) {
     const round = this.db.prepare('SELECT release_id, round_no, base_round_id, status FROM release_rounds WHERE round_id = ?').get(roundId);
-    if (!round || round.status !== 'OPEN' || !round.base_round_id || !this.isRoundLatest(roundId) || this.roundHasChanges(roundId).hasChanges) return false;
+    if (!round || round.status !== 'OPEN' || !round.base_round_id || !this.isRoundLatest(roundId)) return false;
+    const unchangedEmptyRound = !this.roundHasChanges(roundId).hasChanges;
+    const staleEmptyRound = this.isStaleEmptyRound(roundId);
+    if (!unchangedEmptyRound && !staleEmptyRound) return false;
     if (this.db.prepare('SELECT 1 FROM round_attachments WHERE round_id = ? LIMIT 1').get(roundId)) return false;
     if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'round_freezes'").get() && this.db.prepare('SELECT 1 FROM round_freezes WHERE round_id = ? LIMIT 1').get(roundId)) return false;
     return true;
+  }
+
+  isStaleEmptyRound(roundId) {
+    const round = this.db.prepare('SELECT base_round_id, created_at, status FROM release_rounds WHERE round_id = ?').get(roundId);
+    if (!round || round.status !== 'OPEN' || !round.base_round_id) return false;
+    if (this.db.prepare('SELECT 1 FROM round_candidates WHERE round_id = ? LIMIT 1').get(roundId)) return false;
+    // Legacy behavior allowed editing a base round after creating its child.
+    // Such edits can make an otherwise empty child look like it intentionally
+    // removed every package. Only treat it as stale when the base mapping was
+    // actually created after this child, which distinguishes intentional
+    // removals from the legacy deadlock.
+    return Boolean(this.db.prepare('SELECT 1 FROM round_candidates WHERE round_id = ? AND created_at > ? LIMIT 1').get(round.base_round_id, round.created_at));
   }
 
   deleteEmptyRound(roundId, actorId = null) {
@@ -470,12 +486,13 @@ export class CandidateStore {
       if (!round) throw Object.assign(new Error('round not found'), { code: 'round_not_found' });
       if (!this.canDeleteEmptyRound(roundId)) throw Object.assign(new Error('仅可删除没有候选包变更、附件或审批记录的最新草稿轮次'), { code: 'round_not_empty' });
       const timestamp = now();
+      const recoveryDelete = this.isStaleEmptyRound(roundId);
       this.db.prepare('INSERT INTO round_lifecycle_events (event_id, release_id, round_id, round_no, event_type, change_note, actor_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id('REVT'), round.release_id, roundId, round.round_no, 'EMPTY_ROUND_DELETED', round.change_note, actorId, timestamp);
+        .run(id('REVT'), round.release_id, roundId, round.round_no, recoveryDelete ? 'STALE_EMPTY_ROUND_DELETED' : 'EMPTY_ROUND_DELETED', round.change_note, actorId, timestamp);
       this.db.prepare('DELETE FROM round_candidates WHERE round_id = ?').run(roundId);
       this.db.prepare('DELETE FROM release_rounds WHERE round_id = ?').run(roundId);
       this.db.exec('COMMIT');
-      return { roundId, roundNo: round.round_no, deleted: true };
+      return { roundId, roundNo: round.round_no, deleted: true, recoveryDelete };
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 

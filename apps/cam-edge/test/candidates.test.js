@@ -334,6 +334,59 @@ test('an inherited unchanged round can be deleted and restores the prior round a
   }
 });
 
+test('a stale empty round from legacy edits can be deleted with a distinct audit event', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-stale-empty-round-'));
+  const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'recovery-operator', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }) });
+  try {
+    const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Stale round test' } })).json();
+    const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '8.0.6.1' } })).json();
+    const initial = release.initialRound;
+
+    // Reproduce a legacy state: an empty child was created, then a package
+    // mapping was added to its base round after the child already existed.
+    const child = app.candidateStore.createRound(release.releaseId, { baseRoundId: initial.roundId, changeNote: '旧版创建的轮次', createdBy: 'test', requireBaseChanges: false });
+    const candidate = await app.candidateStore.create({ releaseId: release.releaseId, packageKey: 'storage', sourceUrl: 'http://127.0.0.1/storage.tar', fileName: 'storage.tar', size: 4 });
+    const mappingTime = new Date(Date.parse(child.createdAt) + 1000).toISOString();
+    app.candidateStore.db.prepare(`INSERT INTO round_candidates (round_id, package_key, candidate_id, source, inherited_from_round_id, created_at)
+      VALUES (?, ?, ?, 'OWNED', NULL, ?)`).run(initial.roundId, 'storage', candidate.candidate_id, mappingTime);
+
+    const stale = (await app.inject({ method: 'GET', url: `/api/v1/rounds/${child.roundId}` })).json();
+    assert.equal(stale.hasChanges, true, 'the late base package appears as a removal in the empty child');
+    assert.equal(stale.staleEmptyBaseline, true);
+    assert.equal(stale.canDeleteEmpty, true);
+    const deleted = await app.inject({ method: 'DELETE', url: `/api/v1/rounds/${child.roundId}` });
+    assert.equal(deleted.statusCode, 200, deleted.body);
+    assert.equal(deleted.json().recoveryDelete, true);
+    assert.equal((await app.inject({ method: 'GET', url: `/api/v1/rounds/${initial.roundId}` })).json().readOnly, false);
+    assert.equal(app.candidateStore.db.prepare('SELECT event_type, actor_id FROM round_lifecycle_events WHERE round_id = ?').get(child.roundId).event_type, 'STALE_EMPTY_ROUND_DELETED');
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('an intentional removal from an older base mapping is not treated as a stale empty round', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-intentional-empty-round-'));
+  const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'release-operator', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }) });
+  try {
+    const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Intentional removal test' } })).json();
+    const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } })).json();
+    const initial = release.initialRound;
+    await app.inject({ method: 'POST', url: `/api/v1/rounds/${initial.roundId}/candidates`, payload: { packageKey: 'base', sourceUrl: 'http://127.0.0.1/base.tar', size: 4 } });
+    const child = app.candidateStore.createRound(release.releaseId, { baseRoundId: initial.roundId, changeNote: '显式移除包', createdBy: 'test', requireBaseChanges: false });
+    app.candidateStore.db.prepare('DELETE FROM round_candidates WHERE round_id = ?').run(child.roundId);
+
+    const current = (await app.inject({ method: 'GET', url: `/api/v1/rounds/${child.roundId}` })).json();
+    assert.equal(current.hasChanges, true);
+    assert.equal(current.staleEmptyBaseline, false);
+    assert.equal(current.canDeleteEmpty, false);
+    assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/rounds/${child.roundId}` })).statusCode, 409);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('release creation migrates legacy release-round schema before inserting the first round', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-legacy-round-schema-'));
   const db = await openDatabase(join(dataDir, 'edge.sqlite'));
