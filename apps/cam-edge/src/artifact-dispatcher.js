@@ -9,6 +9,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
   let busy = false;
   let closed = false;
   const nextAttemptAt = new Map();
+  const reconciled = new Set();
 
   async function request(url, config, secret, options = {}) {
     return fetchImpl(url, {
@@ -20,9 +21,10 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
 
   async function deliver(freezeId) {
     let freeze = freezes.get(freezeId);
-    if (!freeze || freeze.status !== 'APPROVED' || !freeze.transferTaskId || freeze.transferStatus === 'RECEIVED') return freeze;
+    if (!freeze || freeze.status !== 'APPROVED' || !freeze.transferTaskId) return freeze;
     const attempt = (freeze.transferAttempts ?? 0) + 1;
-    freezes.markTransferAttempt(freezeId);
+    const repairingReceipt = freeze.transferStatus === 'RECEIVED';
+    if (!repairingReceipt) freezes.markTransferAttempt(freezeId);
     try {
       const config = gateConfig.get();
       if (!config.coreTransferUrl) throw Object.assign(new Error('请先配置 Edge 外侧访问 Core 的制品传输地址'), { code: 'gate_address_missing' });
@@ -30,11 +32,28 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
       if (!secret) throw Object.assign(new Error('网闸共享密钥尚未初始化，请先完成 Core/Edge 配对'), { code: 'gate_key_not_configured' });
       const base = config.coreTransferUrl.replace(/\/$/u, '');
       const path = `/api/v1/gate/transfers/${encodeURIComponent(freeze.transferTaskId)}`;
-      const manifestResponse = await request(`${base}${path}/manifest`, config, secret);
-      const manifestBody = await manifestResponse.json().catch(() => ({}));
+      const readManifest = async () => {
+        const response = await request(`${base}${path}/manifest`, config, secret);
+        return { response, body: await response.json().catch(() => ({})) };
+      };
+      let { response: manifestResponse, body: manifestBody } = await readManifest();
       if (!manifestResponse.ok) throw Object.assign(new Error(manifestBody.error?.message ?? `读取 Core 获批清单失败（HTTP ${manifestResponse.status}）`), { code: manifestBody.error?.code ?? 'transfer_manifest_failed' });
       if (manifestBody.requestId !== freeze.freezeId || manifestBody.transferTaskId !== freeze.transferTaskId || manifestBody.manifestSha256 !== freeze.manifestSha256 || !Array.isArray(manifestBody.items)) throw Object.assign(new Error('Core 返回的清单与 Edge 审批记录不一致'), { code: 'transfer_manifest_mismatch' });
-
+      if (manifestBody.items.length === 0 && Array.isArray(freeze.manifest?.items) && freeze.manifest.items.length > 0) {
+        const syncResponse = await request(`${base}${path}/manifest`, config, secret, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ manifest: freeze.manifest })
+        });
+        const syncBody = await syncResponse.json().catch(() => ({}));
+        if (!syncResponse.ok) throw Object.assign(new Error(syncBody.error?.message ?? `向 Core 同步正式制品清单失败（HTTP ${syncResponse.status}）`), { code: syncBody.error?.code ?? 'transfer_manifest_sync_failed' });
+        ({ response: manifestResponse, body: manifestBody } = await readManifest());
+        if (!manifestResponse.ok || !Array.isArray(manifestBody.items) || manifestBody.items.length === 0) throw Object.assign(new Error('Core 同步后仍未返回正式制品清单'), { code: 'transfer_manifest_sync_failed' });
+      }
+      if (manifestBody.items.length === 0) throw Object.assign(new Error('Core 和 Edge 均未携带正式制品清单，不能完成传输'), { code: 'transfer_manifest_missing' });
+      if (freeze.transferStatus === 'RECEIVED' && manifestBody.items.length > 0 && manifestBody.items.every((item) => item.stored)) {
+        reconciled.add(freezeId);
+        nextAttemptAt.set(freezeId, Number.POSITIVE_INFINITY);
+        return freeze;
+      }
       const chunkSize = Math.min(config.chunkSizeBytes, 32 * 1024 * 1024);
       const sent = new Set();
       for (const item of manifestBody.items) {
@@ -84,6 +103,8 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
       });
       if (!receiptResponse.ok) throw await responseError(receiptResponse, 'Core 拒绝接收正式制品回执');
       freezes.markTransferSuccess(freezeId);
+      reconciled.add(freezeId);
+      nextAttemptAt.set(freezeId, Number.POSITIVE_INFINITY);
       nextAttemptAt.delete(freezeId);
       return freezes.get(freezeId);
     } catch (error) {
@@ -105,6 +126,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
     try {
       for (const freeze of freezes.listTransferPending()) {
         if (closed) break;
+        if (reconciled.has(freeze.freezeId)) continue;
         if ((nextAttemptAt.get(freeze.freezeId) ?? 0) > Date.now()) continue;
         await deliver(freeze.freezeId);
       }

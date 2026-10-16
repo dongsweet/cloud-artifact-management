@@ -348,7 +348,19 @@ export class CoreStore {
     const envelope = JSON.parse(task.envelope_json ?? '{}');
     if (envelope.manifest && digest(JSON.stringify(envelope.manifest)) !== task.manifest_sha256) throw Object.assign(new Error('a different manifest is already bound to this approval'), { code: 'manifest_mismatch' });
     envelope.manifest = manifest;
-    this.db.prepare('UPDATE core_approval_requests SET envelope_json = ?, updated_at = ? WHERE request_id = ?').run(JSON.stringify(envelope), now(), task.request_id);
+    const timestamp = now();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('UPDATE core_approval_requests SET envelope_json = ?, updated_at = ? WHERE request_id = ?').run(JSON.stringify(envelope), timestamp, task.request_id);
+      for (const item of manifest.items) {
+        this.db.prepare(`INSERT INTO core_release_artifacts (request_id, package_key, candidate_id, file_name, size_bytes, sha256, source, inherited_from_round_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id, package_key) DO UPDATE SET candidate_id = excluded.candidate_id,
+          file_name = excluded.file_name, size_bytes = excluded.size_bytes, sha256 = excluded.sha256, source = excluded.source,
+          inherited_from_round_id = excluded.inherited_from_round_id`)
+          .run(task.request_id, String(item.packageKey), item.candidateId ?? null, String(item.fileName), Number(item.sizeBytes), String(item.actualSha256).toLowerCase(), item.source ?? null, item.inheritedFromRoundId ?? null);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return { requestId: task.request_id, transferTaskId, manifestSha256: task.manifest_sha256, fileCount: manifest.items.length };
   }
   async receiveArtifact(transferTaskId, sha256, temporaryPath, actualSize, actualSha256) {

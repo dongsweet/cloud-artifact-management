@@ -267,7 +267,7 @@ test('Core stores approved files by SHA-256 and lets multiple package entries sh
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false });
   const headers = { 'x-cam-gate-secret': 'gate-test' };
-  const request = { ...envelope, requestId: 'FREEZE-FILES', freezeId: 'FREEZE-FILES', manifestSha256, manifest };
+  const request = { ...envelope, requestId: 'FREEZE-FILES', freezeId: 'FREEZE-FILES', manifestSha256 };
   try {
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: request })).statusCode, 202);
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -275,6 +275,10 @@ test('Core stores approved files by SHA-256 and lets multiple package entries sh
     const authorize = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-FILES/transfer-authorize', payload: { manifestSha256 } });
     assert.equal(authorize.statusCode, 200, authorize.body);
     const transferTaskId = authorize.json().item.transferTaskId;
+    const registeredManifest = await app.inject({ method: 'POST', url: `/api/v1/gate/transfers/${transferTaskId}/manifest`, headers, payload: { manifest } });
+    assert.equal(registeredManifest.statusCode, 200, registeredManifest.body);
+    assert.equal(registeredManifest.json().item.fileCount, 2);
+    assert.equal(app.coreStore.get('FREEZE-FILES').artifacts.length, 2, 'legacy request gets release artifact references when Edge synchronizes its manifest');
     const upload = await app.inject({ method: 'PUT', url: `/api/v1/gate/transfers/${transferTaskId}/artifacts/${sha256}`, headers: { ...headers, 'content-type': 'application/octet-stream' }, payload: bytes });
     assert.equal(upload.statusCode, 200, upload.body);
     assert.deepEqual(upload.json().packages, ['os-iso', 'base-image']);
