@@ -249,11 +249,23 @@ async function loadCandidates(generation = state.routeGeneration) {
 
 async function loadReleaseDetail(generation = state.routeGeneration) {
   if (!state.releaseId) return navigate('releases');
+  // Clear detail state before loading another release. Otherwise the previous
+  // release's freeze panel can remain visible while the new release is loaded
+  // (and is especially noticeable when the new release has no rounds yet).
+  state.currentRound = null;
+  state.currentRoundCandidates = [];
+  state.currentFreeze = null;
+  $('#round-summary').innerHTML = '';
+  $('#round-audit').innerHTML = '';
+  $('#round-freeze-panel').innerHTML = '';
+  $('#round-candidate-rows').innerHTML = '';
+  $('#round-queue-summary').textContent = '';
   const [release, rounds] = await Promise.all([
     api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}`),
     getRounds(state.releaseId)
   ]);
   if (generation !== state.routeGeneration) return;
+  state.releaseRounds = rounds;
   state.productId = release.productId;
   state.currentRelease = release;
   $('#release-title').textContent = `${release.productName} / ${release.version}`;
@@ -261,7 +273,7 @@ async function loadReleaseDetail(generation = state.routeGeneration) {
   $('#round-select').innerHTML = rounds.length ? rounds.map((round) => `<option value="${escapeHtml(round.roundId)}">第 ${round.roundNo} 轮 · ${round.completedCandidateCount}/${round.candidateCount} 已完成</option>`).join('') : '<option value="">暂无轮次</option>';
   if (!rounds.some((round) => round.roundId === state.roundId)) state.roundId = rounds[0]?.roundId ?? null;
   $('#round-select').value = state.roundId ?? '';
-  if (state.roundId) await loadRound(generation); else { state.currentRound = null; renderRound(null, []); }
+  if (state.roundId) await loadRound(generation); else renderRound(null, []);
 }
 
 async function loadRound(generation = state.routeGeneration) {
@@ -276,12 +288,13 @@ async function loadRound(generation = state.routeGeneration) {
   state.currentRound = round;
   state.currentRoundCandidates = candidates.items;
   await renderRound(round, candidates.items);
-  await loadRoundFreeze(round, candidates.items);
+  await loadRoundFreeze(round, candidates.items, generation);
 }
 
-async function loadRoundFreeze(round, candidates) {
+async function loadRoundFreeze(round, candidates, generation = state.routeGeneration) {
   const panel = $('#round-freeze-panel');
   const response = await api(`/api/v1/rounds/${encodeURIComponent(round.roundId)}/freezes`);
+  if (generation !== state.routeGeneration || state.roundId !== round.roundId) return;
   const freeze = response.item;
   state.currentFreeze = freeze;
   const complete = candidates.length > 0 && candidates.every((item) => item.status === 'COMPLETED' && item.finalSha256);
@@ -329,6 +342,12 @@ async function decideFreeze(decision) {
 }
 
 async function renderRound(round, candidates) {
+  if (!round) {
+    state.currentFreeze = null;
+    state.currentRoundQueue = [];
+    for (const selector of ['#new-package-button', '#import-packages-button', '#batch-receive-button']) $(selector).disabled = true;
+    $('#round-freeze-panel').innerHTML = '';
+  }
   $('#round-summary').innerHTML = round ? `<div class="col-md-4"><div class="small-box text-bg-primary"><div class="inner"><h3>${round.roundNo}</h3><p>候选轮次</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-success"><div class="inner"><h3>${round.completedCandidateCount}/${round.candidateCount}</h3><p>已完成候选包</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-secondary"><div class="inner"><h3>${round.baseRoundId ? '继承' : '初始'}</h3><p>轮次来源</p></div></div></div>` : '';
   $('#round-audit').innerHTML = round ? `<div class="card card-outline card-secondary mb-0"><div class="card-body py-2"><div><strong>本轮说明：</strong>${escapeHtml(round.changeNote || '未填写')}</div><div class="small text-body-secondary mt-1">创建人：${escapeHtml(round.createdBy || '-')}　创建时间：${escapeHtml(round.createdAt || '-')}</div>${round.attachments?.length ? `<div class="small mt-1">留痕附件：${round.attachments.map((item) => `<a class="me-2" href="/api/v1/round-attachments/${encodeURIComponent(item.attachmentId)}/file" target="_blank" rel="noopener">${escapeHtml(item.fileName)}</a><span class="text-body-secondary me-2">(${formatBytes(item.fileSize)})</span>`).join('')}</div>` : '<div class="small text-body-secondary mt-1">暂无留痕附件</div>'}</div></div>` : '';
   $('#round-candidate-rows').innerHTML = candidates.length ? candidates.map((item) => `<tr><td>${escapeHtml(item.type ?? '-')}</td><td>${escapeHtml(item.packageKey ?? item.fileName)}</td><td>${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td class="font-monospace small">${escapeHtml(item.finalSha256 ?? item.expectedSha256 ?? '-')}</td><td><span class="badge ${item.mappingSource === 'INHERITED' ? 'text-bg-info' : 'text-bg-secondary'}">${item.mappingSource === 'INHERITED' ? `继承${item.inheritedFromRoundId ? ` · ${escapeHtml(item.inheritedFromRoundId.slice(-8))}` : ''}` : '本轮新增'}</span></td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><div class="d-flex gap-1"><button class="btn btn-outline-primary btn-sm" data-candidate="${escapeHtml(item.candidateId)}" title="查看候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button><button class="btn btn-outline-warning btn-sm" data-round-candidate-delete="${escapeHtml(item.candidateId)}" title="移出本轮；保留候选记录和文件"><i class="bi bi-dash-circle"></i><span class="visually-hidden">移出本轮</span></button></div></td></tr>`).join('') : '<tr><td colspan="8" class="text-center text-body-secondary py-4">本轮暂无候选包</td></tr>';
@@ -739,15 +758,30 @@ $('#release-form').addEventListener('submit', async (event) => {
   const productId = $('#release-product').value;
   try {
     const release = await api(`/api/v1/products/${encodeURIComponent(productId)}/releases`, { method: 'POST', body: JSON.stringify({ version: $('#release-version').value.trim() }) });
-    modal('release').hide(); form.reset(); showAlert('发布版本已创建'); navigate('release-detail', { releaseId: release.releaseId });
+    // Every release starts with an auditable first collection round. The
+    // release API remains backward compatible for non-UI callers; the UI
+    // creates the initial round immediately and opens it for package entry.
+    const round = await api(`/api/v1/releases/${encodeURIComponent(release.releaseId)}/rounds`, { method: 'POST', body: JSON.stringify({ changeNote: '发布版本创建，开始第一轮候选包收集' }) });
+    modal('release').hide(); form.reset(); showAlert('发布版本及第一轮候选轮次已创建'); navigate('release-detail', { releaseId: release.releaseId, roundId: round.roundId });
   } catch (error) { showAlert(error.message, 'danger'); }
 });
 
-$('#new-round-button').addEventListener('click', () => { $('#round-form').reset(); modal('round').show(); });
+$('#new-round-button').addEventListener('click', async () => {
+  $('#round-form').reset();
+  const release = state.currentRelease ?? (state.releaseId ? await api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}`) : null);
+  const rounds = state.releaseId ? await getRounds(state.releaseId) : [];
+  state.releaseRounds = rounds;
+  const nextRoundNo = (rounds.reduce((max, item) => Math.max(max, Number(item.roundNo) || 0), 0) + 1);
+  $('#round-product-preview').value = release?.productName ?? '-';
+  $('#round-release-preview').value = release?.version ?? '-';
+  $('#round-number-preview').value = `第 ${nextRoundNo} 轮`;
+  modal('round').show();
+});
 $('#round-form').addEventListener('submit', async (event) => {
   event.preventDefault(); const button = event.currentTarget.querySelector('button[type=submit]'); button.disabled = true;
   try {
-    const round = await api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}/rounds`, { method: 'POST', body: JSON.stringify({ baseRoundId: state.roundId || null, changeNote: $('#round-change-note').value.trim() }) });
+    const latestRoundId = state.releaseRounds?.reduce((latest, item) => !latest || item.roundNo > latest.roundNo ? item : latest, null)?.roundId ?? null;
+    const round = await api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}/rounds`, { method: 'POST', body: JSON.stringify({ baseRoundId: latestRoundId, changeNote: $('#round-change-note').value.trim() }) });
     for (const file of Array.from($('#round-attachments').files ?? [])) { const headers = { 'x-attachment-filename': encodeURIComponent(file.name), 'content-type': file.type || 'application/octet-stream' }; await api(`/api/v1/rounds/${encodeURIComponent(round.roundId)}/attachments`, { method: 'POST', headers, body: await file.arrayBuffer() }); }
     modal('round').hide(); showAlert(`第 ${round.roundNo} 轮已创建${round.baseRoundId ? '，已继承上一轮候选包' : ''}`); navigate('release-detail', { releaseId: state.releaseId, roundId: round.roundId });
   } catch (error) { showAlert(error.message, 'danger'); } finally { button.disabled = false; }
