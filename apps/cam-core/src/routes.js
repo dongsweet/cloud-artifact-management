@@ -160,6 +160,28 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
       app.log.warn?.({ requestId: entry.request_id, eventId: entry.event_id, code: err.code, message: err.message }, 'CAM 审批结果回告 Edge 失败，将自动重试');
     }
   };
+  const sendTransferReady = async (entry) => {
+    store.markTransferAttempt(entry.event_id);
+    try {
+      const config = gateConfig.get();
+      if (!config.edgeControlUrl) throw Object.assign(new Error('Edge 传输控制地址尚未配置'), { code: 'gate_address_missing' });
+      const secret = await keyring.currentSecret();
+      if (!secret) throw Object.assign(new Error('网闸共享密钥尚未初始化'), { code: 'gate_key_not_configured' });
+      const response = await fetchImpl(`${config.edgeControlUrl.replace(/\/$/u, '')}/api/v1/gate/transfer-requests`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-cam-gate-secret': secret.toString('base64url') },
+        body: JSON.stringify(entry.payload), signal: AbortSignal.timeout(config.connectTimeoutMs)
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw Object.assign(new Error(body.error?.message ?? `Edge 接收传输任务失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'transfer_ready_delivery_failed' });
+      if (body.accepted !== true || body.requestId !== entry.payload.requestId || body.transferTaskId !== entry.payload.transferTaskId || body.eventId !== entry.event_id) throw Object.assign(new Error('Edge 未确认接收该传输任务'), { code: 'transfer_ready_ack_invalid' });
+      store.markTransferDelivered(entry.event_id);
+    } catch (err) {
+      const attempts = entry.attempts + 1;
+      const retryAt = new Date(Date.now() + Math.min(300_000, 5_000 * (2 ** Math.min(attempts - 1, 6)))).toISOString();
+      store.markTransferFailure(entry.event_id, err, retryAt);
+      app.log.warn?.({ requestId: entry.request_id, eventId: entry.event_id, code: err.code, message: err.message }, 'CAM 传输任务通知 Edge 失败，将自动重试');
+    }
+  };
   async function pumpWorkers() {
     if (workerBusy) return;
     workerBusy = true;
@@ -172,6 +194,7 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
         catch (err) { app.log.warn?.({ requestId, code: err.code, message: err.message }, '云管审批状态查询失败，将自动重试'); }
       }
       for (const entry of store.listPendingApprovalResults()) await sendApprovalResult(entry);
+      for (const entry of store.listPendingTransferReady()) await sendTransferReady(entry);
     } finally { workerBusy = false; }
   }
   const cloudTimer = setInterval(() => { void pumpWorkers(); }, workerIntervalMs);
@@ -283,11 +306,13 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
   app.get('/api/v1/gate/transfers/:transferTaskId/manifest', async (request, reply) => {
     try {
       const transfer = store.expectedTransferArtifacts(request.params.transferTaskId);
-      return reply.send({ transferTaskId: request.params.transferTaskId, requestId: transfer.requestId, manifestSha256: transfer.manifestSha256, items: transfer.items.map((item) => ({ ...item, stored: Boolean(store.artifactPath(String(item.actualSha256 ?? '').toLowerCase())) })) });
+      const partsByDigest = new Map();
+      for (const digest of new Set(transfer.items.map((item) => String(item.actualSha256 ?? '').toLowerCase()))) partsByDigest.set(digest, store.listTransferParts(request.params.transferTaskId, digest).map((part) => part.index));
+      return reply.send({ transferTaskId: request.params.transferTaskId, requestId: transfer.requestId, manifestSha256: transfer.manifestSha256, items: transfer.items.map((item) => ({ ...item, stored: Boolean(store.artifactPath(String(item.actualSha256 ?? '').toLowerCase())), receivedParts: partsByDigest.get(String(item.actualSha256 ?? '').toLowerCase()) ?? [] })) });
     } catch (err) { return error(reply, err.code === 'approval_required' ? 409 : 400, err.code ?? 'artifact_manifest_invalid', err.message); }
   });
 
-  app.put('/api/v1/gate/transfers/:transferTaskId/artifacts/:sha256', async (request, reply) => {
+  app.put('/api/v1/gate/transfers/:transferTaskId/artifacts/:sha256', { bodyLimit: 1024 * 1024 * 1024 }, async (request, reply) => {
     const sha256 = String(request.params.sha256 ?? '').toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(sha256)) return error(reply, 400, 'artifact_digest_invalid', '制品 SHA-256 格式无效');
     let temporary = null;
@@ -321,6 +346,49 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
       if (temporary) await rm(temporary, { force: true });
       const status = ['approval_required', 'artifact_not_approved', 'artifact_manifest_missing', 'artifacts_incomplete'].includes(err.code) ? 409 : 400;
       return error(reply, status, err.code ?? 'artifact_receive_failed', err.message);
+    }
+  });
+
+  app.put('/api/v1/gate/transfers/:transferTaskId/artifacts/:sha256/parts/:index', { bodyLimit: 1024 * 1024 * 1024 }, async (request, reply) => {
+    const sha256 = String(request.params.sha256 ?? '').toLowerCase();
+    const index = Number(request.params.index);
+    const chunkSize = Number(request.headers['x-cam-chunk-size']);
+    const chunkCount = Number(request.headers['x-cam-chunk-count']);
+    const offset = Number(request.headers['x-cam-chunk-offset']);
+    const size = Number(request.headers['content-length']);
+    if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(index) || index < 0 || !Number.isSafeInteger(chunkSize) || !Number.isSafeInteger(chunkCount) || !Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || size < 0) return error(reply, 400, 'artifact_chunk_invalid', '制品分块请求头无效');
+    let temporary = null;
+    let output = null;
+    try {
+      const transfer = store.expectedTransferArtifacts(request.params.transferTaskId);
+      const expected = transfer.items.find((item) => String(item.actualSha256 ?? '').toLowerCase() === sha256);
+      if (!expected) return error(reply, 409, 'artifact_not_approved', '该摘要不属于审批通过的制品清单');
+      temporary = join(store.dataDir, 'tmp', `artifact-${randomUUID()}.chunk`);
+      await mkdir(dirname(temporary), { recursive: true });
+      output = createWriteStream(temporary, { flags: 'wx', mode: 0o600 });
+      const hash = createHash('sha256');
+      let bytes = 0;
+      for await (const chunk of request.raw) {
+        const buffer = Buffer.from(chunk);
+        bytes += buffer.length;
+        if (bytes > size) throw Object.assign(new Error('分块内容超过声明大小'), { code: 'artifact_chunk_invalid' });
+        hash.update(buffer);
+        if (!output.write(buffer)) await once(output, 'drain');
+      }
+      output.end();
+      await once(output, 'close');
+      if (bytes !== size) throw Object.assign(new Error('分块内容大小与声明不一致'), { code: 'artifact_chunk_invalid' });
+      const saved = await store.saveTransferPart(request.params.transferTaskId, sha256, {
+        index, chunkSize, chunkCount, offset, size, sha256: hash.digest('hex'), temporaryPath: temporary
+      });
+      temporary = null;
+      const assembled = saved.complete ? await store.assembleTransferParts(request.params.transferTaskId, sha256) : null;
+      return reply.send({ transferTaskId: request.params.transferTaskId, sha256, ...saved, assembled });
+    } catch (err) {
+      output?.destroy();
+      if (temporary) await rm(temporary, { force: true });
+      const status = ['approval_required', 'artifact_not_approved', 'artifact_integrity_failed', 'artifact_chunk_invalid', 'artifact_chunk_conflict', 'artifact_chunk_incomplete'].includes(err.code) ? 409 : 400;
+      return error(reply, status, err.code ?? 'artifact_chunk_receive_failed', err.message);
     }
   });
 
@@ -365,7 +433,12 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
   });
 
   app.post('/api/v1/approval-requests/:requestId/transfer-authorize', { bodyLimit: 8192 }, async (request, reply) => {
-    try { return reply.send({ item: store.authorizeTransfer(request.params.requestId, request.body ?? {}) }); }
+    try {
+      const item = store.authorizeTransfer(request.params.requestId, request.body ?? {});
+      store.enqueueTransferReady(request.params.requestId);
+      queueMicrotask(() => { void pumpWorkers(); });
+      return reply.send({ item });
+    }
     catch (err) { return error(reply, ['approval_required', 'approval_expired', 'manifest_mismatch', 'transfer_task_mismatch'].includes(err.code) ? 409 : err.code === 'request_not_found' ? 404 : 400, err.code ?? 'transfer_not_authorized', err.message); }
   });
 

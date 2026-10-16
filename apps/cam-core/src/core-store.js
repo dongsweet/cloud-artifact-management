@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 import { attachmentExtension, validAttachmentFileName } from '../../../libs/cam-server/src/attachment-types.js';
 
@@ -35,7 +36,9 @@ function response(row) {
     lastError: row.last_error, cloudSubmissionAttempts: row.cloud_submission_attempts ?? 0,
     cloudSubmissionState: row.cloud_submission_state ?? 'IDLE', cloudSubmissionAttemptedAt: row.cloud_submission_attempted_at ?? null,
     cloudRetryAt: row.cloud_retry_at ?? null,
-    transferTaskId: row.transfer_task_id, transferStatus: row.transfer_status ?? null
+    transferTaskId: row.transfer_task_id, transferStatus: row.transfer_status ?? null,
+    transferNotificationState: row.transfer_notification_state ?? 'IDLE', transferNotificationAttempts: row.transfer_notification_attempts ?? 0,
+    transferNotificationLastError: row.transfer_notification_error ?? null, transferNotificationNextAttemptAt: row.transfer_notification_next_attempt_at ?? null
   };
 }
 
@@ -81,6 +84,13 @@ export class CoreStore {
         PRIMARY KEY (request_id, package_key)
       );
       CREATE INDEX IF NOT EXISTS core_release_artifacts_sha_idx ON core_release_artifacts(sha256);
+      CREATE TABLE IF NOT EXISTS core_transfer_parts (
+        transfer_task_id TEXT NOT NULL, sha256 TEXT NOT NULL, part_index INTEGER NOT NULL,
+        chunk_size INTEGER NOT NULL, chunk_count INTEGER NOT NULL, byte_offset INTEGER NOT NULL,
+        size_bytes INTEGER NOT NULL, part_sha256 TEXT NOT NULL, file_path TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (transfer_task_id, sha256, part_index)
+      );
+      CREATE INDEX IF NOT EXISTS core_transfer_parts_digest_idx ON core_transfer_parts(transfer_task_id, sha256);
       CREATE TABLE IF NOT EXISTS core_cloud_config (
         config_id INTEGER PRIMARY KEY CHECK (config_id = 1),
         config_json TEXT NOT NULL,
@@ -104,17 +114,24 @@ export class CoreStore {
         updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS core_approval_result_outbox_pending_idx ON core_approval_result_outbox(delivered_at, next_attempt_at);
+      CREATE TABLE IF NOT EXISTS core_transfer_outbox (
+        request_id TEXT PRIMARY KEY REFERENCES core_approval_requests(request_id),
+        event_id TEXT NOT NULL UNIQUE, payload_json TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL,
+        last_error TEXT, delivered_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS core_transfer_outbox_pending_idx ON core_transfer_outbox(delivered_at, next_attempt_at);
     `);
     const columns = new Set(db.prepare('PRAGMA table_info(core_approval_requests)').all().map((column) => column.name));
     if (!columns.has('cloud_mapping_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_mapping_json TEXT');
     if (!columns.has('cloud_request_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_request_json TEXT');
     if (!columns.has('cloud_workflow_step')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_workflow_step TEXT');
     for (const [name, definition] of Object.entries({ report_file_name: 'TEXT', report_size: 'INTEGER', report_received_sha256: 'TEXT', report_path: 'TEXT', report_received_at: 'TEXT', cloud_attachment_id: 'TEXT' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
-    for (const [name, definition] of Object.entries({ cloud_submission_attempts: 'INTEGER NOT NULL DEFAULT 0', cloud_submission_state: "TEXT NOT NULL DEFAULT 'IDLE'", cloud_submission_attempted_at: 'TEXT', cloud_retry_at: 'TEXT' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
+    for (const [name, definition] of Object.entries({ cloud_submission_attempts: 'INTEGER NOT NULL DEFAULT 0', cloud_submission_state: "TEXT NOT NULL DEFAULT 'IDLE'", cloud_submission_attempted_at: 'TEXT', cloud_retry_at: 'TEXT', transfer_notification_state: "TEXT NOT NULL DEFAULT 'IDLE'", transfer_notification_attempts: 'INTEGER NOT NULL DEFAULT 0' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
   }
 
   get(requestId) {
-    const item = response(this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id WHERE r.request_id = ?').get(requestId));
+    const item = response(this.db.prepare('SELECT r.*, t.status AS transfer_status, o.last_error AS transfer_notification_error, o.next_attempt_at AS transfer_notification_next_attempt_at FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id LEFT JOIN core_transfer_outbox o ON o.request_id = r.request_id WHERE r.request_id = ?').get(requestId));
     return item ? { ...item, artifacts: this.listReleaseArtifacts(requestId) } : null;
   }
 
@@ -137,7 +154,7 @@ export class CoreStore {
     this.db.prepare('UPDATE core_approval_requests SET envelope_json = ? WHERE request_id = ?').run(JSON.stringify(updated), requestId);
     return this.get(requestId);
   }
-  list() { return this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id ORDER BY r.created_at DESC LIMIT 500').all().map(response); }
+  list() { return this.db.prepare('SELECT r.*, t.status AS transfer_status, o.last_error AS transfer_notification_error, o.next_attempt_at AS transfer_notification_next_attempt_at FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id LEFT JOIN core_transfer_outbox o ON o.request_id = r.request_id ORDER BY r.created_at DESC LIMIT 500').all().map(response); }
   listCloudApprovalPending() {
     return this.db.prepare(`SELECT r.request_id FROM core_approval_requests r
       WHERE (r.status IN ('CLOUD_SUBMITTED','CLOUD_STATUS_UNCONFIRMED') AND r.cloud_approval_id IS NOT NULL)
@@ -161,6 +178,41 @@ export class CoreStore {
     this.db.prepare('INSERT INTO core_approval_result_outbox (request_id, event_id, status, payload_json, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(requestId, payload.eventId, item.status, JSON.stringify(payload), timestamp, timestamp, timestamp);
     return { request_id: requestId, event_id: payload.eventId, status: item.status, payload_json: JSON.stringify(payload), attempts: 0, next_attempt_at: timestamp, last_error: null, delivered_at: null, created_at: timestamp, updated_at: timestamp, payload };
+  }
+  enqueueTransferReady(requestId) {
+    const item = this.get(requestId);
+    if (!item || item.status !== 'APPROVED' || !item.transferTaskId) return null;
+    const existing = this.db.prepare('SELECT * FROM core_transfer_outbox WHERE request_id = ?').get(requestId);
+    if (existing) return { ...existing, payload: JSON.parse(existing.payload_json) };
+    const timestamp = now();
+    const payload = {
+      schemaVersion: 1, type: 'TRANSFER_READY', eventId: id('TRANSFER'),
+      requestId: item.requestId, freezeId: item.freezeId, releaseId: item.releaseId,
+      transferTaskId: item.transferTaskId, manifestSha256: item.manifestSha256,
+      expiresAt: item.expiresAt ?? null
+    };
+    this.db.prepare('INSERT INTO core_transfer_outbox (request_id, event_id, payload_json, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(requestId, payload.eventId, JSON.stringify(payload), timestamp, timestamp, timestamp);
+    return { request_id: requestId, event_id: payload.eventId, payload, attempts: 0, next_attempt_at: timestamp, last_error: null, delivered_at: null };
+  }
+  listPendingTransferReady(limit = 100) {
+    return this.db.prepare('SELECT * FROM core_transfer_outbox WHERE delivered_at IS NULL AND next_attempt_at <= ? ORDER BY created_at ASC LIMIT ?').all(now(), limit)
+      .map((row) => ({ ...row, payload: JSON.parse(row.payload_json) }));
+  }
+  markTransferAttempt(eventId) {
+    this.db.prepare('UPDATE core_transfer_outbox SET attempts = attempts + 1, updated_at = ? WHERE event_id = ? AND delivered_at IS NULL').run(now(), eventId);
+    this.db.prepare("UPDATE core_approval_requests SET transfer_notification_state = 'SENDING', transfer_notification_attempts = transfer_notification_attempts + 1, updated_at = ? WHERE request_id = (SELECT request_id FROM core_transfer_outbox WHERE event_id = ?)").run(now(), eventId);
+    return this.db.prepare('SELECT * FROM core_transfer_outbox WHERE event_id = ?').get(eventId);
+  }
+  markTransferDelivered(eventId) {
+    const timestamp = now();
+    this.db.prepare('UPDATE core_transfer_outbox SET delivered_at = ?, last_error = NULL, updated_at = ? WHERE event_id = ?').run(timestamp, timestamp, eventId);
+    this.db.prepare("UPDATE core_approval_requests SET transfer_notification_state = 'DELIVERED', updated_at = ? WHERE request_id = (SELECT request_id FROM core_transfer_outbox WHERE event_id = ?)").run(timestamp, eventId);
+  }
+  markTransferFailure(eventId, error, retryAt) {
+    this.db.prepare('UPDATE core_transfer_outbox SET last_error = ?, next_attempt_at = ?, updated_at = ? WHERE event_id = ? AND delivered_at IS NULL')
+      .run(String(error?.message ?? error).slice(0, 1000), retryAt, now(), eventId);
+    this.db.prepare("UPDATE core_approval_requests SET transfer_notification_state = 'RETRY_WAIT', updated_at = ? WHERE request_id = (SELECT request_id FROM core_transfer_outbox WHERE event_id = ?)").run(now(), eventId);
   }
   listPendingApprovalResults(limit = 100) {
     return this.db.prepare('SELECT * FROM core_approval_result_outbox WHERE delivered_at IS NULL AND next_attempt_at <= ? ORDER BY created_at ASC LIMIT ?').all(now(), limit)
@@ -202,6 +254,72 @@ export class CoreStore {
     if (!/^[a-f0-9]{64}$/i.test(String(sha256))) return null;
     const normalized = sha256.toLowerCase();
     return this.db.prepare('SELECT file_path FROM core_artifacts WHERE sha256 = ?').get(normalized)?.file_path ?? null;
+  }
+  listTransferParts(transferTaskId, sha256) {
+    return this.db.prepare('SELECT part_index AS index, chunk_size AS chunkSize, chunk_count AS chunkCount, byte_offset AS offset, size_bytes AS size, part_sha256 AS sha256 FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ? ORDER BY part_index')
+      .all(transferTaskId, String(sha256).toLowerCase());
+  }
+  async saveTransferPart(transferTaskId, sha256, part) {
+    const transfer = this.expectedTransferArtifacts(transferTaskId);
+    const digestValue = String(sha256).toLowerCase();
+    const expected = transfer.items.find((item) => String(item.actualSha256 ?? '').toLowerCase() === digestValue);
+    if (!expected) throw Object.assign(new Error('artifact digest is not in the approved manifest'), { code: 'artifact_not_approved' });
+    const existing = this.db.prepare('SELECT * FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ? LIMIT 1').get(transferTaskId, digestValue);
+    if (existing && (existing.chunk_size !== part.chunkSize || existing.chunk_count !== part.chunkCount)) throw Object.assign(new Error('分块参数与已有断点不一致'), { code: 'artifact_chunk_conflict' });
+    if (!Number.isSafeInteger(part.index) || part.index < 0 || !Number.isSafeInteger(part.chunkSize) || part.chunkSize <= 0 || !Number.isSafeInteger(part.chunkCount) || part.chunkCount <= 0 || !Number.isSafeInteger(part.offset) || part.offset < 0 || !Number.isSafeInteger(part.size) || part.size < 0 || !/^[a-f0-9]{64}$/i.test(String(part.sha256 ?? ''))) throw Object.assign(new Error('制品分块参数无效'), { code: 'artifact_chunk_invalid' });
+    const expectedCount = Math.ceil(Number(expected.sizeBytes) / part.chunkSize);
+    const expectedOffset = part.index * part.chunkSize;
+    const expectedSize = Math.min(part.chunkSize, Number(expected.sizeBytes) - expectedOffset);
+    if (!Number.isSafeInteger(Number(expected.sizeBytes)) || part.chunkCount !== expectedCount || part.index >= expectedCount || part.offset !== expectedOffset || part.size !== expectedSize) throw Object.assign(new Error('制品分块位置或大小与清单不匹配'), { code: 'artifact_chunk_invalid' });
+    const path = join(this.dataDir, 'transfers', transferTaskId, 'parts', digestValue, String(part.index).padStart(8, '0'));
+    await mkdir(dirname(path), { recursive: true });
+    await rm(path, { force: true });
+    await rename(part.temporaryPath, path);
+    this.db.prepare(`INSERT INTO core_transfer_parts (transfer_task_id, sha256, part_index, chunk_size, chunk_count, byte_offset, size_bytes, part_sha256, file_path, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(transfer_task_id, sha256, part_index) DO UPDATE SET
+      chunk_size = excluded.chunk_size, chunk_count = excluded.chunk_count, byte_offset = excluded.byte_offset,
+      size_bytes = excluded.size_bytes, part_sha256 = excluded.part_sha256, file_path = excluded.file_path, updated_at = excluded.updated_at`)
+      .run(transferTaskId, digestValue, part.index, part.chunkSize, part.chunkCount, part.offset, part.size, part.sha256, path, now());
+    const count = this.db.prepare('SELECT COUNT(*) AS count FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ?').get(transferTaskId, digestValue).count;
+    return { path, receivedParts: count, chunkCount: part.chunkCount, complete: count === part.chunkCount };
+  }
+  async assembleTransferParts(transferTaskId, sha256) {
+    const digestValue = String(sha256).toLowerCase();
+    const transfer = this.expectedTransferArtifacts(transferTaskId);
+    const expected = transfer.items.find((item) => String(item.actualSha256 ?? '').toLowerCase() === digestValue);
+    if (!expected) throw Object.assign(new Error('artifact digest is not in the approved manifest'), { code: 'artifact_not_approved' });
+    const rows = this.db.prepare('SELECT * FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ? ORDER BY part_index').all(transferTaskId, digestValue);
+    if (!rows.length || rows.length !== rows[0].chunk_count) return { complete: false, receivedParts: rows.length, chunkCount: rows[0]?.chunk_count ?? 0 };
+    const temporaryPath = join(this.dataDir, 'tmp', `artifact-${randomUUID()}.assembled`);
+    await mkdir(dirname(temporaryPath), { recursive: true });
+    const output = createWriteStream(temporaryPath, { flags: 'wx', mode: 0o600 });
+    const hash = createHash('sha256');
+    let totalSize = 0;
+    try {
+      for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index];
+        if (row.part_index !== index || row.chunk_size !== rows[0].chunk_size || row.chunk_count !== rows[0].chunk_count) throw Object.assign(new Error('制品分块记录不连续'), { code: 'artifact_chunk_incomplete' });
+        const partHash = createHash('sha256');
+        let partSize = 0;
+        for await (const chunk of createReadStream(row.file_path)) {
+          partHash.update(chunk); hash.update(chunk); partSize += chunk.length; totalSize += chunk.length;
+          if (!output.write(chunk)) await once(output, 'drain');
+        }
+        if (partSize !== row.size_bytes || partHash.digest('hex') !== row.part_sha256) throw Object.assign(new Error(`制品分块 ${index} 文件校验失败`), { code: 'artifact_chunk_integrity_failed' });
+      }
+      output.end();
+      await once(output, 'close');
+      const fullDigest = hash.digest('hex');
+      if (totalSize !== Number(expected.sizeBytes) || fullDigest !== digestValue) throw Object.assign(new Error('组装后的制品大小或 SHA-256 与获批清单不一致'), { code: 'artifact_integrity_failed' });
+      const received = await this.receiveArtifact(transferTaskId, digestValue, temporaryPath, totalSize, fullDigest);
+      for (const row of rows) await rm(row.file_path, { force: true });
+      this.db.prepare('DELETE FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ?').run(transferTaskId, digestValue);
+      return { complete: true, ...received };
+    } catch (error) {
+      output.destroy();
+      await rm(temporaryPath, { force: true });
+      throw error;
+    }
   }
   expectedTransferArtifacts(transferTaskId) {
     const task = this.db.prepare(`SELECT t.*, r.status AS approval_status, r.envelope_json

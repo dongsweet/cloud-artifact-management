@@ -76,7 +76,7 @@ node tools/cam-gate-simulator.js \
 
 Edge/Core 在此测试 Compose 中通过 `http://cam-gate-sim:<端口>` 访问对应通道。模拟器按流转发请求和响应，不缓存完整请求体；每条通道只允许访问 Compose 中预先指定的单一上游地址，拒绝 CONNECT 和 Upgrade 隧道。镜像使用 Node.js 原生 HTTP 能力，不增加运行依赖。可用 `/healthz` 检查单个映射监听器。
 
-这是应用层端口转发测试替身，只能验证地址、端口、HTTP 消息和大请求流式转发；Edge/Core 仍处于同一 Docker 网络，不能验证物理隔离、网闸策略、抗病毒、协议过滤、网闸审计或安全边界。该服务只加入 `compose.direct.yaml`，不得用于正式部署；`compose.yaml` 不包含该容器。模拟器可验证四条通道的地址、端口和流式转发。它不模拟山石设备管理 API，也不改变 CAM 的业务接口契约。生产映射通道上的业务接口固定为 `POST /api/v1/gate/approval-requests`、`POST /api/v1/gate/approval-results`、`POST/PUT /api/v1/gate/transfers...` 和 `POST /api/v1/gate/transfer-receipts`；当前实现先提供审批申请和接收回执接口，并为后续结果、制品传输接口保留固定命名，所有请求均要求幂等业务 ID、清单摘要、有效期和共享密钥。
+这是应用层端口转发测试替身，只能验证地址、端口、HTTP 消息和大请求流式转发；Edge/Core 仍处于同一 Docker 网络，不能验证物理隔离、网闸策略、抗病毒、协议过滤、网闸审计或安全边界。该服务只加入 `compose.direct.yaml`，不得用于正式部署；`compose.yaml` 不包含该容器。模拟器可验证四条通道的地址、端口和流式转发。它不模拟山石设备管理 API，也不改变 CAM 的业务接口契约。生产映射通道的业务接口包括 `POST /api/v1/gate/approval-requests`（Edge 提交申请到 Core）、`POST /api/v1/gate/approval-results`（Core 回告审批）、`POST /api/v1/gate/transfer-requests`（Core 授权通知 Edge）、`GET /api/v1/gate/transfers/:taskId/manifest` 与 `PUT /api/v1/gate/transfers/:taskId/artifacts/:sha256/parts/:index`（Edge 推送，Core 分块接收），以及 `POST /api/v1/gate/receipts`（Edge 提交回执）。这些接口均校验网闸共享密钥和获批任务绑定；Core 按获批清单校验分块摘要、组装后的整文件 SHA-256 和文件大小，同摘要对象只存储一次。Edge 发送失败会自动退避重试，并在固化详情中显示状态、尝试次数和最近错误。
 
 ## 云管工单联调现状与启用条件
 

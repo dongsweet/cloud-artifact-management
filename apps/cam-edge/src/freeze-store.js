@@ -44,7 +44,12 @@ export class FreezeStore {
       core_approval_id: 'TEXT',
       core_status: 'TEXT',
       core_response_json: 'TEXT',
-      report_size: 'INTEGER'
+      report_size: 'INTEGER',
+      transfer_task_id: 'TEXT',
+      transfer_status: "TEXT NOT NULL DEFAULT 'IDLE'",
+      transfer_attempts: 'INTEGER NOT NULL DEFAULT 0',
+      transfer_last_error: 'TEXT',
+      transfer_at: 'TEXT'
     };
     for (const [name, definition] of Object.entries(additions)) if (!columns.has(name)) db.exec(`ALTER TABLE round_freezes ADD COLUMN ${name} ${definition}`);
     db.exec(`CREATE TABLE IF NOT EXISTS edge_core_approval_events (
@@ -54,6 +59,13 @@ export class FreezeStore {
       status TEXT NOT NULL CHECK (status IN ('APPROVED','REJECTED')),
       received_at TEXT NOT NULL
     )`);
+    db.exec(`CREATE TABLE IF NOT EXISTS edge_core_transfer_events (
+      event_id TEXT PRIMARY KEY,
+      freeze_id TEXT NOT NULL REFERENCES round_freezes(freeze_id),
+      payload_sha256 TEXT NOT NULL,
+      transfer_task_id TEXT NOT NULL,
+      received_at TEXT NOT NULL
+    )`);
     db.prepare(`UPDATE releases SET status = 'SEALED', updated_at = ? WHERE EXISTS (
       SELECT 1 FROM release_rounds rr JOIN round_freezes rf ON rf.round_id = rr.round_id
       WHERE rr.release_id = releases.release_id AND rf.status = 'APPROVED'
@@ -61,6 +73,7 @@ export class FreezeStore {
     // Cloud work-order identifiers, states and error payloads are internal to Core.
     db.prepare('UPDATE round_freezes SET core_approval_id = NULL, core_status = NULL, core_response_json = NULL').run();
     db.prepare("UPDATE round_freezes SET dispatch_status = 'PENDING' WHERE status = 'PENDING_APPROVAL' AND dispatch_status = 'SENDING'").run();
+    db.prepare("UPDATE round_freezes SET transfer_status = 'READY' WHERE status = 'APPROVED' AND transfer_status = 'SENDING'").run();
   }
 
   snapshot(roundId) {
@@ -121,6 +134,8 @@ export class FreezeStore {
       decidedBy: row.decided_by, decidedAt: row.decided_at,
       decisionReference: row.decision_reference, decisionComment: row.decision_comment,
       dispatchStatus: row.dispatch_status ?? 'PENDING', dispatchAt: row.dispatch_at,
+      transferTaskId: row.transfer_task_id ?? null, transferStatus: row.transfer_status ?? 'IDLE',
+      transferAttempts: row.transfer_attempts ?? 0, transferLastError: row.transfer_last_error ?? null, transferAt: row.transfer_at ?? null,
       createdAt: row.created_at, updatedAt: row.updated_at
     };
   }
@@ -296,6 +311,53 @@ export class FreezeStore {
       this.db.exec('COMMIT');
       return { item: this.get(freezeId), idempotent: false };
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  applyTransferReady(input) {
+    const requestId = String(input?.requestId ?? '').trim();
+    const freezeId = String(input?.freezeId ?? '').trim();
+    const eventId = String(input?.eventId ?? '').trim();
+    const taskId = String(input?.transferTaskId ?? '').trim();
+    const manifestSha256 = String(input?.manifestSha256 ?? '').toLowerCase();
+    if (!requestId || requestId !== freezeId || !eventId || eventId.length > 128 || !taskId || !/^[a-f0-9]{64}$/.test(manifestSha256)) throw Object.assign(new Error('Core 传输任务格式无效'), { code: 'invalid_transfer_request' });
+    const freeze = this.get(freezeId);
+    if (!freeze) throw Object.assign(new Error('固化申请不存在'), { code: 'freeze_not_found' });
+    if (freeze.status !== 'APPROVED' || freeze.manifestSha256.toLowerCase() !== manifestSha256) throw Object.assign(new Error('传输任务未绑定当前已审批清单'), { code: 'transfer_request_conflict' });
+    const payloadSha256 = hash(JSON.stringify({ eventId, requestId, freezeId, taskId, manifestSha256 }));
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const prior = this.db.prepare('SELECT * FROM edge_core_transfer_events WHERE event_id = ?').get(eventId);
+      if (prior) {
+        if (prior.freeze_id !== freezeId || prior.transfer_task_id !== taskId || prior.payload_sha256 !== payloadSha256) throw Object.assign(new Error('Core 传输事件编号冲突'), { code: 'transfer_event_conflict' });
+        this.db.exec('COMMIT');
+        return { item: this.get(freezeId), idempotent: true };
+      }
+      if (freeze.transferTaskId && freeze.transferTaskId !== taskId) throw Object.assign(new Error('固化申请已绑定其他传输任务'), { code: 'transfer_request_conflict' });
+      this.db.prepare('INSERT INTO edge_core_transfer_events (event_id, freeze_id, payload_sha256, transfer_task_id, received_at) VALUES (?, ?, ?, ?, ?)').run(eventId, freezeId, payloadSha256, taskId, now());
+      this.db.prepare("UPDATE round_freezes SET transfer_task_id = ?, transfer_status = 'READY', transfer_attempts = 0, transfer_last_error = NULL, transfer_at = NULL, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED'").run(taskId, now(), freezeId);
+      this.db.exec('COMMIT');
+      return { item: this.get(freezeId), idempotent: false };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  listTransferPending() {
+    return this.db.prepare("SELECT * FROM round_freezes WHERE status = 'APPROVED' AND transfer_task_id IS NOT NULL AND transfer_status IN ('READY','FAILED') ORDER BY decided_at ASC").all().map((row) => this.parse(row));
+  }
+  markTransferAttempt(freezeId) {
+    this.db.prepare("UPDATE round_freezes SET transfer_status = 'SENDING', transfer_attempts = transfer_attempts + 1, transfer_last_error = NULL, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('READY','FAILED')").run(now(), freezeId);
+    return this.get(freezeId);
+  }
+  markTransferSuccess(freezeId) {
+    this.db.prepare("UPDATE round_freezes SET transfer_status = 'RECEIVED', transfer_at = ?, transfer_last_error = NULL, updated_at = ? WHERE freeze_id = ?").run(now(), now(), freezeId);
+    return this.get(freezeId);
+  }
+  resetTransfer(freezeId) {
+    this.db.prepare("UPDATE round_freezes SET transfer_status = 'READY', transfer_last_error = NULL, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('FAILED','SENDING')").run(now(), freezeId);
+    return this.get(freezeId);
+  }
+  markTransferFailure(freezeId, error) {
+    this.db.prepare("UPDATE round_freezes SET transfer_status = 'FAILED', transfer_last_error = ?, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED'").run(String(error?.message ?? error).slice(0, 1000), now(), freezeId);
+    return this.get(freezeId);
   }
 
   markDispatchFailure(freezeId, error) {

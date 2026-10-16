@@ -141,7 +141,7 @@ export async function finalizeCandidate(store, candidateId) {
   return completed;
 }
 
-export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher }) {
+export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher, artifactDispatcher }) {
   // 专用于 Core 通过网闸映射拉取验证报告。该地址只接受当前轮换密钥，
   // 不经过浏览器会话和外部区账号权限，且申请编号绑定报告路径。
   app.get('/api/v1/gate/transfer/reports/:requestId', async (request, reply) => {
@@ -204,6 +204,25 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const status = err.code === 'freeze_not_found' ? 404 : ['approval_result_conflict', 'approval_event_conflict'].includes(err.code) ? 409 : 400;
       return error(reply, status, err.code ?? 'approval_result_rejected', err.message);
     }
+  });
+  app.post('/api/v1/gate/transfer-requests', { bodyLimit: 16 * 1024 }, async (request, reply) => {
+    if (!await keyring.verifySecret(request.headers['x-cam-gate-secret'])) return error(reply, 401, 'gate_auth_required', '正式制品传输任务身份校验失败');
+    try {
+      const result = freezes.applyTransferReady(request.body ?? {});
+      const item = result.item;
+      return reply.send({ accepted: true, requestId: item.freezeId, transferTaskId: item.transferTaskId, eventId: request.body?.eventId, idempotent: result.idempotent });
+    } catch (err) {
+      const status = err.code === 'freeze_not_found' ? 404 : ['transfer_request_conflict', 'transfer_event_conflict'].includes(err.code) ? 409 : 400;
+      return error(reply, status, err.code ?? 'transfer_request_rejected', err.message);
+    }
+  });
+  app.post('/api/v1/freezes/:freezeId/transfer/retry', async (request, reply) => {
+    const freeze = freezes.get(request.params.freezeId);
+    if (!freeze) return error(reply, 404, 'freeze_not_found', '固化申请不存在');
+    if (freeze.status !== 'APPROVED' || !freeze.transferTaskId || !['FAILED', 'SENDING'].includes(freeze.transferStatus)) return error(reply, 409, 'transfer_retry_unavailable', '当前传输状态不支持手动重试');
+    freezes.resetTransfer(freeze.freezeId);
+    const item = await artifactDispatcher.deliver(freeze.freezeId);
+    return reply.send({ item });
   });
   app.get('/api/v1/rounds/:roundId/freezes', async (request, reply) => {
     if (!store.getRound(request.params.roundId)) return error(reply, 404, 'round_not_found', 'round not found');
