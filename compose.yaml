@@ -83,10 +83,6 @@ services:
     restart: unless-stopped
 
   cam-edge:
-    network_mode: "service:hillstone-vpn"
-    depends_on:
-      hillstone-vpn:
-        condition: service_healthy
     build:
       context: .
       args:
