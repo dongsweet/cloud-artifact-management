@@ -165,6 +165,7 @@ export class CandidateStore {
       CREATE INDEX IF NOT EXISTS receive_queue_order_idx ON receive_queue(status, queued_at);
     `);
     this.migrateCandidates();
+    this.migrateReleaseRounds();
   }
 
   migrateCandidates() {
@@ -180,6 +181,12 @@ export class CandidateStore {
     this.db.exec('CREATE INDEX IF NOT EXISTS candidates_release_idx ON candidates(release_id, created_at DESC)');
   }
 
+  migrateReleaseRounds() {
+    const columns = new Set(this.db.prepare('PRAGMA table_info(release_rounds)').all().map((column) => column.name));
+    if (!columns.has('change_note')) this.db.exec("ALTER TABLE release_rounds ADD COLUMN change_note TEXT NOT NULL DEFAULT ''");
+    if (!columns.has('created_by')) this.db.exec('ALTER TABLE release_rounds ADD COLUMN created_by TEXT');
+  }
+
   createProduct({ name }) {
     const productName = safeText(name, 'name', { max: 128 });
     const timestamp = now();
@@ -190,9 +197,6 @@ export class CandidateStore {
       if (String(error.message).includes('UNIQUE')) throw new Error('product name already exists');
       throw error;
     }
-    const roundColumns = new Set(this.db.prepare('PRAGMA table_info(release_rounds)').all().map((column) => column.name));
-    if (!roundColumns.has('change_note')) this.db.exec("ALTER TABLE release_rounds ADD COLUMN change_note TEXT NOT NULL DEFAULT ''");
-    if (!roundColumns.has('created_by')) this.db.exec('ALTER TABLE release_rounds ADD COLUMN created_by TEXT');
     return this.getProduct(productId);
   }
 

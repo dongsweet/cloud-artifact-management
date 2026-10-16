@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { buildEdgeApp } from '../src/app.js';
+import { openDatabase } from '../../../libs/cam-sqlite/src/database.js';
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -287,6 +288,30 @@ test('release creation atomically creates the first round and server calculates 
   assert.equal(second.json().roundNo, 2);
   assert.equal(second.json().baseRoundId, release.initialRound.roundId);
   await app.close();
+});
+
+test('release creation migrates legacy release-round schema before inserting the first round', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-legacy-round-schema-'));
+  const db = await openDatabase(join(dataDir, 'edge.sqlite'));
+  db.exec(`
+    CREATE TABLE products (product_id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE releases (release_id TEXT PRIMARY KEY, product_id TEXT NOT NULL, version TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(product_id, version));
+    CREATE TABLE release_rounds (round_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, round_no INTEGER NOT NULL, base_round_id TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(release_id, round_no));
+  `);
+  await db.close();
+
+  const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'legacy-schema-operator', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }) });
+  try {
+    const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Legacy Schema Stack' } })).json();
+    const created = await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '8.0.6.1' } });
+    assert.equal(created.statusCode, 201, created.body);
+    assert.equal(created.json().initialRound.roundNo, 1);
+    assert.equal(created.json().initialRound.changeNote, '发布版本创建，开始第一轮候选包收集');
+    assert.equal(created.json().initialRound.createdBy, 'legacy-schema-operator');
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });
 
 test('round creation requires an audit note and accepts downloadable evidence attachments', async () => {
