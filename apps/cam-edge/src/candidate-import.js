@@ -27,6 +27,28 @@ function normalizeHeader(value) {
   return String(value ?? '').trim().toLowerCase().replace(/[\s\u00a0_\-—–:：/\\()[\]【】]/g, '');
 }
 
+function inferHeaderField(header) {
+  const text = normalizeHeader(header);
+  const scores = {
+    sourceUrl: text.includes('下载') && /地址|链接|url/.test(text) ? 9 : /内网/.test(text) && /地址|链接/.test(text) ? 7 : /研发/.test(text) && /文件/.test(text) && /地址/.test(text) ? 7 : 0,
+    fileName: /文件名|包名|制品名/.test(text) ? 8 : /版本/.test(text) && /文件|包|制品/.test(text) ? 5 : 0,
+    packageKey: /packagekey|包标识|包键/.test(text) ? 8 : 0,
+    deploymentPackage: /部署包/.test(text) ? 8 : 0,
+    architecture: /架构/.test(text) ? 8 : /cpu|处理器/.test(text) ? 7 : 0,
+    digest: /md5|sha256|sha-256|校验|摘要/.test(text) ? 8 : 0,
+    displaySize: /文件大小|制品大小/.test(text) ? 8 : /大小|size/.test(text) ? 7 : 0,
+    type: /类型|分类/.test(text) ? 6 : 0,
+    applicableProducts: /所属产品|适用产品|产品范围/.test(text) ? 8 : 0,
+    purpose: /用途|功能说明/.test(text) ? 7 : 0,
+    documentationUrl: /文档|说明书/.test(text) && /地址|链接|url/.test(text) ? 8 : 0,
+    notes: /备注/.test(text) ? 7 : 0,
+    targets: /目标|部署范围|适用环境/.test(text) ? 7 : 0
+  };
+  const ranked = Object.entries(scores).sort((left, right) => right[1] - left[1]);
+  if (ranked[0][1] < 5 || ranked[0][1] === ranked[1][1]) return null;
+  return ranked[0][0];
+}
+
 function cellText(value) {
   if (value === null || value === undefined) return '';
   if (value instanceof Date) return value.toISOString();
@@ -44,7 +66,7 @@ function detectHeaders(rows) {
     const headers = (rows[index] ?? []).map(cellText);
     const mapping = {};
     headers.forEach((header, columnIndex) => {
-      const field = HEADER_ALIASES.get(normalizeHeader(header));
+      const field = HEADER_ALIASES.get(normalizeHeader(header)) ?? inferHeaderField(header);
       if (field && mapping[field] === undefined) mapping[field] = columnIndex;
     });
     const score = Object.keys(mapping).length + (mapping.sourceUrl === undefined ? 0 : 4) + (mapping.fileName === undefined ? 0 : 2);

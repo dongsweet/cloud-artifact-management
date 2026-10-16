@@ -14,6 +14,19 @@ test('candidate workbook import recognizes common header aliases and skips a lea
   assert.equal(result.mapping.digest, 7);
 });
 
+test('candidate workbook import uses header keywords for reasonable naming variations', () => {
+  const result = detectHeaders([[
+    '类型', '部署包名称', '制品发布版本', '所属产品名称', '文件大小说明', 'CPU类型', '研发内网下载文件链接', '校验摘要值'
+  ]]);
+  assert.equal(result.mapping.deploymentPackage, 1);
+  assert.equal(result.mapping.fileName, 2);
+  assert.equal(result.mapping.applicableProducts, 3);
+  assert.equal(result.mapping.displaySize, 4);
+  assert.equal(result.mapping.architecture, 5);
+  assert.equal(result.mapping.sourceUrl, 6);
+  assert.equal(result.mapping.digest, 7);
+});
+
 test('candidate workbook import normalizes architectures, digest labels and exact byte sizes', () => {
   assert.equal(normalizeArchitecture('X86 | arm'), 'x86_64 | arm64');
   assert.deepEqual(parseDigest('sha256：\n' + 'a'.repeat(64), 'package.tar'), { md5: null, sha256: 'a'.repeat(64), warning: null });

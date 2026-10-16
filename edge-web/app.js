@@ -540,6 +540,8 @@ function resetImportDialog() {
 
 async function readImportPreview() {
   if (!state.importFile || !state.roundId) return;
+  const selectedSheet = $('#import-sheet').value;
+  const preserveCurrentMapping = state.importPreview?.sheet === selectedSheet;
   const requestId = ++importPreviewRequestId;
   const button = $('#import-preview-button');
   button.disabled = true;
@@ -551,9 +553,9 @@ async function readImportPreview() {
   $('#import-preview-rows').innerHTML = '<tr><td colspan="7" class="text-center text-body-secondary py-4">正在读取工作表预览…</td></tr>';
   try {
     const params = new URLSearchParams();
-    if ($('#import-sheet').value) params.set('sheet', $('#import-sheet').value);
+    if (selectedSheet) params.set('sheet', selectedSheet);
     const columnMapping = {};
-    document.querySelectorAll('[data-import-mapping]').forEach((select) => { columnMapping[select.dataset.importMapping] = select.value === '' ? null : Number(select.value); });
+    if (preserveCurrentMapping) document.querySelectorAll('[data-import-mapping]').forEach((select) => { columnMapping[select.dataset.importMapping] = select.value === '' ? null : Number(select.value); });
     if (Object.keys(columnMapping).length) params.set('mapping', JSON.stringify(columnMapping));
     const preview = await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/import-preview${params.toString() ? `?${params}` : ''}`, { method: 'POST', headers: { 'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, body: await state.importFile.arrayBuffer() });
     if (requestId !== importPreviewRequestId) return;
@@ -817,13 +819,17 @@ $('#import-packages-button').addEventListener('click', () => {
   modal('import').show();
 });
 $('#import-file').addEventListener('change', (event) => {
+  importPreviewRequestId += 1;
   state.importFile = event.target.files?.[0] ?? null;
   state.importPreview = null;
   $('#import-preview-button').disabled = !state.importFile;
+  $('#import-preview-button').innerHTML = '读取预览';
   $('#import-sheet').disabled = true;
+  $('#import-sheet').innerHTML = '';
   $('#import-confirm-button').disabled = true;
   $('#import-summary').textContent = '';
   $('#import-mapping').classList.add('d-none');
+  $('#import-mapping').innerHTML = '';
   $('#import-preview-rows').innerHTML = '<tr><td colspan="7" class="text-center text-body-secondary py-4">请读取预览</td></tr>';
 });
 $('#import-preview-button').addEventListener('click', readImportPreview);
