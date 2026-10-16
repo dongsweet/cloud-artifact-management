@@ -13,8 +13,16 @@ export async function buildServer({ service, configure, bodyLimit = Number(proce
     },
     bodyLimit
   });
-  app.addContentTypeParser('application/octet-stream', (_request, _payload, done) => done());
-  app.addContentTypeParser('application/pdf', (_request, _payload, done) => done());
+  app.addContentTypeParser([
+    'application/octet-stream',
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'text/plain',
+    'image/png',
+    'image/jpeg'
+  ], (_request, _payload, done) => done());
   app.addContentTypeParser('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', { parseAs: 'buffer' }, (_request, payload, done) => done(null, payload));
   app.get('/health/live', async () => ({ service, status: 'ok' }));
   app.get('/health/ready', async () => ({ service, status: 'ready' }));

@@ -329,10 +329,16 @@ test('round creation requires an audit note and accepts downloadable evidence at
     const attachmentBytes = Buffer.from('%PDF-1.7\nround evidence');
     const upload = await app.inject({ method: 'POST', url: `/api/v1/rounds/${created.json().roundId}/attachments`, headers: { 'content-type': 'application/pdf', 'x-attachment-filename': 'release-note.pdf' }, payload: attachmentBytes });
     assert.equal(upload.statusCode, 201, upload.body);
+    const docxBytes = Buffer.from('docx attachment bytes');
+    const docxUpload = await app.inject({ method: 'POST', url: `/api/v1/rounds/${created.json().roundId}/attachments`, headers: { 'content-type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'x-attachment-filename': encodeURIComponent('发布说明.docx') }, payload: docxBytes });
+    assert.equal(docxUpload.statusCode, 201, docxUpload.body);
+    const docxDownload = await app.inject({ url: `/api/v1/round-attachments/${docxUpload.json().item.attachmentId}/file` });
+    assert.equal(docxDownload.body, docxBytes.toString());
     const detail = await app.inject({ url: `/api/v1/rounds/${created.json().roundId}` });
     assert.equal(detail.json().changeNote, '第二轮只更新计算节点补丁，其余从第一轮继承');
     assert.equal(detail.json().attachments[0].sha256.length, 64);
     assert.equal('filePath' in detail.json().attachments[0], false);
+    assert.equal(detail.json().attachments.some((item) => item.fileName === '发布说明.docx'), true);
     const download = await app.inject({ url: `/api/v1/round-attachments/${upload.json().item.attachmentId}/file` });
     assert.equal(download.body, attachmentBytes.toString());
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }

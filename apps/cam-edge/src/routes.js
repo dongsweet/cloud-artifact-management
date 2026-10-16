@@ -503,7 +503,13 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     if (!round) return error(reply, 404, 'round_not_found', 'round not found');
     if (freezes.locked(round.roundId)) return error(reply, 409, 'round_locked', '轮次审批或固化期间不能变更留痕附件');
     const chunks = []; let size = 0;
-    for await (const chunk of request.raw) { size += chunk.length; if (size > 20 * 1024 * 1024) return error(reply, 413, 'attachment_too_large', '单个轮次附件不能超过 20 MiB'); chunks.push(Buffer.from(chunk)); }
+    if (Buffer.isBuffer(request.body)) {
+      size = request.body.length;
+      if (size > 20 * 1024 * 1024) return error(reply, 413, 'attachment_too_large', '单个轮次附件不能超过 20 MiB');
+      chunks.push(request.body);
+    } else {
+      for await (const chunk of request.raw) { size += chunk.length; if (size > 20 * 1024 * 1024) return error(reply, 413, 'attachment_too_large', '单个轮次附件不能超过 20 MiB'); chunks.push(Buffer.from(chunk)); }
+    }
     const bytes = Buffer.concat(chunks);
     let fileName; try { fileName = decodeURIComponent(request.headers['x-attachment-filename'] ?? ''); } catch { return error(reply, 400, 'attachment_invalid', '附件文件名编码无效'); }
     if (!fileName || fileName.length > 180 || /[\\/\0]/u.test(fileName) || !/\.(pdf|docx?|xlsx?|txt|png|jpe?g)$/iu.test(fileName)) return error(reply, 400, 'attachment_invalid', '附件仅支持 PDF、Office 文档、TXT、PNG、JPG，文件名不超过 180 字');
