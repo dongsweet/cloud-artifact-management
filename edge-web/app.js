@@ -593,9 +593,9 @@ function renderImportMapping(preview) {
   $('#import-mapping').innerHTML = fields.map(([field, label, required]) => {
     const selected = preview.mapping[field];
     const options = `<option value="">${required ? '请选择列' : '不映射'}</option>${preview.columns.map((column) => `<option value="${column.index}" ${column.index === selected ? 'selected' : ''}>${escapeHtml(column.title)}</option>`).join('')}`;
-    const hint = field === 'packageKey' ? '<div class="form-text mt-1">未映射时按“部署包名称 &gt; 类型 &gt; 文件名”生成，并追加架构。</div>' : '';
-    return `<div class="col-6 col-md-4 col-lg-3"><label class="form-label small mb-1" for="import-map-${field}">${label}</label><select id="import-map-${field}" class="form-select form-select-sm" data-import-mapping="${field}">${options}</select>${hint}</div>`;
+    return `<div class="col-6 col-md-4 col-lg-3"><label class="form-label small mb-1" for="import-map-${field}">${label}</label><select id="import-map-${field}" class="form-select form-select-sm" data-import-mapping="${field}">${options}</select></div>`;
   }).join('');
+  $('#import-mapping').insertAdjacentHTML('beforeend', '<div class="col-12"><div class="form-text">包标识未映射时，按“部署包名称 &gt; 类型 &gt; 文件名”生成，并追加架构。</div></div>');
   document.querySelectorAll('[data-import-mapping]').forEach((select) => select.addEventListener('change', readImportPreview));
   $('#import-mapping').classList.remove('d-none');
 }
