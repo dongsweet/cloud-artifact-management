@@ -340,7 +340,7 @@ export class CloudAdapter {
     // The supplied EOMS interface specification documents the work-order
     // `attachment` field but omits the file-upload contract and its response
     // shape. Fail closed until that contract is added; never create a ticket
-    // that claims to have a report while omitting the actual PDF.
+    // that claims to have a report while omitting the actual file.
     throw Object.assign(new Error('云管文件上传接口尚未在接口文档中定义（路径、请求格式、认证及附件标识返回字段缺失）'), { code: 'cloud_attachment_upload_unavailable' });
   }
 

@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
+import { attachmentContentType } from '../../../libs/cam-server/src/attachment-types.js';
 import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
 import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/client.js';
 
@@ -62,7 +63,7 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
         let received = false; let lastError = null;
         for (let attempt = 1; attempt <= 4 && !received; attempt++) try {
         const end = Math.min(expected - 1, offset + Math.max(1024 * 1024, Math.min(config.chunkSizeBytes, 4 * 1024 * 1024)) - 1);
-        const response = await fetchImpl(reportUrl, { headers: { 'x-cam-gate-secret': secret.toString('base64url'), accept: 'application/pdf', range: `bytes=${offset}-${end}` }, signal: AbortSignal.timeout(config.transferTimeoutMs) });
+        const response = await fetchImpl(reportUrl, { headers: { 'x-cam-gate-secret': secret.toString('base64url'), accept: '*/*', range: `bytes=${offset}-${end}` }, signal: AbortSignal.timeout(config.transferTimeoutMs) });
         if (!response.ok) throw Object.assign(new Error(`从 Edge 获取验证报告失败（HTTP ${response.status}）`), { code: 'report_transfer_failed' });
         const body = Buffer.from(await response.arrayBuffer());
         reportResponseSha = response.headers.get('x-report-sha256') ?? reportResponseSha;
@@ -231,7 +232,7 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
     const item = store.get(request.params.requestId);
     const path = store.reportPath(request.params.requestId);
     if (!item || !path || !item.reportReceived) return error(reply, 404, 'report_not_found', 'verification report not found');
-    return reply.type('application/pdf').header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.reportFileName ?? 'verification-report.pdf')}`).send(createReadStream(path));
+    return reply.type(attachmentContentType(item.reportFileName)).header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.reportFileName ?? 'verification-report.pdf')}`).send(createReadStream(path));
   });
 
   app.post('/api/v1/approval-requests/:requestId/sync', async (request, reply) => {

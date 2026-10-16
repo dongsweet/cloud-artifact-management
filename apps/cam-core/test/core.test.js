@@ -169,5 +169,17 @@ test('Core receives and verifies the PDF before uploading it and creating the cl
     assert.equal(uploaded.sha256, pdfSha);
     assert.equal(created.cloudAttachmentId, '2026/10/report.pdf');
     assert.equal(item.cloudApprovalId, 'APR-WITH-REPORT');
+
+    const textReport = Buffer.from('validation report in markdown');
+    const textSha = (await import('node:crypto')).createHash('sha256').update(textReport).digest('hex');
+    app.coreStore.receiveApproval({ ...envelope, requestId: 'FREEZE-REPORT-MD', freezeId: 'FREEZE-REPORT-MD', reportSha256: textSha, reportFileName: 'verification.md', reportSize: textReport.length });
+    const textItem = await app.coreStore.saveReport('FREEZE-REPORT-MD', textReport);
+    assert.equal(textItem.reportReceived, true);
+    assert.equal(textItem.reportReceivedSha256, textSha);
+    assert.match(app.coreStore.reportPath('FREEZE-REPORT-MD'), /FREEZE-REPORT-MD\.md$/u);
+    const downloadedText = await app.inject({ url: '/api/v1/approval-requests/FREEZE-REPORT-MD/report-file' });
+    assert.equal(downloadedText.statusCode, 200);
+    assert.match(downloadedText.headers['content-type'], /^text\/markdown/u);
+    assert.equal(downloadedText.body, textReport.toString());
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });

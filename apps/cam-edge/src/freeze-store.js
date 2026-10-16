@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { attachmentExtension, validAttachmentFileName } from '../../../libs/cam-server/src/attachment-types.js';
 
 const now = () => new Date().toISOString();
 const makeId = () => `FREEZE-${Date.now()}-${randomUUID()}`;
@@ -141,11 +142,12 @@ export class FreezeStore {
     if (!freeze) throw Object.assign(new Error('freeze request not found'), { code: 'freeze_not_found' });
     if (freeze.submittedBy !== actorId) throw Object.assign(new Error('只有草稿创建人可以上传验证报告'), { code: 'freeze_owner_required' });
     if (freeze.status !== 'DRAFT') throw Object.assign(new Error('只有草稿申请可以上传验证报告'), { code: 'freeze_not_editable' });
-    if (!/^[\p{L}\p{N}_ .()\-]{1,180}\.pdf$/iu.test(fileName ?? '')) throw new Error('验证报告文件名只允许字母、数字、空格、括号、下划线和连字符，并以 .pdf 结尾');
-    if (!Buffer.isBuffer(bytes) || bytes.length < 5 || bytes.length > 20 * 1024 * 1024) throw new Error('PDF 报告必须大于 0 且不超过 20 MiB');
-    if (bytes.subarray(0, 5).toString('ascii') !== '%PDF-') throw new Error('文件内容不是有效 PDF');
+    if (!validAttachmentFileName(fileName)) throw new Error('验证报告仅支持 DOCX、PDF、WPS、TXT、MD，文件名不超过 180 字');
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 20 * 1024 * 1024) throw new Error('验证报告必须大于 0 且不超过 20 MiB');
+    if (attachmentExtension(fileName) === '.pdf' && (bytes.length < 5 || bytes.subarray(0, 5).toString('ascii') !== '%PDF-')) throw new Error('文件内容不是有效 PDF');
     await mkdir(this.dataDir, { recursive: true });
-    const destination = join(this.dataDir, `${freezeId}.pdf`);
+    const previousPath = this.reportPath(freezeId);
+    const destination = join(this.dataDir, `${freezeId}${attachmentExtension(fileName)}`);
     const temporary = `${destination}.${randomUUID()}.tmp`;
     try {
       await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
@@ -153,6 +155,7 @@ export class FreezeStore {
     } catch (error) { await rm(temporary, { force: true }); throw error; }
     this.db.prepare('UPDATE round_freezes SET report_file_name = ?, report_path = ?, report_sha256 = ?, report_size = ?, updated_at = ? WHERE freeze_id = ? AND status = \'DRAFT\'')
       .run(fileName, destination, hash(bytes), bytes.length, now(), freezeId);
+    if (previousPath && previousPath !== destination) await rm(previousPath, { force: true });
     return this.get(freezeId);
   }
 
@@ -161,7 +164,7 @@ export class FreezeStore {
     if (!freeze) throw Object.assign(new Error('freeze request not found'), { code: 'freeze_not_found' });
     if (freeze.submittedBy !== actorId) throw Object.assign(new Error('只有草稿创建人可以提交固化申请'), { code: 'freeze_owner_required' });
     if (freeze.status !== 'DRAFT') throw Object.assign(new Error('该申请不在草稿状态'), { code: 'freeze_not_draft' });
-    if (!freeze.reportFileName || !freeze.reportSha256) throw Object.assign(new Error('请先上传 PDF 验证报告'), { code: 'report_required' });
+    if (!freeze.reportFileName || !freeze.reportSha256) throw Object.assign(new Error('请先上传验证报告'), { code: 'report_required' });
     if (this.locked(freeze.roundId)) throw Object.assign(new Error('该轮次已有待审批或已固化申请'), { code: 'round_locked' });
     const current = this.snapshot(freeze.roundId);
     const snapshot = JSON.parse(this.db.prepare('SELECT manifest_json FROM round_freezes WHERE freeze_id = ?').get(freezeId).manifest_json);

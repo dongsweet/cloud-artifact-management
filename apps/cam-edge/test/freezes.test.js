@@ -31,6 +31,13 @@ test('completed round can be submitted with a PDF report, approved by another us
   const otherValidatorUpload = await app.inject({ method: 'PUT', url: `/api/v1/freezes/${draft.freezeId}/report`, headers: { 'content-type': 'application/pdf', 'x-report-filename': 'verification.pdf' }, payload: pdf });
   assert.equal(otherValidatorUpload.statusCode, 403);
   identity = { id: 'validator-1', type: 'TEST_IDP', roles: ['VALIDATOR', 'CANDIDATE_RECEIVER'] };
+  for (const [fileName, contentType] of [['verification.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'], ['verification.wps', 'application/vnd.ms-works'], ['verification.txt', 'text/plain'], ['verification.md', 'text/markdown']]) {
+    const bytes = Buffer.from(`validation report ${fileName}`);
+    const response = await app.inject({ method: 'PUT', url: `/api/v1/freezes/${draft.freezeId}/report`, headers: { 'content-type': contentType, 'x-report-filename': fileName }, payload: bytes });
+    assert.equal(response.statusCode, 200, response.body);
+    const downloaded = await app.inject({ url: `/api/v1/freezes/${draft.freezeId}/report-file` });
+    assert.equal(downloaded.body, bytes.toString());
+  }
   const upload = await app.inject({ method: 'PUT', url: `/api/v1/freezes/${draft.freezeId}/report`, headers: { 'content-type': 'application/pdf', 'x-report-filename': 'verification.pdf' }, payload: pdf });
   assert.equal(upload.statusCode, 200, upload.body);
   assert.equal(upload.json().reportSha256, sha256(pdf));

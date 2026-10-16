@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { attachmentExtension, validAttachmentFileName } from '../../../libs/cam-server/src/attachment-types.js';
 
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}-${Date.now()}-${randomUUID()}`;
@@ -118,13 +119,14 @@ export class CoreStore {
   async saveReport(requestId, bytes) {
     const current = this.db.prepare('SELECT * FROM core_approval_requests WHERE request_id = ?').get(requestId);
     if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
-    if (!Buffer.isBuffer(bytes) || bytes.length < 5 || bytes.length > 20 * 1024 * 1024) throw Object.assign(new Error('验证报告必须大于 0 且不超过 20 MiB'), { code: 'report_invalid' });
-    if (bytes.subarray(0, 5).toString('ascii') !== '%PDF-') throw Object.assign(new Error('报告文件内容不是有效 PDF'), { code: 'report_invalid' });
+    if (!validAttachmentFileName(current.report_file_name)) throw Object.assign(new Error('验证报告仅支持 DOCX、PDF、WPS、TXT、MD'), { code: 'report_invalid' });
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 20 * 1024 * 1024) throw Object.assign(new Error('验证报告必须大于 0 且不超过 20 MiB'), { code: 'report_invalid' });
+    if (attachmentExtension(current.report_file_name) === '.pdf' && (bytes.length < 5 || bytes.subarray(0, 5).toString('ascii') !== '%PDF-')) throw Object.assign(new Error('报告文件内容不是有效 PDF'), { code: 'report_invalid' });
     if (current.report_size && current.report_size !== bytes.length) throw Object.assign(new Error(`报告大小不匹配（声明 ${current.report_size}，实际 ${bytes.length}）`), { code: 'report_integrity_failed' });
     const actual = digest(bytes);
     if (current.report_sha256 && current.report_sha256.toLowerCase() !== actual) throw Object.assign(new Error(`报告 SHA-256 不匹配（声明 ${current.report_sha256}，实际 ${actual}）`), { code: 'report_integrity_failed' });
     await mkdir(this.reportDir, { recursive: true });
-    const destination = join(this.reportDir, `${requestId}.pdf`);
+    const destination = join(this.reportDir, `${requestId}${attachmentExtension(current.report_file_name)}`);
     const temporary = `${destination}.${randomUUID()}.tmp`;
     try { await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 }); await rename(temporary, destination); } catch (error) { await rm(temporary, { force: true }); throw error; }
     const timestamp = now();

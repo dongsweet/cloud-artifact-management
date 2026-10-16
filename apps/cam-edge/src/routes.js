@@ -7,6 +7,7 @@ import { assembleChunks } from '../../../libs/cam-transfer/src/transfer.js';
 import { previewCandidateWorkbook } from './candidate-import.js';
 import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
 import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/client.js';
+import { attachmentContentType, validAttachmentFileName } from '../../../libs/cam-server/src/attachment-types.js';
 
 function error(reply, statusCode, code, message) {
   return reply.code(statusCode).send({ error: { code, message } });
@@ -147,7 +148,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const info = await stat(path);
       const range = parseRange(request.headers.range, info.size);
       if (range === 'invalid') return reply.code(416).header('Content-Range', `bytes */${info.size}`).send();
-      reply.type('application/pdf').header('Accept-Ranges', 'bytes').header('Content-Length', String(range ? range.end - range.start + 1 : info.size)).header('X-Report-Sha256', freeze.reportSha256);
+      reply.type(attachmentContentType(freeze.reportFileName)).header('Accept-Ranges', 'bytes').header('Content-Length', String(range ? range.end - range.start + 1 : info.size)).header('X-Report-Sha256', freeze.reportSha256);
       if (!range) return reply.header('Content-Disposition', `attachment; filename="${encodeURIComponent(freeze.reportFileName)}"`).send(createReadStream(path));
       return reply.code(206).header('Content-Range', `bytes ${range.start}-${range.end}/${info.size}`).send(createReadStream(path, { start: range.start, end: range.end }));
     } catch { return error(reply, 404, 'report_not_found', 'verification report not found'); }
@@ -208,10 +209,17 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     try {
       const chunks = [];
       let size = 0;
-      for await (const chunk of request.raw) {
-        size += chunk.length;
-        if (size > 20 * 1024 * 1024) return error(reply, 413, 'report_too_large', 'PDF 报告不能超过 20 MiB');
-        chunks.push(Buffer.from(chunk));
+      const parsedBody = Buffer.isBuffer(request.body) ? request.body : typeof request.body === 'string' ? Buffer.from(request.body) : null;
+      if (parsedBody) {
+        size = parsedBody.length;
+        if (size > 20 * 1024 * 1024) return error(reply, 413, 'report_too_large', '附件不能超过 20 MiB');
+        chunks.push(parsedBody);
+      } else {
+        for await (const chunk of request.raw) {
+          size += chunk.length;
+          if (size > 20 * 1024 * 1024) return error(reply, 413, 'report_too_large', '附件不能超过 20 MiB');
+          chunks.push(Buffer.from(chunk));
+        }
       }
       let fileName;
       try { fileName = decodeURIComponent(request.headers['x-report-filename'] ?? ''); } catch { throw new Error('报告文件名编码无效'); }
@@ -254,7 +262,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     const path = freezes.reportPath(request.params.freezeId);
     if (!freeze || !path) return error(reply, 404, 'report_not_found', 'verification report not found');
     const { createReadStream } = await import('node:fs');
-    return reply.type('application/pdf').header('Content-Disposition', `attachment; filename="${encodeURIComponent(freeze.reportFileName)}"`).send(createReadStream(path));
+    return reply.type(attachmentContentType(freeze.reportFileName)).header('Content-Disposition', `attachment; filename="${encodeURIComponent(freeze.reportFileName)}"`).send(createReadStream(path));
   });
 
   const usableRecipient = (grant) => {
@@ -503,18 +511,19 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     if (!round) return error(reply, 404, 'round_not_found', 'round not found');
     if (freezes.locked(round.roundId)) return error(reply, 409, 'round_locked', '轮次审批或固化期间不能变更留痕附件');
     const chunks = []; let size = 0;
-    if (Buffer.isBuffer(request.body)) {
-      size = request.body.length;
+    const parsedBody = Buffer.isBuffer(request.body) ? request.body : typeof request.body === 'string' ? Buffer.from(request.body) : null;
+    if (parsedBody) {
+      size = parsedBody.length;
       if (size > 20 * 1024 * 1024) return error(reply, 413, 'attachment_too_large', '单个轮次附件不能超过 20 MiB');
-      chunks.push(request.body);
+      chunks.push(parsedBody);
     } else {
       for await (const chunk of request.raw) { size += chunk.length; if (size > 20 * 1024 * 1024) return error(reply, 413, 'attachment_too_large', '单个轮次附件不能超过 20 MiB'); chunks.push(Buffer.from(chunk)); }
     }
     const bytes = Buffer.concat(chunks);
     let fileName; try { fileName = decodeURIComponent(request.headers['x-attachment-filename'] ?? ''); } catch { return error(reply, 400, 'attachment_invalid', '附件文件名编码无效'); }
-    if (!fileName || fileName.length > 180 || /[\\/\0]/u.test(fileName) || !/\.(pdf|docx?|xlsx?|txt|png|jpe?g)$/iu.test(fileName)) return error(reply, 400, 'attachment_invalid', '附件仅支持 PDF、Office 文档、TXT、PNG、JPG，文件名不超过 180 字');
+    if (!validAttachmentFileName(fileName)) return error(reply, 400, 'attachment_invalid', '附件仅支持 DOCX、PDF、WPS、TXT、MD，文件名不超过 180 字');
     if (!bytes.length) return error(reply, 400, 'attachment_invalid', '附件不能为空');
-    const contentType = String(request.headers['content-type'] ?? 'application/octet-stream').split(';')[0];
+    const contentType = attachmentContentType(fileName).split(';')[0];
     const attachmentId = `RATT-${Date.now()}-${randomUUID()}`;
     const dir = join(store.dataDir, 'round-attachments', round.roundId);
     const path = join(dir, `${attachmentId}-${fileName}`);

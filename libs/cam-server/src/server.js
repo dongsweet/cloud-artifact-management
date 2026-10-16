@@ -16,12 +16,10 @@ export async function buildServer({ service, configure, bodyLimit = Number(proce
   app.addContentTypeParser([
     'application/octet-stream',
     'application/pdf',
-    'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/vnd.ms-excel',
-    'text/plain',
-    'image/png',
-    'image/jpeg'
+    'application/vnd.ms-works',
+    'application/x-wps',
+    'text/markdown'
   ], (_request, _payload, done) => done());
   app.addContentTypeParser('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', { parseAs: 'buffer' }, (_request, payload, done) => done(null, payload));
   app.get('/health/live', async () => ({ service, status: 'ok' }));

@@ -334,6 +334,13 @@ test('round creation requires an audit note and accepts downloadable evidence at
     assert.equal(docxUpload.statusCode, 201, docxUpload.body);
     const docxDownload = await app.inject({ url: `/api/v1/round-attachments/${docxUpload.json().item.attachmentId}/file` });
     assert.equal(docxDownload.body, docxBytes.toString());
+    for (const [fileName, contentType] of [['交付说明.wps', 'application/vnd.ms-works'], ['记录.txt', 'text/plain'], ['说明.md', 'text/markdown']]) {
+      const bytes = Buffer.from(`round attachment ${fileName}`);
+      const response = await app.inject({ method: 'POST', url: `/api/v1/rounds/${created.json().roundId}/attachments`, headers: { 'content-type': contentType, 'x-attachment-filename': encodeURIComponent(fileName) }, payload: bytes });
+      assert.equal(response.statusCode, 201, response.body);
+      const download = await app.inject({ url: `/api/v1/round-attachments/${response.json().item.attachmentId}/file` });
+      assert.equal(download.body, bytes.toString());
+    }
     const detail = await app.inject({ url: `/api/v1/rounds/${created.json().roundId}` });
     assert.equal(detail.json().changeNote, '第二轮只更新计算节点补丁，其余从第一轮继承');
     assert.equal(detail.json().attachments[0].sha256.length, 64);
