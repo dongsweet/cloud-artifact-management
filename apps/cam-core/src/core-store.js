@@ -14,7 +14,23 @@ function required(value, name) {
 
 function response(row) {
   if (!row) return null;
-  return { requestId: row.request_id, freezeId: row.freeze_id, roundId: row.round_id, releaseId: row.release_id, status: row.status, manifestSha256: row.manifest_sha256, reportSha256: row.report_sha256, reportFileName: row.report_file_name, reportSize: row.report_size, reportReceived: Boolean(row.report_received_at), reportReceivedSha256: row.report_received_sha256, cloudAttachmentId: row.cloud_attachment_id, cloudApprovalId: row.cloud_approval_id, cloudTransferTaskId: row.cloud_transfer_task_id, cloudStatus: row.cloud_status, cloudWorkflowStep: row.cloud_workflow_step, cloudCheckedAt: row.cloud_checked_at, cloudMappingSnapshot: row.cloud_mapping_json ? JSON.parse(row.cloud_mapping_json) : null, cloudRequestSnapshot: row.cloud_request_json ? JSON.parse(row.cloud_request_json) : null, approvedAt: row.approved_at, expiresAt: row.expires_at, closeStatus: row.close_status, closeCheckedAt: row.close_checked_at, createdAt: row.created_at, updatedAt: row.updated_at, lastError: row.last_error, transferTaskId: row.transfer_task_id, transferStatus: row.transfer_status ?? null };
+  const envelope = JSON.parse(row.envelope_json ?? '{}');
+  return {
+    requestId: row.request_id, freezeId: row.freeze_id, roundId: row.round_id, releaseId: row.release_id,
+    productName: envelope.productName ?? null, version: envelope.version ?? null,
+    roundNo: Number.isInteger(envelope.roundNo) ? envelope.roundNo : null, reportTitle: envelope.reportTitle ?? null,
+    status: row.status, manifestSha256: row.manifest_sha256, reportSha256: row.report_sha256,
+    reportFileName: row.report_file_name, reportSize: row.report_size,
+    reportReceived: Boolean(row.report_received_at), reportReceivedSha256: row.report_received_sha256,
+    cloudAttachmentId: row.cloud_attachment_id, cloudApprovalId: row.cloud_approval_id,
+    cloudTransferTaskId: row.cloud_transfer_task_id, cloudStatus: row.cloud_status,
+    cloudWorkflowStep: row.cloud_workflow_step, cloudCheckedAt: row.cloud_checked_at,
+    cloudMappingSnapshot: row.cloud_mapping_json ? JSON.parse(row.cloud_mapping_json) : null,
+    cloudRequestSnapshot: row.cloud_request_json ? JSON.parse(row.cloud_request_json) : null,
+    approvedAt: row.approved_at, expiresAt: row.expires_at, closeStatus: row.close_status,
+    closeCheckedAt: row.close_checked_at, createdAt: row.created_at, updatedAt: row.updated_at,
+    lastError: row.last_error, transferTaskId: row.transfer_task_id, transferStatus: row.transfer_status ?? null
+  };
 }
 
 export class CoreStore {
@@ -64,7 +80,33 @@ export class CoreStore {
     const row = this.db.prepare('SELECT envelope_json FROM core_approval_requests WHERE request_id = ?').get(requestId);
     return row ? JSON.parse(row.envelope_json) : null;
   }
+  updatePresentationMetadata(requestId, incoming) {
+    const current = this.envelope(requestId);
+    if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
+    if (incoming?.releaseId !== current.releaseId || incoming?.roundId !== current.roundId || typeof incoming?.manifestSha256 !== 'string' || incoming.manifestSha256.toLowerCase() !== current.manifestSha256.toLowerCase()) {
+      throw Object.assign(new Error('presentation metadata does not match the approved release, round, and manifest'), { code: 'presentation_mismatch' });
+    }
+    const productName = typeof incoming.productName === 'string' ? incoming.productName.trim().slice(0, 128) : '';
+    const version = typeof incoming.version === 'string' ? incoming.version.trim().slice(0, 128) : '';
+    const roundNo = Number.isInteger(incoming.roundNo) && incoming.roundNo > 0 ? incoming.roundNo : null;
+    const reportTitle = typeof incoming.reportTitle === 'string' ? incoming.reportTitle.trim().slice(0, 200) : '';
+    if (!productName || !version || !roundNo) throw Object.assign(new Error('productName, version, and roundNo are required'), { code: 'invalid_presentation' });
+    const updated = { ...current, productName, version, roundNo, ...(reportTitle ? { reportTitle } : {}) };
+    this.db.prepare('UPDATE core_approval_requests SET envelope_json = ? WHERE request_id = ?').run(JSON.stringify(updated), requestId);
+    return this.get(requestId);
+  }
   list() { return this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id ORDER BY r.created_at DESC LIMIT 500').all().map(response); }
+  listArtifacts() {
+    return this.db.prepare(`SELECT r.*, t.status AS transfer_status, t.updated_at AS transfer_received_at
+      FROM core_approval_requests r JOIN core_transfer_tasks t ON t.request_id = r.request_id
+      WHERE r.status IN ('APPROVED', 'CLOSED') AND t.status = 'RECEIVED'
+      ORDER BY t.updated_at DESC LIMIT 500`).all().map((row) => ({
+      artifactId: `BASELINE-${row.request_id}`,
+      artifactType: 'RELEASE_BASELINE',
+      ...response(row),
+      receivedAt: row.transfer_received_at
+    }));
+  }
   listCloudPending() { return this.db.prepare("SELECT request_id FROM core_approval_requests WHERE status = 'CLOUD_PENDING' AND cloud_approval_id IS NULL ORDER BY created_at ASC LIMIT 100").all().map((row) => row.request_id); }
   getByFreeze(freezeId) { return response(this.db.prepare('SELECT * FROM core_approval_requests WHERE freeze_id = ?').get(freezeId)); }
 

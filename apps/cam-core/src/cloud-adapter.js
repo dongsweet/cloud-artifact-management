@@ -1,7 +1,11 @@
 import { ProxyAgent } from 'undici';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { attachmentContentType } from '../../../libs/cam-server/src/attachment-types.js';
 
 const EOMS_PATHS = Object.freeze({
   create: '/workflow-service/workOrderManagement/base',
+  upload: '/system-service/sugon/noAuth/newUpload',
   detail: '/workflow-service/workOrderManagement/workNumber',
   task: '/workflow-service/workOrderManagement/taskRecordDetail',
   confirm: '/workflow-service/workOrderManagement/base',
@@ -204,7 +208,7 @@ export class CloudAdapter {
     };
   }
 
-  async request(path, { method = 'GET', query = undefined, body = undefined } = {}) {
+  async request(path, { method = 'GET', query = undefined, body = undefined, formData = undefined } = {}) {
     if (!this.enabled()) throw Object.assign(new Error('cloud adapter is not configured'), { code: 'cloud_not_configured' });
     const url = new URL(`${this.baseUrl}${path}`);
     for (const [key, value] of Object.entries(query ?? {})) if (value !== undefined && value !== null && text(value)) url.searchParams.set(key, text(value));
@@ -218,7 +222,8 @@ export class CloudAdapter {
       };
       if (this.authUsername) headers['x-auth-username'] = this.authUsername;
       if (body !== undefined) headers['content-type'] = 'application/json';
-      const response = await this.fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal, ...(this.dispatcher ? { dispatcher: this.dispatcher } : {}) });
+      const requestBody = formData ?? (body === undefined ? undefined : JSON.stringify(body));
+      const response = await this.fetch(url, { method, headers, body: requestBody, signal: controller.signal, ...(this.dispatcher ? { dispatcher: this.dispatcher } : {}) });
       const rawText = await response.text();
       let value;
       try { value = rawText ? JSON.parse(rawText) : {}; } catch { throw cloudError(`cloud API returned non-JSON response (${response.status})`, response.status); }
@@ -291,11 +296,18 @@ export class CloudAdapter {
   buildWorkOrder(envelope, mappings, overrides = undefined) {
     const config = readConfig(this.env, overrides);
     if (!mappings.processUserIds.length) throw configurationError('请配置云管审批处理人用户名');
-    const title = `${config.titlePrefix} ${envelope.releaseId ?? ''}/${envelope.roundId ?? ''}`.trim().slice(0, 64);
+    const roundLabel = Number.isInteger(envelope.roundNo) ? `第 ${envelope.roundNo} 轮` : (envelope.roundId ?? '候选轮次');
+    const productLabel = envelope.productName ?? envelope.releaseId ?? '软件发布';
+    const versionLabel = envelope.version ? ` ${envelope.version}` : '';
+    const title = `${config.titlePrefix} ${productLabel}${versionLabel} ${roundLabel}固化申请`.trim().slice(0, 64);
     const detail = [
-      `<p>${html(config.titlePrefix)}</p>`,
-      `<p>产品发布：${html(envelope.releaseId)}</p>`,
-      `<p>候选轮次：${html(envelope.roundId)}</p>`,
+      `<p>审批事项：${html(productLabel)}${versionLabel ? ` ${html(envelope.version)}` : ''} ${html(roundLabel)}固化申请</p>`,
+      `<p>软件产品：${html(envelope.productName ?? '旧版请求未提供')}</p>`,
+      `<p>软件版本：${html(envelope.version ?? '旧版请求未提供')}</p>`,
+      `<p>候选轮次：${Number.isInteger(envelope.roundNo) ? `第 ${envelope.roundNo} 轮` : html(envelope.roundId ?? '旧版请求未提供')}</p>`,
+      ...(envelope.reportTitle ? [`<p>验证报告标题：${html(envelope.reportTitle)}</p>`] : []),
+      `<p>发布版本标识：${html(envelope.releaseId)}</p>`,
+      `<p>候选轮次标识：${html(envelope.roundId)}</p>`,
       `<p>请求编号：${html(envelope.requestId)}</p>`,
       `<p>验证结论：${html(envelope.conclusion)}</p>`,
       `<p>清单 SHA-256：${html(envelope.manifestSha256)}</p>`,
@@ -336,12 +348,30 @@ export class CloudAdapter {
     };
   }
 
-  async uploadApprovalReport() {
-    // The supplied EOMS interface specification documents the work-order
-    // `attachment` field but omits the file-upload contract and its response
-    // shape. Fail closed until that contract is added; never create a ticket
-    // that claims to have a report while omitting the actual file.
-    throw Object.assign(new Error('云管文件上传接口尚未在接口文档中定义（路径、请求格式、认证及附件标识返回字段缺失）'), { code: 'cloud_attachment_upload_unavailable' });
+  async uploadApprovalReport({ path, fileName, sha256, size } = {}) {
+    if (!path || !fileName || !/^[a-f0-9]{64}$/iu.test(text(sha256)) || !Number.isSafeInteger(size) || size < 1 || size > 20 * 1024 * 1024) {
+      throw Object.assign(new Error('云管验证报告上传参数无效'), { code: 'cloud_attachment_invalid' });
+    }
+    const bytes = await readFile(path);
+    const actualSha256 = createHash('sha256').update(bytes).digest('hex');
+    if (bytes.length !== size || actualSha256 !== text(sha256).toLowerCase()) {
+      throw Object.assign(new Error('云管验证报告文件与已校验的大小或 SHA-256 不一致'), { code: 'cloud_attachment_integrity_failed' });
+    }
+
+    const formData = new FormData();
+    formData.append('moduleName', 'workflow');
+    formData.append('file', new Blob([bytes], { type: attachmentContentType(fileName) }), fileName);
+    const result = await this.request(EOMS_PATHS.upload, { method: 'POST', formData });
+    const rows = result?.rows;
+    if (!Array.isArray(rows) || rows.length !== 1 || typeof rows[0] !== 'string' || !rows[0].trim() || !rows[0].startsWith('workflow::')) {
+      throw cloudError('云管文件上传响应未返回有效的 workflow 附件标识');
+    }
+    if (result.total !== undefined && Number(result.total) !== 1) throw cloudError('云管文件上传响应的附件数量不匹配');
+    const attachmentId = rows[0].trim();
+    if (attachmentId.split('::').length !== 3 || !attachmentId.split('::')[1] || !attachmentId.split('::')[2]) {
+      throw cloudError('云管文件上传响应中的附件标识格式无效');
+    }
+    return attachmentId;
   }
 
   async getApproval(approvalId, expectedRequest = undefined) {

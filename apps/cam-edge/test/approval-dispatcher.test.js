@@ -12,7 +12,7 @@ function fixture() {
     get: () => state,
     list: () => [state],
     listDispatchPending: () => state.dispatchStatus === 'PENDING' || state.dispatchStatus === 'FAILED' ? [state] : [],
-    approvalEnvelope: () => ({ schemaVersion: 1, type: 'VERIFICATION_APPROVAL_REQUEST', requestId: state.freezeId, releaseId: 'REL-1' }),
+    approvalEnvelope: () => ({ schemaVersion: 1, type: 'VERIFICATION_APPROVAL_REQUEST', requestId: state.freezeId, releaseId: 'REL-1', roundId: 'ROUND-1', productName: '曙光云 Stack', version: '8.0.6.2', roundNo: 2, reportTitle: '验证报告', manifestSha256: 'a'.repeat(64) }),
     markDispatchAttempt: () => { state.dispatchStatus = 'SENDING'; state.dispatchAttempts += 1; return state; },
     markDispatchSuccess: (_id, response) => { state.dispatchStatus = 'DELIVERED'; state.coreApprovalId = response.item.cloudApprovalId; state.coreStatus = response.item.status; return state; },
     markDispatchFailure: (_id, error) => { state.dispatchStatus = 'FAILED'; state.dispatchLastError = error.message; return state; },
@@ -61,16 +61,17 @@ test('approval dispatcher polls Core while cloud work-order creation is pending'
   state.dispatchStatus = 'DELIVERED';
   state.dispatchAttempts = 1;
   state.coreStatus = 'CLOUD_PENDING';
-  let requestUrl;
+  let request;
   const dispatcher = createApprovalDispatcher({
     freezes,
     gateConfig: { get: () => ({ coreControlUrl: 'http://gate.example:3201', connectTimeoutMs: 1000 }) },
     keyring: { currentSecret: async () => Buffer.from('shared-secret') },
-    fetchImpl: async (url) => { requestUrl = url; return { ok: true, status: 200, json: async () => ({ item: { status: 'CLOUD_SUBMITTED', cloudApprovalId: 'APR-1' } }) }; },
+    fetchImpl: async (url, options) => { request = { url, options }; return { ok: true, status: 200, json: async () => ({ item: { status: 'CLOUD_SUBMITTED', cloudApprovalId: 'APR-1' } }) }; },
     logger: { warn() {} }
   });
   await dispatcher.pump();
-  assert.equal(requestUrl, 'http://gate.example:3201/api/v1/gate/approval-requests/FREEZE-1/sync');
+  assert.equal(request.url, 'http://gate.example:3201/api/v1/gate/approval-requests/FREEZE-1/sync');
+  assert.equal(JSON.parse(request.options.body).presentation.roundNo, 2);
   assert.equal(state.coreApprovalId, 'APR-1');
   await dispatcher.close();
 });

@@ -52,7 +52,8 @@ export function createApprovalDispatcher({ freezes, gateConfig, keyring, fetchIm
     if (!config.coreControlUrl) return;
     const secret = await keyring.currentSecret();
     if (!secret) return;
-    const response = await coreRequest(`/api/v1/gate/approval-requests/${encodeURIComponent(freeze.freezeId)}/sync`, config, secret, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    const presentation = freezes.approvalEnvelope(freeze.freezeId);
+    const response = await coreRequest(`/api/v1/gate/approval-requests/${encodeURIComponent(freeze.freezeId)}/sync`, config, secret, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ presentation }) });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw Object.assign(new Error(body.error?.message ?? `Core 状态查询失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_status_sync_failed' });
     freezes.markCoreStatus(freeze.freezeId, body);

@@ -178,6 +178,10 @@ export class FreezeStore {
       freezeId: freeze.freezeId,
       roundId: freeze.roundId,
       releaseId: freeze.manifest.releaseId,
+      productName: freeze.manifest.product,
+      version: freeze.manifest.version,
+      roundNo: freeze.manifest.roundNo,
+      reportTitle: freeze.reportTitle,
       manifestSha256: freeze.manifestSha256,
       reportSha256: freeze.reportSha256,
       reportFileName: freeze.reportFileName,
@@ -206,6 +210,8 @@ export class FreezeStore {
     return {
       schemaVersion: 1, type: 'VERIFICATION_APPROVAL_REQUEST', requestId: freeze.freezeId,
       freezeId: freeze.freezeId, roundId: freeze.roundId, releaseId: freeze.manifest.releaseId,
+      productName: freeze.manifest.product, version: freeze.manifest.version,
+      roundNo: freeze.manifest.roundNo, reportTitle: freeze.reportTitle,
       manifestSha256: freeze.manifestSha256, reportSha256: freeze.reportSha256,
       reportFileName: freeze.reportFileName, reportSize: freeze.reportSize, conclusion: freeze.conclusion,
       submittedBy: freeze.submittedBy, submittedAt: freeze.submittedAt

@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { approvalStatus, CloudAdapter, EOMS_PATHS, readConfig } from '../src/cloud-adapter.js';
 
@@ -26,6 +30,54 @@ test('CloudAdapter keeps upstream socket failure details without exposing creden
     assert.doesNotMatch(error.message, /hidden-secret/);
     return true;
   });
+});
+
+test('CloudAdapter uploads a verified report as a workflow multipart attachment', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-cloud-upload-'));
+  const path = join(dataDir, 'verification report.pdf');
+  const bytes = Buffer.from('%PDF-1.7\nverified report');
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  let uploadedFile;
+  const adapter = new CloudAdapter({
+    baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env,
+    fetchImpl: async (url, options) => {
+      assert.equal(new URL(url).pathname, EOMS_PATHS.upload);
+      assert.equal(options.method, 'POST');
+      assert.equal(options.headers['x-auth-secret'], 'secret');
+      assert.equal(options.headers['x-auth-userid'], '2308');
+      assert.equal(options.headers['content-type'], undefined, 'fetch must add the multipart boundary');
+      assert.equal(options.body.get('moduleName'), 'workflow');
+      uploadedFile = options.body.get('file');
+      return response({ rows: ['workflow::verificationreport.pdf::20261016123A4B'], total: 1 });
+    }
+  });
+  try {
+    await writeFile(path, bytes);
+    const attachmentId = await adapter.uploadApprovalReport({ path, fileName: 'verification report.pdf', sha256, size: bytes.length });
+    assert.equal(attachmentId, 'workflow::verificationreport.pdf::20261016123A4B');
+    assert.equal(uploadedFile.name, 'verification report.pdf');
+    assert.equal(uploadedFile.type, 'application/pdf');
+    assert.deepEqual(Buffer.from(await uploadedFile.arrayBuffer()), bytes);
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('CloudAdapter rejects changed reports and malformed attachment upload responses', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-cloud-upload-invalid-'));
+  const path = join(dataDir, 'verification.pdf');
+  const bytes = Buffer.from('%PDF-1.7\nverified report');
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  let calls = 0;
+  const adapter = new CloudAdapter({
+    baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env,
+    fetchImpl: async () => { calls += 1; return response({ rows: [], total: 0 }); }
+  });
+  try {
+    await writeFile(path, bytes);
+    await assert.rejects(adapter.uploadApprovalReport({ path, fileName: 'verification.pdf', sha256: 'b'.repeat(64), size: bytes.length }), { code: 'cloud_attachment_integrity_failed' });
+    assert.equal(calls, 0);
+    await assert.rejects(adapter.uploadApprovalReport({ path, fileName: 'verification.pdf', sha256, size: bytes.length }), { code: 'cloud_api_error' });
+    assert.equal(calls, 1);
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
 
 test('Core business configuration accepts usernames instead of numeric IDs', () => {
@@ -56,7 +108,7 @@ test('CloudAdapter resolves environment-specific IDs and creates an EOMS work or
     throw new Error(`unexpected request ${parsed.pathname}`);
   };
   const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env: { ...env, CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS: '2308' }, fetchImpl });
-  const result = await adapter.createApproval({ requestId: 'FREEZE-1', releaseId: 'REL-1', roundId: 'ROUND-1', conclusion: 'PASS', manifestSha256: 'a'.repeat(64), reportSha256: 'b'.repeat(64), reportFileName: 'report.pdf' }, { ...env, processUserNames: 'zhuren_luan' });
+  const result = await adapter.createApproval({ requestId: 'FREEZE-1', releaseId: 'REL-1', roundId: 'ROUND-1', productName: '曙光云 Stack', version: '8.0.6.2', roundNo: 2, reportTitle: '曙光云 Stack 8.0.6.2 验证报告', conclusion: 'PASS', manifestSha256: 'a'.repeat(64), reportSha256: 'b'.repeat(64), reportFileName: 'report.pdf' }, { ...env, processUserNames: 'zhuren_luan' });
   assert.equal(result.approvalId, '20261012D1234');
   assert.equal(result.mappingSnapshot.priority.id, '394');
   assert.equal(result.mappingSnapshot.businessType.id, '231');
@@ -67,6 +119,9 @@ test('CloudAdapter resolves environment-specific IDs and creates an EOMS work or
   assert.equal(result.requestBody.priority, '394');
   assert.equal(result.requestBody.businessType, '231');
   assert.equal(result.requestBody.workOrderSource, '402');
+  assert.equal(result.requestBody.title, '云平台制品验证报告审批 曙光云 Stack 8.0.6.2 第 2 轮固化申请');
+  assert.match(result.requestBody.workOrderDetail, /软件产品：曙光云 Stack/u);
+  assert.match(result.requestBody.workOrderDetail, /候选轮次：第 2 轮/u);
   assert.deepEqual(result.mappingSnapshot.processUsers, [{ userId: '2308', username: 'zhuren_luan' }]);
   assert.ok(calls.some(({ url }) => new URL(url).pathname === EOMS_PATHS.responsiblePersons));
   assert.ok(calls.every(({ options }) => options.headers['x-auth-secret'] === 'secret' && options.headers['x-auth-userid'] === '2308'));

@@ -14,6 +14,10 @@ const envelope = {
   freezeId: 'FREEZE-1',
   roundId: 'ROUND-1',
   releaseId: 'REL-1',
+  productName: '曙光云 Stack',
+  version: '8.0.6.2',
+  roundNo: 2,
+  reportTitle: '曙光云 Stack 8.0.6.2 验证报告',
   manifestSha256,
   reportSha256,
   conclusion: 'PASS'
@@ -34,7 +38,27 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     const received = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: envelope });
     assert.equal(received.statusCode, 202, received.body);
     assert.equal(received.json().item.status, 'CLOUD_PENDING');
+    assert.equal(received.json().item.productName, '曙光云 Stack');
+    assert.equal(received.json().item.version, '8.0.6.2');
+    assert.equal(received.json().item.roundNo, 2);
     assert.equal(received.json().cloudSubmission, false);
+
+    const legacyEnvelope = { ...envelope, requestId: 'FREEZE-LEGACY', freezeId: 'FREEZE-LEGACY' };
+    delete legacyEnvelope.productName;
+    delete legacyEnvelope.version;
+    delete legacyEnvelope.roundNo;
+    delete legacyEnvelope.reportTitle;
+    const legacyReceived = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: legacyEnvelope });
+    assert.equal(legacyReceived.statusCode, 202, legacyReceived.body);
+    const enriched = await app.inject({
+      method: 'POST', url: '/api/v1/gate/approval-requests/FREEZE-LEGACY/sync', headers,
+      payload: { presentation: { ...envelope, requestId: 'FREEZE-LEGACY', freezeId: 'FREEZE-LEGACY' } }
+    });
+    assert.equal(enriched.statusCode, 200, enriched.body);
+    assert.equal(enriched.json().item.productName, '曙光云 Stack');
+    assert.equal(enriched.json().item.version, '8.0.6.2');
+    assert.equal(enriched.json().item.roundNo, 2);
+
     await new Promise((resolve) => setTimeout(resolve, 10));
     const created = app.coreStore.get('FREEZE-1');
     assert.equal(created.status, 'CLOUD_SUBMITTED');
@@ -57,6 +81,9 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     const approved = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/sync', payload: {} });
     assert.equal(approved.statusCode, 200, approved.body);
     assert.equal(approved.json().item.status, 'APPROVED');
+    const emptyArtifacts = await app.inject({ method: 'GET', url: '/api/v1/artifacts' });
+    assert.equal(emptyArtifacts.statusCode, 200);
+    assert.deepEqual(emptyArtifacts.json().items, [], 'approval alone does not add a formal artifact record');
     const authorized = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/transfer-authorize', payload: { manifestSha256 } });
     assert.equal(authorized.statusCode, 200, authorized.body);
     assert.equal(authorized.json().item.transferTaskId, 'TR-1');
@@ -67,11 +94,22 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     const receipt = await app.inject({ method: 'POST', url: '/api/v1/gate/receipts', headers, payload: { requestId: 'FREEZE-1', transferTaskId: 'TR-1', manifestSha256 } });
     assert.equal(receipt.statusCode, 200, receipt.body);
     assert.equal(receipt.json().item.status, 'RECEIVED');
+    const artifacts = await app.inject({ method: 'GET', url: '/api/v1/artifacts' });
+    assert.equal(artifacts.statusCode, 200);
+    assert.equal(artifacts.json().items.length, 1);
+    assert.equal(artifacts.json().items[0].requestId, 'FREEZE-1');
+    assert.equal(artifacts.json().items[0].releaseId, 'REL-1');
+    assert.equal(artifacts.json().items[0].productName, '曙光云 Stack');
+    assert.equal(artifacts.json().items[0].version, '8.0.6.2');
+    assert.equal(artifacts.json().items[0].roundNo, 2);
+    assert.equal(artifacts.json().items[0].transferTaskId, 'TR-1');
+    assert.equal(artifacts.json().items[0].manifestSha256, manifestSha256);
+    assert.ok(artifacts.json().items[0].receivedAt);
 
     const replay = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: envelope });
     assert.equal(replay.statusCode, 200);
     assert.equal(replay.json().idempotent, true);
-    assert.equal(calls.filter(([kind]) => kind === 'create').length, 1);
+    assert.equal(calls.filter(([kind]) => kind === 'create').length, 2, 'each accepted request gets its own cloud work order; replaying the first is idempotent');
 
     const closed = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/close', payload: { reason: 'imported' } });
     assert.equal(closed.statusCode, 200, closed.body);
@@ -79,7 +117,7 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     assert.deepEqual(calls.at(-1), ['close', 'APR-1']);
     const syncAfterClose = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/sync', payload: {} });
     assert.equal(syncAfterClose.json().item.status, 'CLOSED');
-    assert.equal(calls.filter(([kind]) => kind === 'get').length, 2);
+    assert.equal(calls.filter(([kind]) => kind === 'get').length, 3, 'metadata backfill also verifies the existing cloud approval status');
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });

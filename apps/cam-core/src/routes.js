@@ -83,7 +83,7 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
     const item = store.get(requestId);
     if (!item.reportReceived || item.reportReceivedSha256 !== item.reportSha256) throw Object.assign(new Error('Core 尚未持有经校验的验证报告'), { code: 'report_not_received' });
     if (item.cloudAttachmentId) return { ...envelope, cloudAttachmentId: item.cloudAttachmentId };
-    if (typeof cloud.uploadApprovalReport !== 'function') throw Object.assign(new Error('云管文件上传协议尚未接入：缺少上传接口路径、请求格式和附件标识解析规则'), { code: 'cloud_attachment_upload_unavailable' });
+    if (typeof cloud.uploadApprovalReport !== 'function') throw Object.assign(new Error('当前云管适配器未实现验证报告附件上传'), { code: 'cloud_attachment_upload_unavailable' });
     const attachmentId = await cloud.uploadApprovalReport({ path, fileName: item.reportFileName, sha256: item.reportSha256, size: item.reportSize }, store.getCloudConfig());
     if (typeof attachmentId !== 'string' || !attachmentId.trim()) throw Object.assign(new Error('云管报告上传未返回有效附件标识'), { code: 'cloud_attachment_upload_invalid' });
     store.markReportAttachment(requestId, attachmentId.trim());
@@ -189,6 +189,7 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
 
   app.post('/api/v1/gate/approval-requests/:requestId/sync', { bodyLimit: 8192 }, async (request, reply) => {
     try {
+      if (request.body?.presentation) store.updatePresentationMetadata(request.params.requestId, request.body.presentation);
       let item = store.get(request.params.requestId);
       if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
       if (!item.cloudApprovalId) {
@@ -197,7 +198,11 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
         return reply.send({ item });
       }
       return reply.send({ item: store.applyCloudStatus(item.requestId, await cloud.getApproval(item.cloudApprovalId, item)) });
-    } catch (err) { store.markError(request.params.requestId, err); return error(reply, err.code === 'cloud_not_configured' ? 503 : 502, err.code ?? 'cloud_sync_failed', err.message); }
+    } catch (err) {
+      if (['presentation_mismatch', 'invalid_presentation'].includes(err.code)) return error(reply, err.code === 'presentation_mismatch' ? 409 : 400, err.code, err.message);
+      store.markError(request.params.requestId, err);
+      return error(reply, err.code === 'cloud_not_configured' ? 503 : err.code === 'request_not_found' ? 404 : 502, err.code ?? 'cloud_sync_failed', err.message);
+    }
   });
 
   app.get('/api/v1/cloud/config', async (request, reply) => {
@@ -222,6 +227,8 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
   });
 
   app.get('/api/v1/approval-requests', async (_request, reply) => reply.send({ items: store.list() }));
+
+  app.get('/api/v1/artifacts', async (_request, reply) => reply.send({ items: store.listArtifacts() }));
 
   app.get('/api/v1/approval-requests/:requestId', async (request, reply) => {
     const item = store.get(request.params.requestId);
