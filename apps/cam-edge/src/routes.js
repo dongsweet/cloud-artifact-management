@@ -197,6 +197,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.post('/api/v1/rounds/:roundId/freezes', { bodyLimit: 16 * 1024 }, async (request, reply) => {
     try {
+      store.assertRoundWritable(request.params.roundId);
       const actor = principal(request);
       return reply.code(201).send(freezes.createDraft(request.params.roundId, request.body ?? {}, actor.principalId));
     } catch (err) {
@@ -492,7 +493,16 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.post('/api/v1/releases/:releaseId/rounds', async (request, reply) => {
     try { return reply.code(201).send(store.createNextRound(request.params.releaseId, { changeNote: request.body?.changeNote, createdBy: principal(request).principalId })); }
-    catch (err) { return error(reply, 400, 'invalid_round', err.message); }
+    catch (err) { return error(reply, ['round_no_changes', 'round_not_latest', 'round_base_required'].includes(err.code) ? 409 : 400, err.code ?? 'invalid_round', err.message); }
+  });
+
+  app.delete('/api/v1/rounds/:roundId', async (request, reply) => {
+    try {
+      const deleted = store.deleteEmptyRound(request.params.roundId, principal(request).principalId);
+      return reply.send(deleted);
+    } catch (err) {
+      return error(reply, err.code === 'round_not_found' ? 404 : err.code === 'round_not_empty' ? 409 : 400, err.code ?? 'round_delete_failed', err.message);
+    }
   });
 
   app.get('/api/v1/releases/:releaseId/rounds', async (request, reply) => {
@@ -509,6 +519,8 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   app.post('/api/v1/rounds/:roundId/attachments', { bodyLimit: 20 * 1024 * 1024 }, async (request, reply) => {
     const round = store.getRound(request.params.roundId);
     if (!round) return error(reply, 404, 'round_not_found', 'round not found');
+    try { store.assertRoundWritable(round.roundId); }
+    catch (err) { return error(reply, 409, err.code ?? 'round_locked', err.message); }
     if (freezes.locked(round.roundId)) return error(reply, 409, 'round_locked', '轮次审批或固化期间不能变更留痕附件');
     const chunks = []; let size = 0;
     const parsedBody = Buffer.isBuffer(request.body) ? request.body : typeof request.body === 'string' ? Buffer.from(request.body) : null;
@@ -552,24 +564,27 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.post('/api/v1/rounds/:roundId/candidates', async (request, reply) => {
     try {
+      store.assertRoundWritable(request.params.roundId);
       if (freezes.locked(request.params.roundId)) return error(reply, 409, 'round_locked', '该轮次正在审批或已固化，不能修改候选包');
       const candidate = await store.create({ ...(request.body ?? {}), roundId: request.params.roundId });
       return reply.code(201).send(candidateResponse(candidate));
-    } catch (err) { return error(reply, 400, 'invalid_candidate', err.message); }
+    } catch (err) { return error(reply, ['round_locked', 'round_not_found'].includes(err.code) ? (err.code === 'round_not_found' ? 404 : 409) : 400, err.code ?? 'invalid_candidate', err.message); }
   });
 
   app.delete('/api/v1/rounds/:roundId/candidates/:candidateId', async (request, reply) => {
     try {
+      store.assertRoundWritable(request.params.roundId);
       if (freezes.locked(request.params.roundId)) return error(reply, 409, 'round_locked', '该轮次正在审批或已固化，不能修改候选包');
       const removed = store.detachCandidateFromRound(request.params.roundId, request.params.candidateId);
       if (!removed) return error(reply, 404, 'round_candidate_not_found', 'candidate is not attached to this round');
       return reply.code(204).send();
-    } catch (err) { return error(reply, 400, 'invalid_round_candidate_delete', err.message); }
+    } catch (err) { return error(reply, err.code === 'round_not_found' ? 404 : err.code === 'round_locked' ? 409 : 400, err.code ?? 'invalid_round_candidate_delete', err.message); }
   });
 
   app.post('/api/v1/rounds/:roundId/import-preview', async (request, reply) => {
     const round = store.getRound(request.params.roundId);
     if (!round) return error(reply, 404, 'round_not_found', 'round not found');
+    if (round.readOnly) return error(reply, 409, 'round_locked', round.readOnlyReason);
     try {
       const preview = await previewCandidateWorkbook(request.body, {
         sheetName: request.query?.sheet ?? null,
@@ -584,6 +599,8 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
 
   app.post('/api/v1/rounds/:roundId/import', async (request, reply) => {
+    try { store.assertRoundWritable(request.params.roundId); }
+    catch (err) { return error(reply, err.code === 'round_not_found' ? 404 : 409, err.code ?? 'round_locked', err.message); }
     if (freezes.locked(request.params.roundId)) return error(reply, 409, 'round_locked', '该轮次正在审批或已固化，不能导入候选包');
     const round = store.getRound(request.params.roundId);
     if (!round) return error(reply, 404, 'round_not_found', 'round not found');
@@ -653,19 +670,19 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.patch('/api/v1/candidates/:candidateId', async (request, reply) => {
     try { return reply.send(candidateResponse(store.updateCandidate(request.params.candidateId, request.body ?? {}))); }
-    catch (err) { return error(reply, err.code === 'candidate_not_editable' || err.code === 'candidate_has_parts' ? 409 : 400, err.code ?? 'invalid_candidate', err.message); }
+    catch (err) { return error(reply, ['candidate_not_editable', 'candidate_has_parts', 'round_locked'].includes(err.code) ? 409 : 400, err.code ?? 'invalid_candidate', err.message); }
   });
 
   app.delete('/api/v1/candidates/:candidateId', async (request, reply) => {
     try {
       const linkedRounds = downloadGrants.db.prepare('SELECT round_id FROM round_candidates WHERE candidate_id = ?').all(request.params.candidateId);
-      if (linkedRounds.some(({ round_id: roundId }) => freezes.locked(roundId))) return error(reply, 409, 'round_locked', '候选包属于正在审批或已固化的轮次，不能删除');
+      if (linkedRounds.some(({ round_id: roundId }) => freezes.locked(roundId) || !store.isRoundLatest(roundId))) return error(reply, 409, 'round_locked', '候选包已属于历史、审批或固化轮次，不能永久删除');
       if (downloadGrants.db.prepare('SELECT 1 FROM download_grant_items WHERE candidate_id = ? LIMIT 1').get(request.params.candidateId)) return error(reply, 409, 'candidate_in_download_audit', '该候选包已关联下载授权和审计记录，暂不能永久删除；可以移出候选轮次');
       const deleted = store.deleteCandidate(request.params.candidateId);
       if (!deleted) return error(reply, 404, 'candidate_not_found', 'candidate not found');
       await rm(deleted.dataDir, { recursive: true, force: true });
       return reply.code(204).send();
-    } catch (err) { return error(reply, err.code === 'candidate_busy' ? 409 : 400, err.code ?? 'candidate_delete_failed', err.message); }
+    } catch (err) { return error(reply, ['candidate_busy', 'round_locked'].includes(err.code) ? 409 : 400, err.code ?? 'candidate_delete_failed', err.message); }
   });
 
   app.get('/api/v1/candidates/:candidateId/parts', async (request, reply) => {

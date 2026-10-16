@@ -1,5 +1,5 @@
 import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js?v=20261011-grant-round-scope';
-const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, currentRoundCandidates: [], currentRoundQueue: [], batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null };
+const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, currentRoundCandidates: [], currentRoundQueue: [], batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null, nextRoundPreview: null };
 let importPreviewRequestId = 0;
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
@@ -261,16 +261,20 @@ async function loadReleaseDetail(generation = state.routeGeneration) {
   $('#round-freeze-panel').innerHTML = '';
   $('#round-candidate-rows').innerHTML = '';
   $('#round-queue-summary').textContent = '';
-  const [release, rounds] = await Promise.all([
+  const [release, roundsResponse] = await Promise.all([
     api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}`),
-    getRounds(state.releaseId)
+    api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}/rounds`)
   ]);
+  const rounds = roundsResponse.items;
+  state.nextRoundPreview = roundsResponse.nextRound;
   if (generation !== state.routeGeneration) return;
   state.productId = release.productId;
   state.currentRelease = release;
   $('#release-title').textContent = `${release.productName} / ${release.version}`;
   $('#release-fields').innerHTML = [['软件产品', escapeHtml(release.productName)], ['发布版本', escapeHtml(release.version)], ['状态', `<span class="badge ${statusClass(release.status)}">${statusLabel(release.status)}</span>`]].map(([label, value]) => `<dt class="col-sm-3 col-lg-2">${label}</dt><dd class="col-sm-9 col-lg-10">${value}</dd>`).join('');
   $('#round-select').innerHTML = rounds.length ? rounds.map((round) => `<option value="${escapeHtml(round.roundId)}">第 ${round.roundNo} 轮 · ${round.completedCandidateCount}/${round.candidateCount} 已完成</option>`).join('') : '<option value="">暂无轮次</option>';
+  $('#new-round-button').disabled = !roundsResponse.nextRound?.canCreate;
+  $('#new-round-button').title = roundsResponse.nextRound?.blockedReason ?? '基于当前最新轮次创建下一轮';
   if (!rounds.some((round) => round.roundId === state.roundId)) state.roundId = rounds[0]?.roundId ?? null;
   $('#round-select').value = state.roundId ?? '';
   if (state.roundId) await loadRound(generation); else renderRound(null, []);
@@ -301,11 +305,12 @@ async function loadRoundFreeze(round, candidates, generation = state.routeGenera
   const canSubmit = hasRole('VALIDATOR');
   const canApprove = hasRole('RELEASE_APPLICANT');
   const locked = ['PENDING_APPROVAL', 'APPROVED'].includes(freeze?.status);
-  for (const selector of ['#new-package-button', '#import-packages-button', '#batch-receive-button']) $(selector).disabled = locked;
-  document.querySelectorAll('[data-round-candidate-delete]').forEach((button) => { button.disabled = locked; button.title = locked ? '轮次审批或固化期间不可修改' : button.title; });
+  const readOnly = round.readOnly || locked;
+  for (const selector of ['#new-package-button', '#import-packages-button', '#batch-receive-button']) $(selector).disabled = readOnly;
+  document.querySelectorAll('[data-round-candidate-delete]').forEach((button) => { button.disabled = readOnly; button.title = round.readOnly ? round.readOnlyReason : locked ? '轮次审批或固化期间不可修改' : button.title; });
   let html = '';
   if (!freeze) {
-    html = `<div class="alert alert-light border d-flex justify-content-between align-items-center gap-2 mb-0"><span>本轮尚未提交验证报告。${complete ? '所有候选包均已完成，可以申请固化。' : '需先完成本轮全部候选包接收。'}</span>${canSubmit ? `<button id="freeze-start" class="btn btn-outline-primary btn-sm" ${complete ? '' : 'disabled'}><i class="bi bi-file-earmark-check me-1"></i>提交验证报告</button>` : ''}</div>`;
+    html = `<div class="alert alert-light border d-flex justify-content-between align-items-center gap-2 mb-0"><span>本轮尚未提交验证报告。${complete ? '所有候选包均已完成，可以申请固化。' : '需先完成本轮全部候选包接收。'}</span>${canSubmit && !round.readOnly ? `<button id="freeze-start" class="btn btn-outline-primary btn-sm" ${complete ? '' : 'disabled'}><i class="bi bi-file-earmark-check me-1"></i>提交验证报告</button>` : ''}</div>`;
   } else {
     html = `<div class="card card-outline ${freeze.status === 'APPROVED' ? 'card-success' : freeze.status === 'REJECTED' ? 'card-danger' : 'card-primary'} mb-0"><div class="card-header d-flex justify-content-between align-items-center"><strong>验证报告与版本固化</strong><span class="badge ${statusClass(freeze.status)}">${statusLabel(freeze.status)}</span></div><div class="card-body"><div class="row g-2"><div class="col-lg-4"><strong>报告：</strong>${escapeHtml(freeze.reportTitle)}</div><div class="col-lg-4"><strong>结论：</strong>${freeze.conclusion === 'PASS' ? '通过' : '有条件通过'}</div><div class="col-lg-4"><strong>提交时间：</strong>${escapeHtml(freeze.submittedAt ?? freeze.createdAt)}</div><div class="col-12"><strong>清单摘要：</strong><code class="text-break">${escapeHtml(freeze.manifestSha256)}</code></div>${freeze.status === 'PENDING_APPROVAL' ? `<div class="col-12"><strong>跨区投递：</strong>${escapeHtml(dispatchLabel(freeze.dispatchStatus))}${freeze.dispatchAttempts ? `（尝试 ${freeze.dispatchAttempts} 次）` : ''}${freeze.coreApprovalId ? `；云管工单：${escapeHtml(freeze.coreApprovalId)}` : ''}${freeze.coreStatus ? `；云管进度：${escapeHtml(coreApprovalLabel(freeze.coreStatus))}` : ''}</div>${freeze.dispatchLastError ? `<div class="col-12 text-danger"><strong>最近错误：</strong>${escapeHtml(freeze.dispatchLastError)}</div>` : ''}${freeze.coreResponse?.item?.lastError ? `<div class="col-12 text-danger"><strong>Core/云管最近错误：</strong>${escapeHtml(freeze.coreResponse.item.lastError)}</div>` : ''}` : ''}${freeze.decisionReference ? `<div class="col-12"><strong>审批编号：</strong>${escapeHtml(freeze.decisionReference)}</div>` : ''}${freeze.decisionComment ? `<div class="col-12"><strong>审批意见：</strong>${escapeHtml(freeze.decisionComment)}</div>` : ''}${freeze.reportFileName ? `<div class="col-12"><a href="/api/v1/freezes/${encodeURIComponent(freeze.freezeId)}/report-file" target="_blank" rel="noopener">下载验证报告</a></div>` : ''}</div>${freeze.status === 'DRAFT' && canSubmit ? '<button id="freeze-resume" class="btn btn-outline-primary btn-sm mt-3">继续上传并提交</button>' : ''}${freeze.status === 'REJECTED' && canSubmit ? '<button id="freeze-start" class="btn btn-outline-primary btn-sm mt-3">重新提交验证报告</button>' : ''}${freeze.status === 'PENDING_APPROVAL' && freeze.dispatchStatus === 'FAILED' && canSubmit ? '<div class="d-flex justify-content-end mt-3"><button id="freeze-dispatch-retry" class="btn btn-outline-primary btn-sm"><i class="bi bi-arrow-repeat me-1"></i>立即重试发送</button></div>' : ''}${freeze.status === 'PENDING_APPROVAL' && canApprove ? `<div class="border-top mt-3 pt-3"><div class="row g-2"><div class="col-md-4"><input id="freeze-reference" class="form-control form-control-sm" maxlength="200" placeholder="云管工单编号（可选）"></div><div class="col-md-8"><input id="freeze-comment" class="form-control form-control-sm" maxlength="2000" placeholder="审批意见；拒绝时必填"></div></div><div class="d-flex justify-content-end gap-2 mt-2"><button id="freeze-reject" class="btn btn-outline-danger btn-sm">拒绝</button><button id="freeze-approve" class="btn btn-success btn-sm">审批通过并固化</button></div></div>` : ''}</div></div>`;
   }
@@ -348,11 +353,16 @@ async function renderRound(round, candidates) {
     for (const selector of ['#new-package-button', '#import-packages-button', '#batch-receive-button']) $(selector).disabled = true;
     $('#round-freeze-panel').innerHTML = '';
   }
-  $('#round-summary').innerHTML = round ? `<div class="col-md-4"><div class="small-box text-bg-primary"><div class="inner"><h3>${round.roundNo}</h3><p>候选轮次</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-success"><div class="inner"><h3>${round.completedCandidateCount}/${round.candidateCount}</h3><p>已完成候选包</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-secondary"><div class="inner"><h3>${round.baseRoundId ? '继承' : '初始'}</h3><p>轮次来源</p></div></div></div>` : '';
-  $('#round-audit').innerHTML = round ? `<div class="card card-outline card-secondary mb-0"><div class="card-body py-2"><div><strong>本轮说明：</strong>${escapeHtml(round.changeNote || '未填写')}</div><div class="small text-body-secondary mt-1">创建人：${escapeHtml(round.createdBy || '-')}　创建时间：${escapeHtml(round.createdAt || '-')}</div>${round.attachments?.length ? `<div class="small mt-1">留痕附件：${round.attachments.map((item) => `<a class="me-2" href="/api/v1/round-attachments/${encodeURIComponent(item.attachmentId)}/file" target="_blank" rel="noopener">${escapeHtml(item.fileName)}</a><span class="text-body-secondary me-2">(${formatBytes(item.fileSize)})</span>`).join('')}</div>` : '<div class="small text-body-secondary mt-1">暂无留痕附件</div>'}</div></div>` : '';
-  $('#round-candidate-rows').innerHTML = candidates.length ? candidates.map((item) => `<tr><td>${escapeHtml(item.type ?? '-')}</td><td>${escapeHtml(item.packageKey ?? item.fileName)}</td><td>${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td class="font-monospace small">${escapeHtml(item.finalSha256 ?? item.expectedSha256 ?? '-')}</td><td><span class="badge ${item.mappingSource === 'INHERITED' ? 'text-bg-info' : 'text-bg-secondary'}">${item.mappingSource === 'INHERITED' ? `继承${item.inheritedFromRoundId ? ` · ${escapeHtml(item.inheritedFromRoundId.slice(-8))}` : ''}` : '本轮新增'}</span></td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><div class="d-flex gap-1"><button class="btn btn-outline-primary btn-sm" data-candidate="${escapeHtml(item.candidateId)}" title="查看候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button><button class="btn btn-outline-warning btn-sm" data-round-candidate-delete="${escapeHtml(item.candidateId)}" title="移出本轮；保留候选记录和文件"><i class="bi bi-dash-circle"></i><span class="visually-hidden">移出本轮</span></button></div></td></tr>`).join('') : '<tr><td colspan="8" class="text-center text-body-secondary py-4">本轮暂无候选包</td></tr>';
+  $('#delete-empty-round-button').hidden = !round?.canDeleteEmpty;
+  $('#delete-empty-round-button').title = round?.canDeleteEmpty ? '删除没有候选包变更的最新空轮次' : '仅最新且无候选包变更、附件或审批记录的轮次可删除';
+  $('#round-summary').innerHTML = round ? `<div class="col-md-4"><div class="small-box text-bg-primary"><div class="inner"><h3>${round.roundNo}</h3><p>候选轮次</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-success"><div class="inner"><h3>${round.completedCandidateCount}/${round.candidateCount}</h3><p>已完成候选包</p></div></div></div><div class="col-md-4"><div class="small-box text-bg-secondary"><div class="inner"><h3>${round.baseRoundId ? '继承' : '初始'}</h3><p>轮次来源</p></div></div></div>${round.readOnly ? '<div class="col-12"><div class="alert alert-secondary py-2 mb-0">本轮已有后续轮次，当前为只读历史记录。</div></div>' : !round.hasChanges && round.baseRoundId ? '<div class="col-12"><div class="alert alert-warning py-2 mb-0">本轮仅继承上一轮，尚无候选包变更；可以删除本轮，暂不能继续创建下一轮。</div></div>' : ''}` : '';
+  const delta = round?.changeSummary;
+  $('#round-audit').innerHTML = round ? `<div class="card card-outline card-secondary mb-0"><div class="card-body py-2"><div><strong>本轮说明：</strong>${escapeHtml(round.changeNote || '未填写')}</div><div class="small text-body-secondary mt-1">创建人：${escapeHtml(round.createdBy || '-')}　创建时间：${escapeHtml(round.createdAt || '-')}</div>${delta ? `<div class="small text-body-secondary mt-1">相对上一轮变更：新增 ${delta.added}、替换 ${delta.replaced}、移除 ${delta.removed}</div>` : ''}${round.readOnly ? `<div class="small text-body-secondary mt-1">${escapeHtml(round.readOnlyReason)}</div>` : ''}${round.attachments?.length ? `<div class="small mt-1">留痕附件：${round.attachments.map((item) => `<a class="me-2" href="/api/v1/round-attachments/${encodeURIComponent(item.attachmentId)}/file" target="_blank" rel="noopener">${escapeHtml(item.fileName)}</a><span class="text-body-secondary me-2">(${formatBytes(item.fileSize)})</span>`).join('')}</div>` : '<div class="small text-body-secondary mt-1">暂无留痕附件</div>'}</div></div>` : '';
+  $('#round-candidate-rows').innerHTML = candidates.length ? candidates.map((item) => `<tr><td>${escapeHtml(item.type ?? '-')}</td><td>${escapeHtml(item.packageKey ?? item.fileName)}</td><td>${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td class="font-monospace small">${escapeHtml(item.finalSha256 ?? item.expectedSha256 ?? '-')}</td><td><span class="badge ${item.mappingSource === 'INHERITED' ? 'text-bg-info' : 'text-bg-secondary'}">${item.mappingSource === 'INHERITED' ? `继承${item.inheritedFromRoundId ? ` · ${escapeHtml(item.inheritedFromRoundId.slice(-8))}` : ''}` : '本轮新增'}</span></td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><div class="d-flex gap-1"><button class="btn btn-outline-primary btn-sm" data-candidate="${escapeHtml(item.candidateId)}" title="查看候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button><button class="btn btn-outline-warning btn-sm" data-round-candidate-delete="${escapeHtml(item.candidateId)}" title="移出本轮；保留候选记录和文件" ${round?.readOnly ? 'disabled' : ''}><i class="bi bi-dash-circle"></i><span class="visually-hidden">移出本轮</span></button></div></td></tr>`).join('') : '<tr><td colspan="8" class="text-center text-body-secondary py-4">本轮暂无候选包</td></tr>';
+  for (const selector of ['#new-package-button', '#import-packages-button']) $(selector).disabled = !round || round.readOnly;
   document.querySelectorAll('[data-candidate]').forEach((button) => button.addEventListener('click', () => navigate('candidate-detail', { candidateId: button.dataset.candidate, ...paramsForState() })));
   document.querySelectorAll('[data-round-candidate-delete]').forEach((button) => button.addEventListener('click', () => detachRoundCandidate(button.dataset.roundCandidateDelete)));
+  $('#delete-empty-round-button').onclick = round?.canDeleteEmpty ? () => deleteEmptyRound(round) : null;
   await updateRoundQueue(round, candidates);
 }
 
@@ -401,6 +411,23 @@ async function detachRoundCandidate(candidateId) {
     await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/candidates/${encodeURIComponent(candidateId)}`, { method: 'DELETE' });
     showAlert('候选包已从当前轮次移除');
     await loadRound(state.routeGeneration);
+  } catch (error) { showAlert(error.message, 'danger'); }
+}
+
+async function deleteEmptyRound(round) {
+  if (!round?.canDeleteEmpty) return;
+  const confirmed = await confirmAction({
+    title: '删除空候选轮次',
+    message: `确定删除第 ${round.roundNo} 轮吗？`,
+    detail: '本轮没有相对上一轮的候选包变更。删除后上一轮恢复为当前可编辑轮次；删除动作会保留审计记录。',
+    confirmText: '删除空轮次',
+    variant: 'danger'
+  });
+  if (!confirmed) return;
+  try {
+    await api(`/api/v1/rounds/${encodeURIComponent(round.roundId)}`, { method: 'DELETE' });
+    showAlert(`第 ${round.roundNo} 轮空轮次已删除`);
+    navigate('release-detail', { releaseId: round.releaseId, roundId: round.baseRoundId });
   } catch (error) { showAlert(error.message, 'danger'); }
 }
 
@@ -816,6 +843,10 @@ $('#new-round-button').addEventListener('click', async () => {
   $('#round-form').reset();
   const roundsResponse = state.releaseId ? await api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}/rounds`) : { items: [], nextRound: null };
   const nextRound = roundsResponse.nextRound;
+  if (!nextRound?.canCreate) {
+    showAlert(nextRound?.blockedReason ?? '当前轮次没有候选包变更，不能创建下一轮', 'warning');
+    return;
+  }
   $('#round-product-preview').value = nextRound?.productName ?? state.currentRelease?.productName ?? '-';
   $('#round-release-preview').value = nextRound?.version ?? state.currentRelease?.version ?? '-';
   $('#round-number-preview').value = nextRound ? `第 ${nextRound.roundNo} 轮` : '-';

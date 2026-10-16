@@ -253,12 +253,18 @@ test('release rounds inherit unchanged candidate packages and replace only updat
   assert.equal(release.statusCode, 201);
   const releaseId = release.json().releaseId;
   const firstRound = await app.inject({ method: 'POST', url: `/api/v1/releases/${releaseId}/rounds`, payload: { changeNote: '测试轮次' } });
-  const round1 = firstRound.json();
+  assert.equal(firstRound.statusCode, 409, 'a release always starts with its first round already created');
+  const firstRoundFromRelease = (await app.inject({ method: 'GET', url: `/api/v1/releases/${releaseId}/rounds` })).json().items[0];
+  const round1 = firstRoundFromRelease;
   const createPackage = (roundId, packageKey, fileName) => app.inject({ method: 'POST', url: `/api/v1/rounds/${roundId}/candidates`, payload: { packageKey, sourceUrl: `http://127.0.0.1/${fileName}`, fileName, size: 4 } });
   const packageA = (await createPackage(round1.roundId, 'base', 'base.tar')).json();
   const packageB = (await createPackage(round1.roundId, 'agent', 'agent.tar')).json();
   const secondRound = await app.inject({ method: 'POST', url: `/api/v1/releases/${releaseId}/rounds`, payload: { baseRoundId: round1.roundId, changeNote: '更新轮次' } });
+  assert.equal(secondRound.statusCode, 201, secondRound.body);
   const round2 = secondRound.json();
+  assert.equal(round2.hasChanges, false, 'inheriting the prior package list unchanged is an empty round');
+  assert.equal(round2.canDeleteEmpty, true);
+  assert.equal((await app.inject({ method: 'POST', url: `/api/v1/releases/${releaseId}/rounds`, payload: { changeNote: '不能从空轮次继续创建' } })).statusCode, 409);
   const inherited = await app.inject({ method: 'GET', url: `/api/v1/rounds/${round2.roundId}/candidates` });
   assert.deepEqual(inherited.json().items.map((item) => [item.packageKey, item.candidateId, item.mappingSource]), [['agent', packageB.candidateId, 'INHERITED'], ['base', packageA.candidateId, 'INHERITED']]);
   const replacement = (await createPackage(round2.roundId, 'agent', 'agent-v2.tar')).json();
@@ -267,6 +273,8 @@ test('release rounds inherit unchanged candidate packages and replace only updat
   assert.equal(items.find((item) => item.packageKey === 'base').candidateId, packageA.candidateId);
   assert.equal(items.find((item) => item.packageKey === 'agent').candidateId, replacement.candidateId);
   assert.equal(items.find((item) => item.packageKey === 'agent').mappingSource, 'OWNED');
+  assert.equal((await app.inject({ method: 'GET', url: `/api/v1/rounds/${round1.roundId}` })).json().readOnly, true);
+  assert.equal((await app.inject({ method: 'POST', url: `/api/v1/rounds/${round1.roundId}/candidates`, payload: { packageKey: 'old-round', sourceUrl: 'http://127.0.0.1/old.bin', size: 4 } })).statusCode, 409);
   await app.close();
 });
 
@@ -283,11 +291,47 @@ test('release creation atomically creates the first round and server calculates 
   assert.equal(preview.statusCode, 200);
   assert.equal(preview.json().nextRound.roundNo, 2);
   assert.equal(preview.json().nextRound.baseRoundId, release.initialRound.roundId);
+  assert.equal(preview.json().nextRound.canCreate, false);
+  const emptyAttempt = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: { changeNote: '空轮次不能继续创建' } });
+  assert.equal(emptyAttempt.statusCode, 409);
+  const addPackage = await app.inject({ method: 'POST', url: `/api/v1/rounds/${release.initialRound.roundId}/candidates`, payload: { packageKey: 'core', sourceUrl: 'http://127.0.0.1/core.tar', size: 4 } });
+  assert.equal(addPackage.statusCode, 201, addPackage.body);
+  assert.equal((await app.inject({ method: 'GET', url: `/api/v1/releases/${release.releaseId}/rounds` })).json().nextRound.canCreate, true);
   const second = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: { changeNote: '第二轮变更' } });
   assert.equal(second.statusCode, 201, second.body);
   assert.equal(second.json().roundNo, 2);
   assert.equal(second.json().baseRoundId, release.initialRound.roundId);
   await app.close();
+});
+
+test('an inherited unchanged round can be deleted and restores the prior round as editable', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-empty-round-delete-'));
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'release-operator', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir });
+  try {
+    const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Empty round test' } })).json();
+    const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } })).json();
+    const initial = release.initialRound;
+    const candidate = await app.inject({ method: 'POST', url: `/api/v1/rounds/${initial.roundId}/candidates`, payload: { packageKey: 'base', sourceUrl: 'http://127.0.0.1/base.tar', size: 4 } });
+    assert.equal(candidate.statusCode, 201);
+    const child = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: { changeNote: '继承第一轮清单' } });
+    assert.equal(child.statusCode, 201, child.body);
+    assert.equal(child.json().candidateCount, 1);
+    assert.equal(child.json().hasChanges, false);
+    assert.equal(child.json().canDeleteEmpty, true);
+    assert.equal((await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: { changeNote: '不允许空轮次继续' } })).statusCode, 409);
+
+    const removed = await app.inject({ method: 'DELETE', url: `/api/v1/rounds/${child.json().roundId}` });
+    assert.equal(removed.statusCode, 200, removed.body);
+    assert.equal(removed.json().deleted, true);
+    assert.equal((await app.inject({ method: 'GET', url: `/api/v1/rounds/${initial.roundId}` })).json().readOnly, false);
+    const edit = await app.inject({ method: 'POST', url: `/api/v1/rounds/${initial.roundId}/candidates`, payload: { packageKey: 'agent', sourceUrl: 'http://127.0.0.1/agent.tar', size: 4 } });
+    assert.equal(edit.statusCode, 201, edit.body);
+    assert.equal((await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: { changeNote: '重新创建下一轮' } })).statusCode, 201);
+    assert.equal(app.candidateStore.db.prepare('SELECT event_type, actor_id FROM round_lifecycle_events WHERE round_id = ?').get(child.json().roundId).event_type, 'EMPTY_ROUND_DELETED');
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });
 
 test('release creation migrates legacy release-round schema before inserting the first round', async () => {
@@ -320,6 +364,7 @@ test('round creation requires an audit note and accepts downloadable evidence at
   try {
     const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Audit Stack' } })).json();
     const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '8.0' } })).json();
+    await app.inject({ method: 'POST', url: `/api/v1/rounds/${release.initialRound.roundId}/candidates`, payload: { packageKey: 'base', sourceUrl: 'http://127.0.0.1/base.tar', size: 4 } });
     const missingNote = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: {} });
     assert.equal(missingNote.statusCode, 400);
     assert.match(missingNote.json().error.message, /说明/);

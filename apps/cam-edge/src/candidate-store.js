@@ -141,6 +141,16 @@ export class CandidateStore {
         FOREIGN KEY (candidate_id) REFERENCES candidates(candidate_id),
         FOREIGN KEY (inherited_from_round_id) REFERENCES release_rounds(round_id)
       );
+      CREATE TABLE IF NOT EXISTS round_lifecycle_events (
+        event_id TEXT PRIMARY KEY,
+        release_id TEXT NOT NULL,
+        round_id TEXT NOT NULL,
+        round_no INTEGER NOT NULL,
+        event_type TEXT NOT NULL,
+        change_note TEXT NOT NULL,
+        actor_id TEXT,
+        created_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS candidate_parts (
         candidate_id TEXT NOT NULL,
         part_index INTEGER NOT NULL,
@@ -301,19 +311,20 @@ export class CandidateStore {
     return { releaseId, deleted: true };
   }
 
-  createRound(releaseId, { baseRoundId = null, changeNote = '', createdBy = null } = {}) {
+  createRound(releaseId, { baseRoundId = null, changeNote = '', createdBy = null, requireBaseChanges = false } = {}) {
     const release = this.getRelease(releaseId);
     if (!release) throw new Error('release not found');
-    const base = baseRoundId ? this.getRound(baseRoundId) : null;
-    if (baseRoundId && (!base || base.releaseId !== releaseId)) throw new Error('base round does not belong to release');
     const note = String(changeNote ?? '').trim();
     if (!note || note.length > 2000) throw new Error('请填写本轮收集/变更说明（1-2000 字）');
-    const latest = this.db.prepare('SELECT MAX(round_no) AS round_no FROM release_rounds WHERE release_id = ?').get(releaseId);
-    const roundNo = Number(latest?.round_no ?? 0) + 1;
     const roundId = id('ROUND');
     const timestamp = now();
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      const latest = this.db.prepare('SELECT round_id, round_no FROM release_rounds WHERE release_id = ? ORDER BY round_no DESC LIMIT 1').get(releaseId);
+      if (baseRoundId && (!latest || latest.round_id !== baseRoundId)) throw Object.assign(new Error('只能基于当前最新轮次创建下一轮'), { code: 'round_not_latest' });
+      if (!baseRoundId && latest) throw Object.assign(new Error('后续轮次必须继承当前最新轮次'), { code: 'round_base_required' });
+      if (baseRoundId && requireBaseChanges && !this.roundHasChanges(baseRoundId).hasChanges) throw Object.assign(new Error('当前最新轮次相对上一轮没有候选包变更，不能继续创建下一轮；请先修改候选包，或删除这个空轮次'), { code: 'round_no_changes' });
+      const roundNo = Number(latest?.round_no ?? 0) + 1;
       this.db.prepare('INSERT INTO release_rounds (round_id, release_id, round_no, base_round_id, change_note, created_by, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(roundId, releaseId, roundNo, baseRoundId, note, createdBy, 'OPEN', timestamp, timestamp);
       if (baseRoundId) {
         this.db.prepare(`INSERT INTO round_candidates (round_id, package_key, candidate_id, source, inherited_from_round_id, created_at)
@@ -334,7 +345,7 @@ export class CandidateStore {
       FROM release_rounds rr JOIN releases r ON r.release_id = rr.release_id JOIN products p ON p.product_id = r.product_id
       WHERE rr.round_id = ?`).get(roundId);
     if (!row) return null;
-    return {
+    const item = {
       roundId: row.round_id,
       releaseId: row.release_id,
       productId: row.product_id,
@@ -350,9 +361,19 @@ export class CandidateStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
+    const changes = this.roundHasChanges(roundId);
+    const latest = this.db.prepare('SELECT round_id FROM release_rounds WHERE release_id = ? ORDER BY round_no DESC LIMIT 1').get(item.releaseId);
+    item.changeSummary = changes;
+    item.hasChanges = changes.hasChanges;
+    item.isLatestRound = latest?.round_id === roundId;
+    item.readOnly = !item.isLatestRound;
+    item.readOnlyReason = item.readOnly ? '已创建后续轮次，本轮只读；请在最新轮次中变更候选包' : null;
+    item.canDeleteEmpty = this.canDeleteEmptyRound(roundId);
+    return item;
   }
 
   addRoundAttachment(roundId, { fileName, contentType, fileSize, sha256, filePath, uploadedBy }) {
+    this.assertRoundWritable(roundId);
     if (!this.getRound(roundId)) throw new Error('round not found');
     const attachmentId = id('RATT');
     const createdAt = now();
@@ -382,18 +403,80 @@ export class CandidateStore {
     const release = this.getRelease(releaseId);
     if (!release) return null;
     const latestRound = this.db.prepare('SELECT round_id, round_no FROM release_rounds WHERE release_id = ? ORDER BY round_no DESC LIMIT 1').get(releaseId);
+    const changes = latestRound ? this.roundHasChanges(latestRound.round_id) : { hasChanges: false, added: 0, replaced: 0, removed: 0 };
     return {
       productName: release.productName,
       version: release.version,
       roundNo: Number(latestRound?.round_no ?? 0) + 1,
-      baseRoundId: latestRound?.round_id ?? null
+      baseRoundId: latestRound?.round_id ?? null,
+      canCreate: Boolean(latestRound && changes.hasChanges),
+      blockedReason: latestRound && !changes.hasChanges ? '当前最新轮次没有新增、替换或移除候选包，不能继续创建下一轮' : null,
+      latestRoundNo: Number(latestRound?.round_no ?? 0) || null,
+      changeSummary: changes
     };
   }
 
   createNextRound(releaseId, { changeNote = '', createdBy = null } = {}) {
+    // Validate the audit note before checking whether the current round has a
+    // package delta, so malformed requests retain the normal 400 response.
+    const note = String(changeNote ?? '').trim();
+    if (!note || note.length > 2000) throw new Error('请填写本轮收集/变更说明（1-2000 字）');
     const preview = this.roundCreationPreview(releaseId);
     if (!preview) throw new Error('release not found');
-    return this.createRound(releaseId, { baseRoundId: preview.baseRoundId, changeNote, createdBy });
+    if (!preview.canCreate) throw Object.assign(new Error(preview.blockedReason ?? '当前轮次没有候选包变更，不能创建下一轮'), { code: 'round_no_changes' });
+    return this.createRound(releaseId, { baseRoundId: preview.baseRoundId, changeNote: note, createdBy, requireBaseChanges: true });
+  }
+
+  roundHasChanges(roundId) {
+    const round = this.db.prepare('SELECT base_round_id FROM release_rounds WHERE round_id = ?').get(roundId);
+    if (!round) return { hasChanges: false, added: 0, replaced: 0, removed: 0 };
+    const currentRows = this.db.prepare('SELECT package_key, candidate_id FROM round_candidates WHERE round_id = ?').all(roundId);
+    const current = new Map(currentRows.map((row) => [row.package_key, row.candidate_id]));
+    if (!round.base_round_id) return { hasChanges: current.size > 0, added: current.size, replaced: 0, removed: 0 };
+    const baseRows = this.db.prepare('SELECT package_key, candidate_id FROM round_candidates WHERE round_id = ?').all(round.base_round_id);
+    const base = new Map(baseRows.map((row) => [row.package_key, row.candidate_id]));
+    let added = 0; let replaced = 0; let removed = 0;
+    for (const [key, candidateId] of current) {
+      if (!base.has(key)) added += 1;
+      else if (base.get(key) !== candidateId) replaced += 1;
+    }
+    for (const key of base.keys()) if (!current.has(key)) removed += 1;
+    return { hasChanges: added + replaced + removed > 0, added, replaced, removed };
+  }
+
+  isRoundLatest(roundId) {
+    const round = this.db.prepare('SELECT release_id FROM release_rounds WHERE round_id = ?').get(roundId);
+    if (!round) return false;
+    return this.db.prepare('SELECT 1 FROM release_rounds WHERE release_id = ? AND base_round_id = ? LIMIT 1').get(round.release_id, roundId) === undefined;
+  }
+
+  assertRoundWritable(roundId) {
+    if (!this.getRound(roundId)) throw Object.assign(new Error('round not found'), { code: 'round_not_found' });
+    if (!this.isRoundLatest(roundId)) throw Object.assign(new Error('已创建后续轮次，本轮只读；请在最新轮次中变更候选包'), { code: 'round_locked' });
+  }
+
+  canDeleteEmptyRound(roundId) {
+    const round = this.db.prepare('SELECT release_id, round_no, base_round_id, status FROM release_rounds WHERE round_id = ?').get(roundId);
+    if (!round || round.status !== 'OPEN' || !round.base_round_id || !this.isRoundLatest(roundId) || this.roundHasChanges(roundId).hasChanges) return false;
+    if (this.db.prepare('SELECT 1 FROM round_attachments WHERE round_id = ? LIMIT 1').get(roundId)) return false;
+    if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'round_freezes'").get() && this.db.prepare('SELECT 1 FROM round_freezes WHERE round_id = ? LIMIT 1').get(roundId)) return false;
+    return true;
+  }
+
+  deleteEmptyRound(roundId, actorId = null) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const round = this.db.prepare('SELECT release_id, round_no, change_note FROM release_rounds WHERE round_id = ?').get(roundId);
+      if (!round) throw Object.assign(new Error('round not found'), { code: 'round_not_found' });
+      if (!this.canDeleteEmptyRound(roundId)) throw Object.assign(new Error('仅可删除没有候选包变更、附件或审批记录的最新草稿轮次'), { code: 'round_not_empty' });
+      const timestamp = now();
+      this.db.prepare('INSERT INTO round_lifecycle_events (event_id, release_id, round_id, round_no, event_type, change_note, actor_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id('REVT'), round.release_id, roundId, round.round_no, 'EMPTY_ROUND_DELETED', round.change_note, actorId, timestamp);
+      this.db.prepare('DELETE FROM round_candidates WHERE round_id = ?').run(roundId);
+      this.db.prepare('DELETE FROM release_rounds WHERE round_id = ?').run(roundId);
+      this.db.exec('COMMIT');
+      return { roundId, roundNo: round.round_no, deleted: true };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   listRoundCandidates(roundId) {
@@ -406,6 +489,7 @@ export class CandidateStore {
   }
 
   attachCandidateToRound(roundId, packageKey, candidateId, { source = 'OWNED', inheritedFromRoundId = null } = {}) {
+    this.assertRoundWritable(roundId);
     const round = this.getRound(roundId);
     const candidate = this.get(candidateId);
     const key = safeText(packageKey, 'packageKey', { max: 255 });
@@ -420,6 +504,7 @@ export class CandidateStore {
   }
 
   detachCandidateFromRound(roundId, candidateId) {
+    this.assertRoundWritable(roundId);
     const round = this.getRound(roundId);
     if (!round) throw new Error('round not found');
     const mapping = this.db.prepare(`SELECT package_key, candidate_id, source, inherited_from_round_id
@@ -481,6 +566,8 @@ export class CandidateStore {
   updateCandidate(candidateId, { sourceUrl, fileName, packageKey, version, architecture, targets, size, md5, sha256, expectedMd5, expectedSha256, metadata, sourceMetadata } = {}) {
     const candidate = this.get(candidateId);
     if (!candidate) throw new Error('candidate not found');
+    const linkedRoundIds = this.db.prepare('SELECT round_id FROM round_candidates WHERE candidate_id = ?').all(candidateId).map((row) => row.round_id);
+    if (linkedRoundIds.some((roundId) => !this.isRoundLatest(roundId))) throw Object.assign(new Error('该候选包已被历史轮次引用，不能原地编辑；请在最新轮次中替换候选包'), { code: 'round_locked' });
     if (['RECEIVING', 'ASSEMBLING', 'COMPLETED'].includes(candidate.status)) { const error = new Error('candidate cannot be edited in its current status'); error.code = 'candidate_not_editable'; throw error; }
     const parts = this.listParts(candidateId);
     const nextUrl = sourceUrl === undefined ? candidate.source_url : this.resolveSourceUrl(sourceUrl);
@@ -515,6 +602,8 @@ export class CandidateStore {
   deleteCandidate(candidateId) {
     const candidate = this.get(candidateId);
     if (!candidate) return null;
+    const linkedRoundIds = this.db.prepare('SELECT round_id FROM round_candidates WHERE candidate_id = ?').all(candidateId).map((row) => row.round_id);
+    if (linkedRoundIds.some((roundId) => !this.isRoundLatest(roundId))) throw Object.assign(new Error('该候选包已被历史轮次引用，不能永久删除；请仅从最新轮次移除'), { code: 'round_locked' });
     if (['RECEIVING', 'ASSEMBLING'].includes(candidate.status)) { const error = new Error('candidate is receiving and cannot be deleted'); error.code = 'candidate_busy'; throw error; }
     this.db.exec('BEGIN IMMEDIATE');
     try {
