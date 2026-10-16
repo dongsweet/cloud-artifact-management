@@ -535,7 +535,12 @@ function resetImportDialog() {
   $('#import-confirm-button').disabled = true;
   $('#import-summary').textContent = '';
   $('#import-mapping').classList.add('d-none');
-  $('#import-preview-rows').innerHTML = '<tr><td colspan="7" class="text-center text-body-secondary py-4">请选择 Excel 文件并读取预览</td></tr>';
+  resetImportPreviewTable('请选择 Excel 文件并读取预览');
+}
+
+function resetImportPreviewTable(message) {
+  $('#import-preview-head').innerHTML = '<tr><th><input id="import-select-all" type="checkbox" class="form-check-input" aria-label="选择全部有效行"></th><th>行</th><th>包标识（可修改）</th><th>文件名</th><th>架构</th><th>摘要</th><th>结果</th></tr>';
+  $('#import-preview-rows').innerHTML = `<tr><td colspan="7" class="text-center text-body-secondary py-4">${escapeHtml(message)}</td></tr>`;
 }
 
 async function readImportPreview() {
@@ -588,26 +593,47 @@ function renderImportMapping(preview) {
   $('#import-mapping').innerHTML = fields.map(([field, label, required]) => {
     const selected = preview.mapping[field];
     const options = `<option value="">${required ? '请选择列' : '不映射'}</option>${preview.columns.map((column) => `<option value="${column.index}" ${column.index === selected ? 'selected' : ''}>${escapeHtml(column.title)}</option>`).join('')}`;
-    return `<div class="col-6 col-md-4 col-lg-3"><label class="form-label small mb-1" for="import-map-${field}">${label}</label><select id="import-map-${field}" class="form-select form-select-sm" data-import-mapping="${field}">${options}</select></div>`;
+    const hint = field === 'packageKey' ? '<div class="form-text mt-1">未映射时按“部署包名称 &gt; 类型 &gt; 文件名”生成，并追加架构。</div>' : '';
+    return `<div class="col-6 col-md-4 col-lg-3"><label class="form-label small mb-1" for="import-map-${field}">${label}</label><select id="import-map-${field}" class="form-select form-select-sm" data-import-mapping="${field}">${options}</select>${hint}</div>`;
   }).join('');
+  document.querySelectorAll('[data-import-mapping]').forEach((select) => select.addEventListener('change', readImportPreview));
   $('#import-mapping').classList.remove('d-none');
+}
+
+const importPreviewFieldLabels = {
+  sourceUrl: '下载地址', fileName: '文件名', deploymentPackage: '部署包名称', architecture: '架构', digest: '摘要',
+  displaySize: '大小说明', type: '类型', applicableProducts: '所属产品', purpose: '用途', documentationUrl: '部署文档', notes: '备注', targets: '目标范围'
+};
+
+function importPreviewFieldValue(row, field) {
+  const metadata = row.candidate.sourceMetadata ?? {};
+  if (field === 'sourceUrl') return row.candidate.sourceUrl;
+  if (field === 'fileName') return row.candidate.fileName;
+  if (field === 'architecture') return row.candidate.architecture;
+  if (field === 'digest') return row.candidate.md5 ? `MD5 ${row.candidate.md5}` : row.candidate.sha256 ? `SHA-256 ${row.candidate.sha256}` : '-';
+  if (field === 'targets') return row.candidate.targets?.join('、');
+  if (field === 'applicableProducts') return metadata.applicableProducts?.join('、');
+  return metadata[field];
 }
 
 function renderImportPreview(preview) {
   const valid = preview.rows.filter((row) => row.errors.length === 0);
   const invalid = preview.rows.length - valid.length;
+  const mappedFields = Object.keys(preview.mapping).filter((field) => field !== 'packageKey' && importPreviewFieldLabels[field]);
+  const emptyColspan = 4 + mappedFields.length;
   const notice = preview.notice ? `；<span class="text-warning">${escapeHtml(preview.notice)}</span>` : '';
   const counts = preview.importable === false
     ? `识别 ${preview.rows.length} 行，仅供查看`
     : `识别 ${preview.rows.length} 行，其中 <span class="text-success">${valid.length} 行可导入</span>，<span class="text-danger">${invalid} 行需处理</span>`;
   $('#import-summary').innerHTML = `工作表：<strong>${escapeHtml(preview.sheet)}</strong>；${counts}${preview.truncated ? '；超过 1000 行的内容已截断' : ''}${notice}`;
+  $('#import-preview-head').innerHTML = `<tr><th><input id="import-select-all" type="checkbox" class="form-check-input" aria-label="选择全部有效行"></th><th>行</th><th>包标识（可修改）</th>${mappedFields.map((field) => `<th>${importPreviewFieldLabels[field]}</th>`).join('')}<th>结果</th></tr>`;
   $('#import-preview-rows').innerHTML = preview.rows.length ? preview.rows.map((row, index) => {
     const ok = row.errors.length === 0;
     const result = ok ? [`<span class="text-success">可导入</span>`, ...row.warnings.map((warning) => `<div class="text-warning small">${escapeHtml(warning)}</div>`)].join('') : `<span class="text-danger">${escapeHtml(row.errors.join('；'))}</span>`;
-    const digest = row.candidate.md5 ? `MD5 ${row.candidate.md5}` : row.candidate.sha256 ? `SHA-256 ${row.candidate.sha256}` : '-';
     const selectable = preview.importable !== false && ok;
-    return `<tr class="${ok ? '' : 'table-danger'}"><td>${selectable ? `<input type="checkbox" class="form-check-input import-row-select" data-import-index="${index}" checked>` : ''}</td><td>${row.rowNumber}</td><td><input class="form-control form-control-sm import-package-key" data-import-index="${index}" value="${escapeHtml(row.candidate.packageKey)}" ${selectable ? '' : 'disabled'}></td><td class="text-break">${escapeHtml(row.candidate.fileName)}</td><td>${escapeHtml(row.candidate.architecture ?? '-')}</td><td class="font-monospace small text-break">${escapeHtml(digest)}</td><td>${preview.importable === false ? `<span class="text-warning">${escapeHtml(preview.notice)}</span>` : result}</td></tr>`;
-  }).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">没有可识别的数据行</td></tr>';
+    const mappedCells = mappedFields.map((field) => `<td class="text-break ${field === 'digest' ? 'font-monospace small' : ''}">${escapeHtml(importPreviewFieldValue(row, field) || '-')}</td>`).join('');
+    return `<tr class="${ok ? '' : 'table-danger'}"><td>${selectable ? `<input type="checkbox" class="form-check-input import-row-select" data-import-index="${index}" checked>` : ''}</td><td>${row.rowNumber}</td><td><input class="form-control form-control-sm import-package-key" data-import-index="${index}" value="${escapeHtml(row.candidate.packageKey)}" ${selectable ? '' : 'disabled'}></td>${mappedCells}<td>${preview.importable === false ? `<span class="text-warning">${escapeHtml(preview.notice)}</span>` : result}</td></tr>`;
+  }).join('') : `<tr><td colspan="${emptyColspan}" class="text-center text-body-secondary py-4">没有可识别的数据行</td></tr>`;
   $('#import-confirm-button').disabled = preview.importable === false || valid.length === 0;
   $('#import-select-all').checked = preview.importable !== false && valid.length > 0;
   document.querySelectorAll('.import-package-key').forEach((input) => input.addEventListener('input', () => { const row = state.importPreview.rows[Number(input.dataset.importIndex)]; if (row) row.candidate.packageKey = input.value; }));
@@ -830,12 +856,14 @@ $('#import-file').addEventListener('change', (event) => {
   $('#import-summary').textContent = '';
   $('#import-mapping').classList.add('d-none');
   $('#import-mapping').innerHTML = '';
-  $('#import-preview-rows').innerHTML = '<tr><td colspan="7" class="text-center text-body-secondary py-4">请读取预览</td></tr>';
+  resetImportPreviewTable('请读取预览');
 });
 $('#import-preview-button').addEventListener('click', readImportPreview);
 $('#import-sheet').addEventListener('change', readImportPreview);
 $('#import-confirm-button').addEventListener('click', confirmImport);
-$('#import-select-all').addEventListener('change', (event) => document.querySelectorAll('.import-row-select').forEach((checkbox) => { checkbox.checked = event.target.checked; }));
+$('#import-preview-head').addEventListener('change', (event) => {
+  if (event.target.id === 'import-select-all') document.querySelectorAll('.import-row-select').forEach((checkbox) => { checkbox.checked = event.target.checked; });
+});
 $('#import-modal').addEventListener('hidden.bs.modal', resetImportDialog);
 
 $('#package-form').addEventListener('submit', async (event) => {
