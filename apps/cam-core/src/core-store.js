@@ -256,7 +256,7 @@ export class CoreStore {
     return this.db.prepare('SELECT file_path FROM core_artifacts WHERE sha256 = ?').get(normalized)?.file_path ?? null;
   }
   listTransferParts(transferTaskId, sha256) {
-    return this.db.prepare('SELECT part_index AS index, chunk_size AS chunkSize, chunk_count AS chunkCount, byte_offset AS offset, size_bytes AS size, part_sha256 AS sha256 FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ? ORDER BY part_index')
+    return this.db.prepare('SELECT part_index AS partIndex, chunk_size AS chunkSize, chunk_count AS chunkCount, byte_offset AS offset, size_bytes AS size, part_sha256 AS sha256 FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ? ORDER BY part_index')
       .all(transferTaskId, String(sha256).toLowerCase());
   }
   async saveTransferPart(transferTaskId, sha256, part) {

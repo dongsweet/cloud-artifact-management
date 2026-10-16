@@ -279,6 +279,9 @@ test('Core stores approved files by SHA-256 and lets multiple package entries sh
     assert.equal(registeredManifest.statusCode, 200, registeredManifest.body);
     assert.equal(registeredManifest.json().item.fileCount, 2);
     assert.equal(app.coreStore.get('FREEZE-FILES').artifacts.length, 2, 'legacy request gets release artifact references when Edge synchronizes its manifest');
+    const fetchedManifest = await app.inject({ method: 'GET', url: `/api/v1/gate/transfers/${transferTaskId}/manifest`, headers });
+    assert.equal(fetchedManifest.statusCode, 200, fetchedManifest.body);
+    assert.deepEqual(fetchedManifest.json().items.map((item) => item.receivedParts), [[], []]);
     const upload = await app.inject({ method: 'PUT', url: `/api/v1/gate/transfers/${transferTaskId}/artifacts/${sha256}`, headers: { ...headers, 'content-type': 'application/octet-stream' }, payload: bytes });
     assert.equal(upload.statusCode, 200, upload.body);
     assert.deepEqual(upload.json().packages, ['os-iso', 'base-image']);
