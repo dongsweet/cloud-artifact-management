@@ -1,5 +1,6 @@
 import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js?v=20261011-grant-round-scope';
 const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, currentRoundCandidates: [], currentRoundQueue: [], batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null };
+let importPreviewRequestId = 0;
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
 
@@ -524,6 +525,7 @@ function openCandidateEditor() {
 }
 
 function resetImportDialog() {
+  importPreviewRequestId += 1;
   state.importFile = null;
   state.importPreview = null;
   $('#import-file').value = '';
@@ -538,9 +540,15 @@ function resetImportDialog() {
 
 async function readImportPreview() {
   if (!state.importFile || !state.roundId) return;
+  const requestId = ++importPreviewRequestId;
   const button = $('#import-preview-button');
   button.disabled = true;
   button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>读取中';
+  state.importPreview = null;
+  $('#import-confirm-button').disabled = true;
+  $('#import-summary').textContent = '正在读取所选工作表…';
+  $('#import-mapping').classList.add('d-none');
+  $('#import-preview-rows').innerHTML = '<tr><td colspan="7" class="text-center text-body-secondary py-4">正在读取工作表预览…</td></tr>';
   try {
     const params = new URLSearchParams();
     if ($('#import-sheet').value) params.set('sheet', $('#import-sheet').value);
@@ -548,6 +556,7 @@ async function readImportPreview() {
     document.querySelectorAll('[data-import-mapping]').forEach((select) => { columnMapping[select.dataset.importMapping] = select.value === '' ? null : Number(select.value); });
     if (Object.keys(columnMapping).length) params.set('mapping', JSON.stringify(columnMapping));
     const preview = await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/import-preview${params.toString() ? `?${params}` : ''}`, { method: 'POST', headers: { 'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, body: await state.importFile.arrayBuffer() });
+    if (requestId !== importPreviewRequestId) return;
     state.importPreview = preview;
     const currentSheet = $('#import-sheet').value;
     $('#import-sheet').innerHTML = preview.sheets.map((sheet) => `<option value="${escapeHtml(sheet.name)}">${escapeHtml(sheet.name)}（表头第 ${sheet.headerRow} 行，识别 ${sheet.recognizedColumns} 列）</option>`).join('');
@@ -556,10 +565,14 @@ async function readImportPreview() {
     renderImportMapping(preview);
     renderImportPreview(preview);
   } catch (error) {
-    showAlert(error.message, 'danger');
+    if (requestId !== importPreviewRequestId) return;
+    $('#import-summary').innerHTML = `<span class="text-danger">${escapeHtml(error.message)}</span>`;
+    $('#import-preview-rows').innerHTML = '<tr><td colspan="7" class="text-center text-body-secondary py-4">所选工作表无法生成候选包预览，请检查表头或切换其他工作表</td></tr>';
   } finally {
-    button.disabled = !state.importFile;
-    button.innerHTML = '读取预览';
+    if (requestId === importPreviewRequestId) {
+      button.disabled = !state.importFile;
+      button.innerHTML = '读取预览';
+    }
   }
 }
 
@@ -581,20 +594,26 @@ function renderImportMapping(preview) {
 function renderImportPreview(preview) {
   const valid = preview.rows.filter((row) => row.errors.length === 0);
   const invalid = preview.rows.length - valid.length;
-  $('#import-summary').innerHTML = `工作表：<strong>${escapeHtml(preview.sheet)}</strong>；识别 ${preview.rows.length} 行，其中 <span class="text-success">${valid.length} 行可导入</span>，<span class="text-danger">${invalid} 行需处理</span>${preview.truncated ? '；超过 1000 行的内容已截断' : ''}`;
+  const notice = preview.notice ? `；<span class="text-warning">${escapeHtml(preview.notice)}</span>` : '';
+  const counts = preview.importable === false
+    ? `识别 ${preview.rows.length} 行，仅供查看`
+    : `识别 ${preview.rows.length} 行，其中 <span class="text-success">${valid.length} 行可导入</span>，<span class="text-danger">${invalid} 行需处理</span>`;
+  $('#import-summary').innerHTML = `工作表：<strong>${escapeHtml(preview.sheet)}</strong>；${counts}${preview.truncated ? '；超过 1000 行的内容已截断' : ''}${notice}`;
   $('#import-preview-rows').innerHTML = preview.rows.length ? preview.rows.map((row, index) => {
     const ok = row.errors.length === 0;
     const result = ok ? [`<span class="text-success">可导入</span>`, ...row.warnings.map((warning) => `<div class="text-warning small">${escapeHtml(warning)}</div>`)].join('') : `<span class="text-danger">${escapeHtml(row.errors.join('；'))}</span>`;
     const digest = row.candidate.md5 ? `MD5 ${row.candidate.md5}` : row.candidate.sha256 ? `SHA-256 ${row.candidate.sha256}` : '-';
-    return `<tr class="${ok ? '' : 'table-danger'}"><td>${ok ? `<input type="checkbox" class="form-check-input import-row-select" data-import-index="${index}" checked>` : ''}</td><td>${row.rowNumber}</td><td><input class="form-control form-control-sm import-package-key" data-import-index="${index}" value="${escapeHtml(row.candidate.packageKey)}" ${ok ? '' : 'disabled'}></td><td class="text-break">${escapeHtml(row.candidate.fileName)}</td><td>${escapeHtml(row.candidate.architecture ?? '-')}</td><td class="font-monospace small text-break">${escapeHtml(digest)}</td><td>${result}</td></tr>`;
+    const selectable = preview.importable !== false && ok;
+    return `<tr class="${ok ? '' : 'table-danger'}"><td>${selectable ? `<input type="checkbox" class="form-check-input import-row-select" data-import-index="${index}" checked>` : ''}</td><td>${row.rowNumber}</td><td><input class="form-control form-control-sm import-package-key" data-import-index="${index}" value="${escapeHtml(row.candidate.packageKey)}" ${selectable ? '' : 'disabled'}></td><td class="text-break">${escapeHtml(row.candidate.fileName)}</td><td>${escapeHtml(row.candidate.architecture ?? '-')}</td><td class="font-monospace small text-break">${escapeHtml(digest)}</td><td>${preview.importable === false ? `<span class="text-warning">${escapeHtml(preview.notice)}</span>` : result}</td></tr>`;
   }).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">没有可识别的数据行</td></tr>';
-  $('#import-confirm-button').disabled = valid.length === 0;
-  $('#import-select-all').checked = valid.length > 0;
+  $('#import-confirm-button').disabled = preview.importable === false || valid.length === 0;
+  $('#import-select-all').checked = preview.importable !== false && valid.length > 0;
   document.querySelectorAll('.import-package-key').forEach((input) => input.addEventListener('input', () => { const row = state.importPreview.rows[Number(input.dataset.importIndex)]; if (row) row.candidate.packageKey = input.value; }));
 }
 
 async function confirmImport() {
   if (!state.importPreview || !state.roundId) return;
+  if (state.importPreview.importable === false) { showAlert(state.importPreview.notice || '当前工作表不能导入', 'warning'); return; }
   const selected = [...document.querySelectorAll('.import-row-select:checked')].map((input) => {
     const row = state.importPreview.rows[Number(input.dataset.importIndex)];
     return { ...row.candidate, importRowNumber: row.rowNumber };

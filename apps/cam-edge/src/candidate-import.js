@@ -231,15 +231,18 @@ export async function previewCandidateWorkbook(buffer, { sheetName = null, mappi
     ? analyses.find((item) => item.sheet === sheetName)
     : analyses.find((item) => item.sheet === '完整部署包') ?? analyses.reduce((best, item) => !best || (item.detected?.score ?? 0) > (best.detected?.score ?? 0) ? item : best, null);
   if (!selected) throw new Error('指定的工作表不存在');
-  if (/分卷|split/i.test(selected.sheet)) throw new Error('分卷工作表中的地址指向单个分卷，不能作为完整候选包导入；请改选完整部署包工作表');
   const detected = selected.detected;
   if (!detected || detected.score < 3) throw new Error('无法识别表头，请选择包含下载地址和文件名列的工作表');
+  const importable = !/分卷|split/i.test(selected.sheet);
+  const notice = importable ? null : '该工作表列出的是分卷文件，当前不能作为完整候选包导入';
   const mapping = normalizeMapping(detected.headers, detected.mapping, requestedMapping);
   const rows = makePreviewRows(selected.data, detected.headerRow, mapping, store, roundId, selected.sheet);
   const columnOptions = detected.headers.map((title, index) => ({ index, title: title || `第 ${index + 1} 列` }));
   return {
     sheets: analyses.map(({ sheet, detected: info }) => ({ name: sheet, headerRow: info ? info.headerRow + 1 : null, recognizedColumns: info ? Object.keys(info.mapping).length : 0 })),
     sheet: selected.sheet,
+    importable,
+    notice,
     headerRow: detected.headerRow + 1,
     columns: columnOptions,
     mapping,
