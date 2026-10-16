@@ -25,7 +25,7 @@
 .file-name { max-width: 16rem; }
 .compact-progress { min-width: 5.5rem; height: .45rem; }
 .font-monospace { overflow-wrap: anywhere; }
-#import-preview-scroll { max-height: 52vh; overflow: auto; }
+#import-preview-scroll { max-height: 30vh; overflow: auto; margin-bottom: .5rem; }
 #import-preview-table { width: max-content; min-width: 100%; table-layout: fixed; }
 #import-preview-table th,
 #import-preview-table td { vertical-align: middle; }
