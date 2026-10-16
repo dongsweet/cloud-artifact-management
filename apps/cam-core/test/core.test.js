@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -248,5 +249,43 @@ test('Core receives and verifies the PDF before uploading it and creating the cl
     assert.equal(downloadedText.statusCode, 200);
     assert.match(downloadedText.headers['content-type'], /^text\/markdown/u);
     assert.equal(downloadedText.body, textReport.toString());
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Core stores approved files by SHA-256 and lets multiple package entries share one object', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-artifacts-'));
+  const bytes = Buffer.from('shared operating system image');
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const manifest = { schemaVersion: 1, items: [
+    { packageKey: 'os-iso', candidateId: 'CAND-1', fileName: 'linux.iso', sizeBytes: bytes.length, actualSha256: sha256, source: 'OWNED' },
+    { packageKey: 'base-image', candidateId: 'CAND-2', fileName: 'base.iso', sizeBytes: bytes.length, actualSha256: sha256, source: 'INHERITED' }
+  ] };
+  const manifestSha256 = createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
+  const cloud = {
+    async createApproval() { return { approvalId: 'APR-FILES', status: 'PENDING' }; },
+    async getApproval(approvalId) { return { approvalId, status: 'APPROVED', transferTaskId: 'TR-FILES', manifestSha256 }; }
+  };
+  const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false });
+  const headers = { 'x-cam-gate-secret': 'gate-test' };
+  const request = { ...envelope, requestId: 'FREEZE-FILES', freezeId: 'FREEZE-FILES', manifestSha256, manifest };
+  try {
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: request })).statusCode, 202);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-FILES/sync', payload: {} });
+    const authorize = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-FILES/transfer-authorize', payload: { manifestSha256 } });
+    assert.equal(authorize.statusCode, 200, authorize.body);
+    const transferTaskId = authorize.json().item.transferTaskId;
+    const upload = await app.inject({ method: 'PUT', url: `/api/v1/gate/transfers/${transferTaskId}/artifacts/${sha256}`, headers: { ...headers, 'content-type': 'application/octet-stream' }, payload: bytes });
+    assert.equal(upload.statusCode, 200, upload.body);
+    assert.deepEqual(upload.json().packages, ['os-iso', 'base-image']);
+    const prematureReceipt = await app.inject({ method: 'POST', url: '/api/v1/gate/receipts', headers, payload: { requestId: 'FREEZE-FILES', transferTaskId, manifestSha256 } });
+    assert.equal(prematureReceipt.statusCode, 200, prematureReceipt.body);
+    const artifacts = (await app.inject({ method: 'GET', url: '/api/v1/artifacts' })).json().items;
+    assert.equal(artifacts.length, 1);
+    assert.equal(artifacts[0].files.length, 2);
+    assert.ok(artifacts[0].files.every((file) => file.stored && file.sha256 === sha256));
+    const download = await app.inject({ method: 'GET', url: `/api/v1/artifacts/${sha256}/content` });
+    assert.equal(download.statusCode, 200);
+    assert.deepEqual(download.rawPayload, bytes);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });

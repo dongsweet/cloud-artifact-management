@@ -55,7 +55,7 @@
 
 
 .cam-detail-modal {
-  width: min(880px, calc(100vw - 2rem));
+  width: min(1040px, calc(100vw - 2rem));
   max-width: none;
   max-height: min(88vh, 900px);
   padding: 0;
@@ -68,7 +68,28 @@
 .cam-detail-modal::backdrop { background: rgb(0 0 0 / 55%); }
 .cam-detail-dialog { max-height: inherit; overflow-y: auto; }
 .cam-detail-modal .card-header { position: sticky; top: 0; z-index: 1; background: var(--bs-body-bg); }
+.cam-detail-title-wrap { min-width: 0; }
+.cam-detail-title-wrap .card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cam-detail-modal .card-body { padding: 1.25rem; }
+.cam-detail-section + .cam-detail-section { margin-top: 1.25rem; }
+.cam-detail-section h4 { color: var(--bs-secondary-color); font-size: .9rem; font-weight: 600; margin: 0 0 .65rem; padding-bottom: .5rem; border-bottom: 1px solid var(--bs-border-color); }
+.cam-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.cam-detail-field { min-width: 0; padding: .65rem .75rem; border: 1px solid var(--bs-border-color-translucent); border-radius: .4rem; background: var(--bs-tertiary-bg); }
+.cam-detail-field-wide { grid-column: 1 / -1; }
+.cam-detail-label { color: var(--bs-secondary-color); font-size: .78rem; margin-bottom: .22rem; }
+.cam-detail-value { min-width: 0; overflow-wrap: anywhere; word-break: break-word; line-height: 1.45; }
+.cam-break-anywhere { overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
+.cam-retry-panel { padding: .1rem 0; }
+.cam-retry-panel-muted { color: var(--bs-secondary-color); }
+.cam-artifact-list { display: grid; gap: .55rem; }
+.cam-artifact-row { display: flex; align-items: flex-start; gap: .65rem; min-width: 0; padding: .7rem .8rem; border: 1px solid var(--bs-border-color-translucent); border-radius: .4rem; background: var(--bs-tertiary-bg); }
+.cam-artifact-row > i { margin-top: .2rem; }
+.cam-artifact-main { min-width: 0; flex: 1 1 auto; }
+.cam-artifact-row > .badge { flex: 0 0 auto; }
 @media (max-width: 576px) {
   .cam-detail-modal { width: calc(100vw - 1rem); max-height: 94vh; }
   .cam-detail-modal .card-body { padding: 1rem; }
+  .cam-detail-grid { grid-template-columns: 1fr; }
+  .cam-detail-field-wide { grid-column: auto; }
+  .cam-detail-title-wrap .card-title { max-width: 62vw; }
 }

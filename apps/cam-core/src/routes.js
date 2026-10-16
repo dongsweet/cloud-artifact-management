@@ -1,5 +1,8 @@
-import { timingSafeEqual } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { mkdir, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { once } from 'node:events';
 import { attachmentContentType } from '../../../libs/cam-server/src/attachment-types.js';
 import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
 import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/client.js';
@@ -176,7 +179,7 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
   queueMicrotask(() => { void pumpWorkers(); });
   app.addHook('onClose', async () => clearInterval(cloudTimer));
   app.addHook('onRequest', async (request, reply) => {
-    const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts');
+    const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/');
     if (!exchangePath) return;
     if (!await gateAuthorized(request, [gateSecret, previousGateSecret], keyring)) return error(reply, 401, 'gate_auth_required', '受控交换身份校验失败');
   });
@@ -273,6 +276,60 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
 
   app.get('/api/v1/artifacts', async (_request, reply) => reply.send({ items: store.listArtifacts() }));
 
+  app.post('/api/v1/gate/transfers/:transferTaskId/manifest', { bodyLimit: 8 * 1024 * 1024 }, async (request, reply) => {
+    try { return reply.send({ item: store.setTransferManifest(request.params.transferTaskId, request.body?.manifest ?? request.body) }); }
+    catch (err) { return error(reply, err.code === 'approval_required' ? 409 : 400, err.code ?? 'artifact_manifest_invalid', err.message); }
+  });
+  app.get('/api/v1/gate/transfers/:transferTaskId/manifest', async (request, reply) => {
+    try {
+      const transfer = store.expectedTransferArtifacts(request.params.transferTaskId);
+      return reply.send({ transferTaskId: request.params.transferTaskId, requestId: transfer.requestId, manifestSha256: transfer.manifestSha256, items: transfer.items.map((item) => ({ ...item, stored: Boolean(store.artifactPath(String(item.actualSha256 ?? '').toLowerCase())) })) });
+    } catch (err) { return error(reply, err.code === 'approval_required' ? 409 : 400, err.code ?? 'artifact_manifest_invalid', err.message); }
+  });
+
+  app.put('/api/v1/gate/transfers/:transferTaskId/artifacts/:sha256', async (request, reply) => {
+    const sha256 = String(request.params.sha256 ?? '').toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(sha256)) return error(reply, 400, 'artifact_digest_invalid', '制品 SHA-256 格式无效');
+    let temporary = null;
+    let output = null;
+    try {
+      const transfer = store.expectedTransferArtifacts(request.params.transferTaskId);
+      const entries = transfer.items.filter((item) => String(item.actualSha256).toLowerCase() === sha256);
+      if (!entries.length) return error(reply, 409, 'artifact_not_approved', '该摘要不属于审批通过的制品清单');
+      const expectedSize = Number(entries[0].sizeBytes);
+      if (!Number.isSafeInteger(expectedSize) || entries.some((item) => Number(item.sizeBytes) !== expectedSize)) return error(reply, 409, 'artifact_manifest_invalid', '审批清单中的同一摘要大小不一致');
+      temporary = join(store.dataDir, 'tmp', `artifact-${randomUUID()}.part`);
+      await mkdir(dirname(temporary), { recursive: true });
+      output = createWriteStream(temporary, { flags: 'wx', mode: 0o600 });
+      const hash = createHash('sha256');
+      let size = 0;
+      for await (const chunk of request.raw) {
+        const bytes = Buffer.from(chunk);
+        size += bytes.length;
+        if (size > expectedSize) throw Object.assign(new Error('制品内容超过审批清单声明大小'), { code: 'artifact_size_mismatch' });
+        hash.update(bytes);
+        if (!output.write(bytes)) await once(output, 'drain');
+      }
+      output.end();
+      await once(output, 'close');
+      if (size !== expectedSize) throw Object.assign(new Error('制品内容大小与审批清单不一致'), { code: 'artifact_size_mismatch' });
+      const received = await store.receiveArtifact(request.params.transferTaskId, sha256, temporary, size, hash.digest('hex'));
+      temporary = null;
+      return reply.send({ transferTaskId: request.params.transferTaskId, ...received });
+    } catch (err) {
+      output?.destroy();
+      if (temporary) await rm(temporary, { force: true });
+      const status = ['approval_required', 'artifact_not_approved', 'artifact_manifest_missing', 'artifacts_incomplete'].includes(err.code) ? 409 : 400;
+      return error(reply, status, err.code ?? 'artifact_receive_failed', err.message);
+    }
+  });
+
+  app.get('/api/v1/artifacts/:sha256/content', async (request, reply) => {
+    const path = store.artifactPath(String(request.params.sha256 ?? '').toLowerCase());
+    if (!path) return error(reply, 404, 'artifact_not_found', '正式制品文件不存在');
+    return reply.type('application/octet-stream').header('Content-Disposition', `attachment; filename="${request.params.sha256}"`).send(createReadStream(path));
+  });
+
   app.get('/api/v1/approval-requests/:requestId', async (request, reply) => {
     const item = store.get(request.params.requestId);
     return item ? reply.send({ item }) : error(reply, 404, 'request_not_found', 'approval request not found');
@@ -313,7 +370,12 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
   });
 
   app.post('/api/v1/gate/receipts', { bodyLimit: 8192 }, async (request, reply) => {
-    try { return reply.send({ item: store.receiveReceipt(request.body ?? {}) }); }
+    try {
+      const body = request.body ?? {};
+      const transfer = store.expectedTransferArtifacts(body.transferTaskId);
+      if (transfer.items.length) store.assertTransferComplete(body.transferTaskId);
+      return reply.send({ item: store.receiveReceipt(body) });
+    }
     catch (err) { return error(reply, ['approval_required', 'manifest_mismatch', 'transfer_task_mismatch'].includes(err.code) ? 409 : err.code === 'request_not_found' ? 404 : 400, err.code ?? 'receipt_rejected', err.message); }
   });
 

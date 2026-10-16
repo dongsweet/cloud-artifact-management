@@ -330,7 +330,7 @@ NFS、跨主机共享目录或网闸共享目录。大文件绝不写入 SQLite 
 | `distribution_tasks` | 任务 ID、`release_id`、中心、安全域、维护窗口、结果 | 内网到云中心的分发编排 |
 | `audit_events` | 事件 ID、操作者、动作、对象、前后摘要、时间、来源 | 不可抵赖的操作审计 |
 
-ID 使用带有区域和时间语义的不可预测字符串或 UUID。文件名不是主键，版本号不是唯一键；制品唯一性由 `artifact_id` 和完整 SHA-256 保证。
+ID 使用带有区域和时间语义的不可预测字符串或 UUID。文件名不是主键，版本号不是唯一键；正式文件对象以完整 SHA-256 为内容身份，发布基线中的包条目是指向该对象的不可变逻辑引用。
 
 ### 7.3 文件目录约束
 
@@ -343,13 +343,19 @@ ID 使用带有区域和时间语义的不可预测字符串或 UUID。文件名
 ├─ verification/
 │  └─ <candidateId>/
 ├─ releases/
-│  └─ <releaseId>/payload/
+│  └─ <releaseId>/                 # 发布/基线元数据，不存放对象副本
+├─ artifacts/
+│  └─ sha256/<前2位>/<再2位>/<完整SHA-256>  # 内容寻址的正式文件对象
 ├─ transfers/
 │  └─ <transferTaskId>/parts/
 └─ tmp/
 ```
 
-临时目录不能作为正式制品引用。正式文件写入临时路径并完成摘要校验后，使用同一文件系统内的原子改名登记。发布后禁止覆盖原路径；替代版本使用新的 `releaseId` 和目录。
+临时目录不能作为正式制品引用。正式文件先写入临时路径并完成大小与 SHA-256 校验，再原子改名到内容寻址路径。`core_artifacts` 保存对象摘要、大小和路径；`core_release_artifacts` 将每个获批发布基线、包标识、文件名和来源关系关联到对象摘要。数据库保存关系，文件系统保存字节。
+
+对象路径由 SHA-256 派生，文件名、软件版本、候选轮次和 `packageKey` 均不参与物理对象身份判断。同一 ISO 在多个软件版本、修订版或不同包条目中复用时，只保留一份字节对象，每个不可变清单仍保留自己的文件名、包键、目标、候选来源和继承来源。只有实际 SHA-256 相同才能复用；同名但摘要不同的文件始终是两个对象。Edge 的轮次继承继续复用候选映射；Core 的内容寻址去重负责跨版本和跨发布基线复用。
+
+对象不因单个版本被替代或一条基线被隐藏而立即删除。首期不做自动垃圾回收；后续清理必须在事务中确认没有正式基线、传输任务、分发任务或审计记录引用对象，并先写审计事件。备份必须成套覆盖 `core.sqlite`、正式对象目录和必要的暂存任务状态；恢复后核对数据库对象索引与文件摘要。
 
 ## 8. 清单、签名和制品包
 
@@ -430,7 +436,10 @@ transfer-bundle/
 3. 逐块校验摘要，拒绝序号、偏移、大小不匹配的分块；
 4. 合并为清单中指定的原始文件名；
 5. 校验合并文件大小和完整 SHA-256；
-6. 通过后登记正式制品并回传内网接收回执。
+6. 将校验通过的文件原子放入 SHA-256 内容寻址库；同摘要对象已存在时先校验现存文件后复用；
+7. 建立发布基线到文件对象的逻辑引用，确认批准清单中的全部文件均可从正式库读取后才回传接收回执。
+
+对象上传接口必须绑定已核准的 `transferTaskId`，且文件 SHA-256 必须在云管批准的清单内。重试同一对象应幂等；同摘要但大小不匹配、传输任务与清单不匹配或文件校验失败时拒绝登记。边界传输按块续传可以复用现有 `transfer_parts` 模式；对象完成前只落在任务临时目录，完成后同文件系统原子改名。
 
 网闸本身是否支持续传不改变 CAM 的最终完整性判断。网闸重试只改变传输状态，不改变 `artifactId` 或正式制品内容。
 
@@ -494,6 +503,8 @@ transfer-bundle/
 | `cam-core` | `GET /api/v1/approval-requests/:requestId` | 查询审批联动状态 |
 | `cam-core` | `POST /api/v1/approval-requests/:requestId/sync` | 由内网适配器向云管查询并更新审批状态 |
 | `cam-core` | `POST /api/v1/approval-requests/:requestId/transfer-authorize` | 核验云管批准结果并生成内网传输任务 |
+| `cam-core` | `GET /api/v1/gate/transfers/:transferTaskId/manifest` | 在网闸身份校验下返回已批准文件清单及对象是否已存在 |
+| `cam-core` | `PUT /api/v1/gate/transfers/:transferTaskId/artifacts/:sha256` | 接收单个获批文件，按摘要校验并写入内容寻址正式库 |
 | `cam-core` | `POST /api/v1/gate/receipts` | 验证网闸送达的传输任务和清单摘要并登记接收回执 |
 | `cam-core` | `POST /api/v1/approval-requests/:requestId/close` | 向云管确认关单并记录结果 |
 | `cam-core` | `GET /api/v1/distribution-tasks/:id/manifest` | 向云中心提供清单和授权 |
@@ -715,9 +726,9 @@ CAM 的账号体系按“人员身份、服务身份、下载授权”三类对�
 
 `cam-edge` 的 `CAM_SOURCE_ALLOWLIST` 按 URL 主机名或 IP 限制研发文件来源，端口不参与匹配。例如 `http://172.22.5.66:9090/path/file.zip` 应允许 `172.22.5.66`。`cam-source-route.service` 直接读取同一项目 `.env` 中的 allowlist，为每个主机名解析出的 IPv4 地址安装精确 `/32` 路由；不再维护独立的路由目标列表。端口由 URL 和网络访问控制策略决定，不写入路由。allowlist 变化后重启该服务即可同步新增或删除的路由。
 
-候选数据模型采用四级关系：`products` 保存软件产品；`releases` 保存产品发布版本；`release_rounds` 保存同一发布版本的候选收集轮次；`candidates` 保存单个候选包快照和断点续传状态。`round_candidates` 是轮次到候选包的清单映射，记录 `OWNED` 或 `INHERITED` 以及继承来源轮次。
+候选数据模型采用四级关系：`products` 保存软件产品；`releases` 保存产品发布版本；`release_rounds` 保存同一发布版本的候选收集轮次；`candidates` 保存单个候选包快照和断点续传状态。`round_candidates` 是轮次到候选包的清单映射，记录 `OWNED` 或 `INHERITED` 以及继承来源轮次。`releases` 另外保存研发版本号 `version`、内部修订号 `revision`、上一内部版本 `base_release_id` 和发布状态。
 
-创建第二轮时，服务在事务中复制基线轮次的 `round_candidates` 映射，不复制大文件和分块目录。更新某个包时创建新的候选记录并按 `package_key` 覆盖第二轮映射，其他包继续引用第一轮已完成的候选。轮次和候选快照不允许通过更新原记录的方式覆盖，后续审批、清单签名和跨网传输均绑定 `round_id`。
+创建第二轮时，服务在事务中复制基线轮次的 `round_candidates` 映射，不复制大文件和分块目录。更新某个包时创建新的候选记录并按 `package_key` 覆盖第二轮映射，其他包继续引用第一轮已完成的候选。审批通过后，当前 `release` 进入 `SEALED` 状态，不能再创建轮次、导入或修改候选包。研发随后仍使用同一版本号发布新包时，系统自动分配内部修订号（首版为 `revision=0`，后续为 `revision=1`、`revision=2`，页面显示为 `8.0.6.2`、`8.0.6.2-r1`、`8.0.6.2-r2`），并通过 `base_release_id` 关联上一已固化版本；新修订版第一轮继承上一版固化轮次的映射，只有变更包创建新的候选记录。轮次和候选快照不允许通过更新原记录的方式覆盖，后续审批、清单签名和跨网传输均绑定新的 `releaseId` 与 `roundId`。
 
 外部交换区首期接口包括：`POST /api/v1/products`、`POST /api/v1/products/:productId/releases`、`POST /api/v1/releases/:releaseId/rounds`、`GET /api/v1/rounds/:roundId/candidates`、`POST /api/v1/rounds/:roundId/candidates` 和 `DELETE /api/v1/rounds/:roundId/candidates/:candidateId`。轮次删除接口只解除当前轮次的候选包映射，保留候选记录、已下载分块和其他轮次的引用；需要彻底清理候选记录时使用候选包删除接口。候选包创建时 URL 必填；文件名可选并从 URL 路径推导；包版本可选并继承发布版本；文件大小可选，缺省时首次接收优先通过 `HEAD` 的 `Content-Length` 确定，不支持 `HEAD` 时通过单字节 Range 响应取得总大小；MD5/SHA-256 作为期望摘要保存，系统仍计算实际 SHA-256，并在固化时比较。
 
@@ -725,7 +736,7 @@ CAM 的账号体系按“人员身份、服务身份、下载授权”三类对�
 
 首期在外部交换区的 `cam-edge` 实现按候选轮次提交验证报告和固化清单。审批申请经网闸映射控制通道送至 `cam-core` 后，Edge 只记录是否已进入内网；它不查询或展示云管工单号、云管状态及 Core/云管错误。`cam-core` 在内网自动创建云管工单并自行轮询审批结果；通过持久 outbox 将“通过/驳回”结果主动回告 Edge，失败时按退避策略重试。验证人员先创建固化草稿，填写报告标题、结论和验证环境，再上传不超过 20 MiB 的 DOCX、PDF、WPS、TXT 或 MD 报告。只有轮次非空且所有候选包状态为 `COMPLETED`、具有实测 SHA-256 才可创建草稿。系统展开该轮的继承映射并生成不可变 JSON 清单快照，连同清单 SHA-256、报告 SHA-256、提交账号和时间保存。
 
-验证人员提交草稿后，状态变为 `PENDING_APPROVAL`，当前轮次的候选映射锁定。审批由统一云管工作流处理；`cam-core` 保留完整云管工单状态，Edge 仅在 Core 主动回告后显示审批结果。审批通过后状态为 `APPROVED`，清单成为该轮正式固化基线且保持锁定；审批驳回后保留申请和报告并解除轮次锁定，后续重新申请新建一条固化记录。报告文件保存在外部交换区数据目录下的 `verification-reports/` 子目录，数据库仅保存受控路径、文件名及摘要，不存报告二进制。
+验证人员提交草稿后，状态变为 `PENDING_APPROVAL`，当前轮次的候选映射锁定。审批由统一云管工作流处理；`cam-core` 保留完整云管工单状态，Edge 仅在 Core 主动回告后显示审批结果。审批通过后状态为 `APPROVED`，清单成为该轮正式固化基线且保持锁定，同时对应发布版本状态变为 `SEALED`，不允许继续创建轮次或修改候选包；审批驳回后保留申请和报告并解除轮次锁定，原发布版本仍可继续创建后续轮次。需要在已固化版本中纳入新包时，必须创建新的内部修订版，不能修改原 `releaseId`。报告文件保存在外部交换区数据目录下的 `verification-reports/` 子目录，数据库仅保存受控路径、文件名及摘要，不存报告二进制。
 
 SQLite 的 `round_freezes` 保存轮次、状态、报告元数据、清单快照和摘要、提交人/时间、审批结果及 Edge 到 Core 的投递状态；不向 Edge API 返回 Core/云管错误、工单号或投递重试细节。`POST /api/v1/freezes/:freezeId/submit` 先在外部区原子生成 `exchange/outbox/approval-requests/<freezeId>.json`，然后由后台调度器通过 Core 控制映射地址投递并自动重试。Core 使用持久 `core_approval_result_outbox` 保存审批结果回告，调用 Edge 的 `POST /api/v1/gate/approval-results`；接口要求当前网闸共享密钥、事件编号幂等，并仅接受 `APPROVED` 或 `REJECTED`。Edge 不提供人工审批入口，结果只由 Core 回告更新。消息只包含摘要和业务关联信息，报告文件按现场交换规则作为受控附件传送。具备相关角色的用户通过 `GET /api/v1/freezes/:freezeId/report-file` 下载报告。上传限制 DOCX、PDF、WPS、TXT、MD 五种类型，单文件不超过 20 MiB；PDF 文件校验 `%PDF-` 文件头。云管批准前的清单不作为内网正式制品或网闸传输授权。
 

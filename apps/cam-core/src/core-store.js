@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { createReadStream } from 'node:fs';
+import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { attachmentExtension, validAttachmentFileName } from '../../../libs/cam-server/src/attachment-types.js';
 
 const now = () => new Date().toISOString();
@@ -43,6 +44,7 @@ export class CoreStore {
     this.db = db;
     this.dataDir = dataDir;
     this.reportDir = join(dataDir, 'verification-reports');
+    this.artifactDir = join(dataDir, 'artifacts', 'sha256');
     db.exec(`
       CREATE TABLE IF NOT EXISTS core_approval_requests (
         request_id TEXT PRIMARY KEY, freeze_id TEXT NOT NULL UNIQUE, round_id TEXT NOT NULL, release_id TEXT NOT NULL,
@@ -61,6 +63,24 @@ export class CoreStore {
         transfer_task_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE REFERENCES core_approval_requests(request_id),
         status TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS core_artifacts (
+        sha256 TEXT PRIMARY KEY CHECK (length(sha256) = 64),
+        size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+        file_path TEXT NOT NULL,
+        received_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS core_release_artifacts (
+        request_id TEXT NOT NULL REFERENCES core_approval_requests(request_id),
+        package_key TEXT NOT NULL,
+        candidate_id TEXT,
+        file_name TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        source TEXT,
+        inherited_from_round_id TEXT,
+        PRIMARY KEY (request_id, package_key)
+      );
+      CREATE INDEX IF NOT EXISTS core_release_artifacts_sha_idx ON core_release_artifacts(sha256);
       CREATE TABLE IF NOT EXISTS core_cloud_config (
         config_id INTEGER PRIMARY KEY CHECK (config_id = 1),
         config_json TEXT NOT NULL,
@@ -93,7 +113,10 @@ export class CoreStore {
     for (const [name, definition] of Object.entries({ cloud_submission_attempts: 'INTEGER NOT NULL DEFAULT 0', cloud_submission_state: "TEXT NOT NULL DEFAULT 'IDLE'", cloud_submission_attempted_at: 'TEXT', cloud_retry_at: 'TEXT' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
   }
 
-  get(requestId) { return response(this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id WHERE r.request_id = ?').get(requestId)); }
+  get(requestId) {
+    const item = response(this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id WHERE r.request_id = ?').get(requestId));
+    return item ? { ...item, artifacts: this.listReleaseArtifacts(requestId) } : null;
+  }
 
   envelope(requestId) {
     const row = this.db.prepare('SELECT envelope_json FROM core_approval_requests WHERE request_id = ?').get(requestId);
@@ -162,9 +185,99 @@ export class CoreStore {
       ORDER BY t.updated_at DESC LIMIT 500`).all().map((row) => ({
       artifactId: `BASELINE-${row.request_id}`,
       artifactType: 'RELEASE_BASELINE',
+      files: this.listReleaseArtifacts(row.request_id),
       ...response(row),
       receivedAt: row.transfer_received_at
     }));
+  }
+  listReleaseArtifacts(requestId) {
+    return this.db.prepare(`SELECT ra.package_key AS packageKey, ra.candidate_id AS candidateId,
+      ra.file_name AS fileName, ra.size_bytes AS sizeBytes, ra.sha256,
+      ra.source, ra.inherited_from_round_id AS inheritedFromRoundId,
+      (a.sha256 IS NOT NULL) AS stored
+      FROM core_release_artifacts ra LEFT JOIN core_artifacts a ON a.sha256 = ra.sha256
+      WHERE ra.request_id = ? ORDER BY ra.package_key`).all(requestId).map((item) => ({ ...item, stored: Boolean(item.stored) }));
+  }
+  artifactPath(sha256) {
+    if (!/^[a-f0-9]{64}$/i.test(String(sha256))) return null;
+    const normalized = sha256.toLowerCase();
+    return this.db.prepare('SELECT file_path FROM core_artifacts WHERE sha256 = ?').get(normalized)?.file_path ?? null;
+  }
+  expectedTransferArtifacts(transferTaskId) {
+    const task = this.db.prepare(`SELECT t.*, r.status AS approval_status, r.envelope_json
+      FROM core_transfer_tasks t JOIN core_approval_requests r ON r.request_id = t.request_id
+      WHERE t.transfer_task_id = ?`).get(transferTaskId);
+    if (!task || task.approval_status !== 'APPROVED') throw Object.assign(new Error('transfer task is not approved'), { code: 'approval_required' });
+    const envelope = JSON.parse(task.envelope_json ?? '{}');
+    const manifest = envelope.manifest;
+    if (!manifest || !Array.isArray(manifest.items)) return { requestId: task.request_id, manifestSha256: task.manifest_sha256, items: [] };
+    return { requestId: task.request_id, manifestSha256: task.manifest_sha256, items: manifest.items };
+  }
+  setTransferManifest(transferTaskId, manifest) {
+    const task = this.db.prepare(`SELECT t.*, r.status AS approval_status, r.envelope_json
+      FROM core_transfer_tasks t JOIN core_approval_requests r ON r.request_id = t.request_id
+      WHERE t.transfer_task_id = ?`).get(transferTaskId);
+    if (!task || task.approval_status !== 'APPROVED') throw Object.assign(new Error('transfer task is not approved'), { code: 'approval_required' });
+    if (!manifest || typeof manifest !== 'object' || !Array.isArray(manifest.items) || manifest.items.length === 0 || manifest.items.length > 20_000) throw Object.assign(new Error('manifest.items must contain 1 to 20000 entries'), { code: 'artifact_manifest_invalid' });
+    if (digest(JSON.stringify(manifest)) !== task.manifest_sha256) throw Object.assign(new Error('manifest content does not match approved SHA-256'), { code: 'manifest_mismatch' });
+    const packageKeys = new Set();
+    for (const item of manifest.items) {
+      if (!item || typeof item.packageKey !== 'string' || !item.packageKey.trim() || item.packageKey.length > 255 || typeof item.fileName !== 'string' || !item.fileName.trim() || item.fileName.length > 255 || !Number.isSafeInteger(item.sizeBytes) || item.sizeBytes < 0 || typeof item.actualSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(item.actualSha256)) throw Object.assign(new Error('manifest contains an invalid artifact entry'), { code: 'artifact_manifest_invalid' });
+      const key = item.packageKey.trim().toLowerCase();
+      if (packageKeys.has(key)) throw Object.assign(new Error('manifest contains duplicate packageKey values'), { code: 'artifact_manifest_invalid' });
+      packageKeys.add(key);
+    }
+    const envelope = JSON.parse(task.envelope_json ?? '{}');
+    if (envelope.manifest && digest(JSON.stringify(envelope.manifest)) !== task.manifest_sha256) throw Object.assign(new Error('a different manifest is already bound to this approval'), { code: 'manifest_mismatch' });
+    envelope.manifest = manifest;
+    this.db.prepare('UPDATE core_approval_requests SET envelope_json = ?, updated_at = ? WHERE request_id = ?').run(JSON.stringify(envelope), now(), task.request_id);
+    return { requestId: task.request_id, transferTaskId, manifestSha256: task.manifest_sha256, fileCount: manifest.items.length };
+  }
+  async receiveArtifact(transferTaskId, sha256, temporaryPath, actualSize, actualSha256) {
+    const transfer = this.expectedTransferArtifacts(transferTaskId);
+    const digestValue = String(sha256).toLowerCase();
+    const expected = transfer.items.filter((item) => String(item.actualSha256 ?? '').toLowerCase() === digestValue);
+    if (!expected.length) throw Object.assign(new Error('artifact digest is not in the approved manifest'), { code: 'artifact_not_approved' });
+    const expectedSize = Number(expected[0].sizeBytes);
+    if (!Number.isSafeInteger(expectedSize) || expectedSize !== actualSize || actualSha256 !== digestValue || expected.some((item) => Number(item.sizeBytes) !== expectedSize)) {
+      throw Object.assign(new Error('artifact size or SHA-256 does not match approved manifest'), { code: 'artifact_integrity_failed' });
+    }
+    const destination = join(this.artifactDir, digestValue.slice(0, 2), digestValue.slice(2, 4), digestValue);
+    await mkdir(dirname(destination), { recursive: true });
+    const existing = this.db.prepare('SELECT * FROM core_artifacts WHERE sha256 = ?').get(digestValue);
+    if (existing) {
+      const info = await stat(existing.file_path).catch(() => null);
+      let existingDigest = null;
+      if (info?.isFile() && info.size === actualSize) {
+        const existingHash = createHash('sha256');
+        for await (const chunk of createReadStream(existing.file_path)) existingHash.update(chunk);
+        existingDigest = existingHash.digest('hex');
+      }
+      if (existingDigest === digestValue) await rm(temporaryPath, { force: true });
+      else await rename(temporaryPath, destination);
+    } else await rename(temporaryPath, destination);
+    const timestamp = now();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('INSERT INTO core_artifacts (sha256, size_bytes, file_path, received_at) VALUES (?, ?, ?, ?) ON CONFLICT(sha256) DO UPDATE SET size_bytes = excluded.size_bytes, file_path = excluded.file_path')
+        .run(digestValue, actualSize, destination, timestamp);
+      for (const item of expected) {
+        this.db.prepare(`INSERT INTO core_release_artifacts (request_id, package_key, candidate_id, file_name, size_bytes, sha256, source, inherited_from_round_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id, package_key) DO UPDATE SET candidate_id = excluded.candidate_id,
+          file_name = excluded.file_name, size_bytes = excluded.size_bytes, sha256 = excluded.sha256, source = excluded.source,
+          inherited_from_round_id = excluded.inherited_from_round_id`)
+          .run(transfer.requestId, String(item.packageKey), item.candidateId ?? null, String(item.fileName), expectedSize, digestValue, item.source ?? null, item.inheritedFromRoundId ?? null);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return { sha256: digestValue, sizeBytes: actualSize, reused: Boolean(existing), packages: expected.map((item) => item.packageKey) };
+  }
+  assertTransferComplete(transferTaskId) {
+    const transfer = this.expectedTransferArtifacts(transferTaskId);
+    const hashes = [...new Set(transfer.items.map((item) => String(item.actualSha256 ?? '').toLowerCase()))];
+    const missing = hashes.filter((sha256) => !this.artifactPath(sha256));
+    if (missing.length) throw Object.assign(new Error(`approved artifacts are not all stored (${missing.length} missing)`), { code: 'artifacts_incomplete' });
+    return transfer;
   }
   listCloudPending() { return this.db.prepare("SELECT request_id FROM core_approval_requests WHERE status = 'CLOUD_PENDING' AND cloud_approval_id IS NULL AND (cloud_retry_at IS NULL OR cloud_retry_at <= ?) ORDER BY created_at ASC LIMIT 100").all(now()).map((row) => row.request_id); }
   getByFreeze(freezeId) { return response(this.db.prepare('SELECT * FROM core_approval_requests WHERE freeze_id = ?').get(freezeId)); }
@@ -203,6 +316,17 @@ export class CoreStore {
     const releaseId = required(envelope.releaseId, 'releaseId');
     const manifestSha256 = required(envelope.manifestSha256, 'manifestSha256').toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(manifestSha256)) throw Object.assign(new Error('manifestSha256 must be SHA-256'), { code: 'invalid_message' });
+    if (envelope.manifest !== undefined) {
+      if (!envelope.manifest || typeof envelope.manifest !== 'object' || !Array.isArray(envelope.manifest.items) || envelope.manifest.items.length === 0 || envelope.manifest.items.length > 20_000) throw Object.assign(new Error('manifest.items must contain 1 to 20000 entries'), { code: 'artifact_manifest_invalid' });
+      const packageKeys = new Set();
+      for (const item of envelope.manifest.items) {
+        if (!item || typeof item.packageKey !== 'string' || !item.packageKey.trim() || item.packageKey.length > 255 || typeof item.fileName !== 'string' || !item.fileName.trim() || item.fileName.length > 255 || !Number.isSafeInteger(item.sizeBytes) || item.sizeBytes < 0 || typeof item.actualSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(item.actualSha256)) throw Object.assign(new Error('manifest contains an invalid artifact entry'), { code: 'artifact_manifest_invalid' });
+        const key = item.packageKey.trim().toLowerCase();
+        if (packageKeys.has(key)) throw Object.assign(new Error('manifest contains duplicate packageKey values'), { code: 'artifact_manifest_invalid' });
+        packageKeys.add(key);
+      }
+      if (digest(JSON.stringify(envelope.manifest)) !== manifestSha256) throw Object.assign(new Error('manifest content does not match manifestSha256'), { code: 'manifest_mismatch' });
+    }
     if (envelope.reportSha256 && !/^[a-f0-9]{64}$/i.test(envelope.reportSha256)) throw Object.assign(new Error('reportSha256 must be SHA-256'), { code: 'invalid_message' });
     const payload = JSON.stringify({ ...envelope, manifestSha256, reportSha256: envelope.reportSha256?.toLowerCase() ?? null });
     const payloadSha256 = digest(payload);
@@ -298,6 +422,18 @@ export class CoreStore {
     const transferTaskId = current.cloudTransferTaskId;
     const timestamp = now();
     this.db.prepare("INSERT INTO core_transfer_tasks (transfer_task_id, request_id, status, manifest_sha256, created_at, updated_at) VALUES (?, ?, 'READY', ?, ?, ?)").run(transferTaskId, requestId, current.manifestSha256, timestamp, timestamp);
+    const manifestItems = JSON.parse(this.db.prepare('SELECT envelope_json FROM core_approval_requests WHERE request_id = ?').get(requestId).envelope_json ?? '{}').manifest?.items ?? [];
+    for (const item of manifestItems) {
+      const sha256 = String(item.actualSha256 ?? '').toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(Number(item.sizeBytes)) || Number(item.sizeBytes) < 0 || typeof item.packageKey !== 'string' || typeof item.fileName !== 'string') {
+        throw Object.assign(new Error('approved artifact manifest is invalid'), { code: 'artifact_manifest_invalid' });
+      }
+      this.db.prepare(`INSERT INTO core_release_artifacts (request_id, package_key, candidate_id, file_name, size_bytes, sha256, source, inherited_from_round_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id, package_key) DO UPDATE SET candidate_id = excluded.candidate_id,
+        file_name = excluded.file_name, size_bytes = excluded.size_bytes, sha256 = excluded.sha256, source = excluded.source,
+        inherited_from_round_id = excluded.inherited_from_round_id`)
+        .run(requestId, item.packageKey, item.candidateId ?? null, item.fileName, Number(item.sizeBytes), sha256, item.source ?? null, item.inheritedFromRoundId ?? null);
+    }
     this.db.prepare('UPDATE core_approval_requests SET transfer_task_id = ?, updated_at = ? WHERE request_id = ?').run(transferTaskId, timestamp, requestId);
     return { transferTaskId, requestId, status: 'READY', manifestSha256: current.manifestSha256, idempotent: false };
   }
@@ -313,6 +449,7 @@ export class CoreStore {
     const existing = this.db.prepare('SELECT * FROM core_transfer_tasks WHERE request_id = ?').get(requestId);
     if (!existing) this.authorizeTransfer(requestId, { manifestSha256: current.manifestSha256, transferTaskId });
     const timestamp = now();
+    if (JSON.parse(this.db.prepare('SELECT envelope_json FROM core_approval_requests WHERE request_id = ?').get(requestId).envelope_json ?? '{}').manifest?.items?.length) this.assertTransferComplete(transferTaskId);
     this.db.prepare("UPDATE core_transfer_tasks SET status = 'RECEIVED', updated_at = ? WHERE request_id = ? AND transfer_task_id = ?").run(timestamp, requestId, transferTaskId);
     return { requestId, transferTaskId, status: 'RECEIVED', manifestSha256: current.manifestSha256, receivedAt: timestamp };
   }
