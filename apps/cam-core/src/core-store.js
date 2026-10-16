@@ -29,7 +29,10 @@ function response(row) {
     cloudRequestSnapshot: row.cloud_request_json ? JSON.parse(row.cloud_request_json) : null,
     approvedAt: row.approved_at, expiresAt: row.expires_at, closeStatus: row.close_status,
     closeCheckedAt: row.close_checked_at, createdAt: row.created_at, updatedAt: row.updated_at,
-    lastError: row.last_error, transferTaskId: row.transfer_task_id, transferStatus: row.transfer_status ?? null
+    lastError: row.last_error, cloudSubmissionAttempts: row.cloud_submission_attempts ?? 0,
+    cloudSubmissionState: row.cloud_submission_state ?? 'IDLE', cloudSubmissionAttemptedAt: row.cloud_submission_attempted_at ?? null,
+    cloudRetryAt: row.cloud_retry_at ?? null,
+    transferTaskId: row.transfer_task_id, transferStatus: row.transfer_status ?? null
   };
 }
 
@@ -66,12 +69,26 @@ export class CoreStore {
         event_id TEXT PRIMARY KEY, actor_id TEXT, action TEXT NOT NULL,
         config_json TEXT NOT NULL, created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS core_approval_result_outbox (
+        request_id TEXT PRIMARY KEY REFERENCES core_approval_requests(request_id),
+        event_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (status IN ('APPROVED','REJECTED')),
+        payload_json TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        last_error TEXT,
+        delivered_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS core_approval_result_outbox_pending_idx ON core_approval_result_outbox(delivered_at, next_attempt_at);
     `);
     const columns = new Set(db.prepare('PRAGMA table_info(core_approval_requests)').all().map((column) => column.name));
     if (!columns.has('cloud_mapping_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_mapping_json TEXT');
     if (!columns.has('cloud_request_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_request_json TEXT');
     if (!columns.has('cloud_workflow_step')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_workflow_step TEXT');
     for (const [name, definition] of Object.entries({ report_file_name: 'TEXT', report_size: 'INTEGER', report_received_sha256: 'TEXT', report_path: 'TEXT', report_received_at: 'TEXT', cloud_attachment_id: 'TEXT' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
+    for (const [name, definition] of Object.entries({ cloud_submission_attempts: 'INTEGER NOT NULL DEFAULT 0', cloud_submission_state: "TEXT NOT NULL DEFAULT 'IDLE'", cloud_submission_attempted_at: 'TEXT', cloud_retry_at: 'TEXT' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
   }
 
   get(requestId) { return response(this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id WHERE r.request_id = ?').get(requestId)); }
@@ -96,6 +113,46 @@ export class CoreStore {
     return this.get(requestId);
   }
   list() { return this.db.prepare('SELECT r.*, t.status AS transfer_status FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id ORDER BY r.created_at DESC LIMIT 500').all().map(response); }
+  listCloudApprovalPending() {
+    return this.db.prepare(`SELECT r.request_id FROM core_approval_requests r
+      WHERE (r.status IN ('CLOUD_SUBMITTED','CLOUD_STATUS_UNCONFIRMED') AND r.cloud_approval_id IS NOT NULL)
+         OR (r.status IN ('APPROVED','REJECTED') AND NOT EXISTS (SELECT 1 FROM core_approval_result_outbox o WHERE o.request_id = r.request_id))
+      ORDER BY COALESCE(r.cloud_checked_at, r.created_at) ASC LIMIT 100`).all().map((row) => row.request_id);
+  }
+  enqueueApprovalResult(requestId) {
+    const item = this.get(requestId);
+    if (!item || !['APPROVED', 'REJECTED'].includes(item.status)) return null;
+    const existing = this.db.prepare('SELECT * FROM core_approval_result_outbox WHERE request_id = ?').get(requestId);
+    if (existing) {
+      if (existing.status !== item.status) throw Object.assign(new Error('approval result changed after notification was queued'), { code: 'approval_result_conflict' });
+      return { ...existing, payload: JSON.parse(existing.payload_json) };
+    }
+    const timestamp = now();
+    const payload = {
+      schemaVersion: 1, type: 'APPROVAL_RESULT', eventId: id('DECISION'),
+      requestId: item.requestId, freezeId: item.freezeId, status: item.status,
+      decidedAt: item.cloudCheckedAt ?? item.updatedAt
+    };
+    this.db.prepare('INSERT INTO core_approval_result_outbox (request_id, event_id, status, payload_json, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(requestId, payload.eventId, item.status, JSON.stringify(payload), timestamp, timestamp, timestamp);
+    return { request_id: requestId, event_id: payload.eventId, status: item.status, payload_json: JSON.stringify(payload), attempts: 0, next_attempt_at: timestamp, last_error: null, delivered_at: null, created_at: timestamp, updated_at: timestamp, payload };
+  }
+  listPendingApprovalResults(limit = 100) {
+    return this.db.prepare('SELECT * FROM core_approval_result_outbox WHERE delivered_at IS NULL AND next_attempt_at <= ? ORDER BY created_at ASC LIMIT ?').all(now(), limit)
+      .map((row) => ({ ...row, payload: JSON.parse(row.payload_json) }));
+  }
+  markApprovalResultAttempt(eventId) {
+    this.db.prepare('UPDATE core_approval_result_outbox SET attempts = attempts + 1, updated_at = ? WHERE event_id = ? AND delivered_at IS NULL').run(now(), eventId);
+    return this.db.prepare('SELECT * FROM core_approval_result_outbox WHERE event_id = ?').get(eventId);
+  }
+  markApprovalResultDelivered(eventId) {
+    const timestamp = now();
+    this.db.prepare('UPDATE core_approval_result_outbox SET delivered_at = ?, last_error = NULL, updated_at = ? WHERE event_id = ?').run(timestamp, timestamp, eventId);
+  }
+  markApprovalResultFailure(eventId, error, retryAt) {
+    this.db.prepare('UPDATE core_approval_result_outbox SET last_error = ?, next_attempt_at = ?, updated_at = ? WHERE event_id = ? AND delivered_at IS NULL')
+      .run(String(error?.message ?? error).slice(0, 1000), retryAt, now(), eventId);
+  }
   listArtifacts() {
     return this.db.prepare(`SELECT r.*, t.status AS transfer_status, t.updated_at AS transfer_received_at
       FROM core_approval_requests r JOIN core_transfer_tasks t ON t.request_id = r.request_id
@@ -107,7 +164,7 @@ export class CoreStore {
       receivedAt: row.transfer_received_at
     }));
   }
-  listCloudPending() { return this.db.prepare("SELECT request_id FROM core_approval_requests WHERE status = 'CLOUD_PENDING' AND cloud_approval_id IS NULL ORDER BY created_at ASC LIMIT 100").all().map((row) => row.request_id); }
+  listCloudPending() { return this.db.prepare("SELECT request_id FROM core_approval_requests WHERE status = 'CLOUD_PENDING' AND cloud_approval_id IS NULL AND (cloud_retry_at IS NULL OR cloud_retry_at <= ?) ORDER BY created_at ASC LIMIT 100").all(now()).map((row) => row.request_id); }
   getByFreeze(freezeId) { return response(this.db.prepare('SELECT * FROM core_approval_requests WHERE freeze_id = ?').get(freezeId)); }
 
   getCloudConfig() {
@@ -182,8 +239,29 @@ export class CoreStore {
   markCloudSubmitted(requestId, result) {
     const approvalId = required(result.approvalId, 'approvalId');
     const timestamp = now();
-    this.db.prepare("UPDATE core_approval_requests SET cloud_approval_id = ?, cloud_status = ?, cloud_mapping_json = ?, cloud_request_json = ?, status = 'CLOUD_SUBMITTED', last_error = NULL, updated_at = ? WHERE request_id = ?")
+    this.db.prepare("UPDATE core_approval_requests SET cloud_approval_id = ?, cloud_status = ?, cloud_mapping_json = ?, cloud_request_json = ?, status = 'CLOUD_SUBMITTED', cloud_submission_state = 'SUBMITTED', cloud_retry_at = NULL, last_error = NULL, updated_at = ? WHERE request_id = ?")
       .run(approvalId, result.status ?? 'PENDING', result.mappingSnapshot ? JSON.stringify(result.mappingSnapshot) : null, result.requestBody ? JSON.stringify(result.requestBody) : null, timestamp, requestId);
+    return this.get(requestId);
+  }
+
+  markCloudSubmissionAttempt(requestId) {
+    const timestamp = now();
+    this.db.prepare("UPDATE core_approval_requests SET cloud_submission_attempts = cloud_submission_attempts + 1, cloud_submission_state = 'SUBMITTING', cloud_submission_attempted_at = ?, cloud_retry_at = NULL, updated_at = ? WHERE request_id = ? AND status = 'CLOUD_PENDING' AND cloud_approval_id IS NULL")
+      .run(timestamp, timestamp, requestId);
+    return this.get(requestId);
+  }
+
+  queueCloudRetry(requestId) {
+    const timestamp = now();
+    this.db.prepare("UPDATE core_approval_requests SET cloud_submission_state = 'QUEUED', cloud_retry_at = NULL, updated_at = ? WHERE request_id = ? AND status = 'CLOUD_PENDING' AND cloud_approval_id IS NULL")
+      .run(timestamp, requestId);
+    return this.get(requestId);
+  }
+
+  markCloudSubmissionFailure(requestId, error, retryAt) {
+    const timestamp = now();
+    this.db.prepare("UPDATE core_approval_requests SET last_error = ?, cloud_submission_state = 'RETRY_WAIT', cloud_retry_at = ?, updated_at = ? WHERE request_id = ? AND status = 'CLOUD_PENDING' AND cloud_approval_id IS NULL")
+      .run(String(error?.message ?? error).slice(0, 1000), retryAt, timestamp, requestId);
     return this.get(requestId);
   }
 

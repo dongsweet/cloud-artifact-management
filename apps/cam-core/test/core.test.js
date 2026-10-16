@@ -37,11 +37,7 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
   try {
     const received = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: envelope });
     assert.equal(received.statusCode, 202, received.body);
-    assert.equal(received.json().item.status, 'CLOUD_PENDING');
-    assert.equal(received.json().item.productName, '曙光云 Stack');
-    assert.equal(received.json().item.version, '8.0.6.2');
-    assert.equal(received.json().item.roundNo, 2);
-    assert.equal(received.json().cloudSubmission, false);
+    assert.deepEqual(received.json(), { accepted: true, requestId: 'FREEZE-1', idempotent: false });
 
     const legacyEnvelope = { ...envelope, requestId: 'FREEZE-LEGACY', freezeId: 'FREEZE-LEGACY' };
     delete legacyEnvelope.productName;
@@ -50,14 +46,7 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     delete legacyEnvelope.reportTitle;
     const legacyReceived = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: legacyEnvelope });
     assert.equal(legacyReceived.statusCode, 202, legacyReceived.body);
-    const enriched = await app.inject({
-      method: 'POST', url: '/api/v1/gate/approval-requests/FREEZE-LEGACY/sync', headers,
-      payload: { presentation: { ...envelope, requestId: 'FREEZE-LEGACY', freezeId: 'FREEZE-LEGACY' } }
-    });
-    assert.equal(enriched.statusCode, 200, enriched.body);
-    assert.equal(enriched.json().item.productName, '曙光云 Stack');
-    assert.equal(enriched.json().item.version, '8.0.6.2');
-    assert.equal(enriched.json().item.roundNo, 2);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests/FREEZE-LEGACY/sync', headers, payload: {} })).statusCode, 404);
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     const created = app.coreStore.get('FREEZE-1');
@@ -117,7 +106,7 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     assert.deepEqual(calls.at(-1), ['close', 'APR-1']);
     const syncAfterClose = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/sync', payload: {} });
     assert.equal(syncAfterClose.json().item.status, 'CLOSED');
-    assert.equal(calls.filter(([kind]) => kind === 'get').length, 3, 'metadata backfill also verifies the existing cloud approval status');
+    assert.equal(calls.filter(([kind]) => kind === 'get').length, 2, 'the cloud approval is queried only when explicitly synchronized');
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
@@ -133,6 +122,41 @@ test('gate approval messages require the configured exchange identity', async ()
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Core polls cloud approval status and reliably pushes only the decision to Edge', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-decision-callback-'));
+  const callbacks = [];
+  let failFirstCallback = true;
+  let cloudStatus = 'PENDING';
+  const cloud = {
+    async createApproval() { return { approvalId: 'APR-CALLBACK', status: 'PENDING' }; },
+    async getApproval(approvalId) { return { approvalId, status: cloudStatus, workflowStep: cloudStatus, transferTaskId: cloudStatus === 'APPROVED' ? 'TR-CALLBACK' : undefined, manifestSha256: cloudStatus === 'APPROVED' ? manifestSha256 : undefined }; }
+  };
+  const fetchImpl = async (url, options) => {
+    callbacks.push({ url, options, payload: JSON.parse(options.body) });
+    if (failFirstCallback) { failFirstCallback = false; return new Response('{}', { status: 503 }); }
+    return Response.json({ accepted: true, requestId: 'FREEZE-CALLBACK', eventId: callbacks.at(-1).payload.eventId, idempotent: false });
+  };
+  const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false, fetchImpl, approvalResultRetryBaseMs: 5, workerIntervalMs: 10 });
+  app.gateConfigStore.save({ edgeControlUrl: 'http://edge-map:3101', edgeTransferUrl: 'http://edge-map:3101' }, 'test');
+  const headers = { 'x-cam-gate-secret': Buffer.from('gate-test').toString('base64url') };
+  try {
+    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: { ...envelope, requestId: 'FREEZE-CALLBACK', freezeId: 'FREEZE-CALLBACK' } });
+    assert.equal(accepted.statusCode, 202);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    cloudStatus = 'APPROVED';
+    const synced = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-CALLBACK/sync', payload: {} });
+    assert.equal(synced.statusCode, 200, synced.body);
+    for (let i = 0; i < 100 && callbacks.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(callbacks.length, 2, 'Core retains and retries the decision callback after a temporary Edge failure');
+    assert.equal(callbacks[0].url, 'http://edge-map:3101/api/v1/gate/approval-results');
+    assert.equal(callbacks[0].options.headers['x-cam-gate-secret'], Buffer.from('gate-test').toString('base64url'));
+    assert.deepEqual({ requestId: callbacks[0].payload.requestId, freezeId: callbacks[0].payload.freezeId, status: callbacks[0].payload.status }, { requestId: 'FREEZE-CALLBACK', freezeId: 'FREEZE-CALLBACK', status: 'APPROVED' });
+    assert.equal('cloudApprovalId' in callbacks[0].payload, false);
+    assert.equal(callbacks[1].payload.eventId, callbacks[0].payload.eventId, 'retries reuse the same idempotency key');
+    assert.equal(app.coreStore.listPendingApprovalResults().length, 0);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Core acknowledges an approval before a slow cloud work-order create finishes', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-async-create-'));
   let finishCreate;
@@ -142,7 +166,7 @@ test('Core acknowledges an approval before a slow cloud work-order create finish
   try {
     const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: { ...envelope, requestId: 'FREEZE-SLOW', freezeId: 'FREEZE-SLOW' } });
     assert.equal(accepted.statusCode, 202);
-    assert.equal(accepted.json().item.status, 'CLOUD_PENDING');
+    assert.equal(accepted.json().accepted, true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     finishCreate({ approvalId: 'APR-SLOW', status: 'PENDING' });
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -150,7 +174,7 @@ test('Core acknowledges an approval before a slow cloud work-order create finish
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
-test('Core retries a failed cloud work-order submission when Edge synchronizes the queued request', async () => {
+test('Core retries a failed cloud work-order submission from its own background worker', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-dispatch-retry-'));
   let createAttempts = 0;
   const cloud = {
@@ -161,20 +185,25 @@ test('Core retries a failed cloud work-order submission when Edge synchronizes t
     },
     async getApproval(approvalId) { return { approvalId, status: 'PENDING', workflowStep: '审批中' }; }
   };
-  const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false });
+  const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false, cloudRetryDelayMs: 300, workerIntervalMs: 10 });
   const headers = { 'x-cam-gate-secret': 'gate-test' };
   const payload = { schemaVersion: 1, type: 'VERIFICATION_APPROVAL_REQUEST', requestId: 'FREEZE-RETRY', freezeId: 'FREEZE-RETRY', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64), reportSha256: 'b'.repeat(64), reportFileName: 'report.pdf', conclusion: 'PASS' };
   try {
     const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload });
     assert.equal(accepted.statusCode, 202);
-    assert.equal(accepted.json().item.status, 'CLOUD_PENDING');
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(app.coreStore.get('FREEZE-RETRY').lastError, 'temporary cloud outage');
-    const synced = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests/FREEZE-RETRY/sync', headers, payload: {} });
-    assert.equal(synced.statusCode, 200, synced.body);
-    assert.equal(synced.json().item.status, 'CLOUD_PENDING');
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(accepted.json().accepted, true);
+    for (let i = 0; i < 100 && app.coreStore.get('FREEZE-RETRY').cloudSubmissionState !== 'RETRY_WAIT'; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    const waitingRetry = app.coreStore.get('FREEZE-RETRY');
+    assert.equal(waitingRetry.lastError, 'temporary cloud outage');
+    assert.equal(waitingRetry.cloudSubmissionAttempts, 1);
+    assert.equal(waitingRetry.cloudSubmissionState, 'RETRY_WAIT');
+    assert.ok(Date.parse(waitingRetry.cloudRetryAt) > Date.now());
+    assert.deepEqual(app.coreStore.listCloudPending(), [], 'automatic retry waits until the persisted retry time');
+    await new Promise((resolve) => setTimeout(resolve, 400));
     assert.equal(app.coreStore.get('FREEZE-RETRY').cloudApprovalId, 'APR-RETRY');
+    assert.equal(app.coreStore.get('FREEZE-RETRY').cloudSubmissionAttempts, 2);
+    assert.equal(app.coreStore.get('FREEZE-RETRY').cloudSubmissionState, 'SUBMITTED');
+    assert.equal(app.coreStore.get('FREEZE-RETRY').cloudRetryAt, null);
     assert.equal(createAttempts, 2);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });

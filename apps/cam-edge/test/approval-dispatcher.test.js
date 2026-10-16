@@ -14,9 +14,9 @@ function fixture() {
     listDispatchPending: () => state.dispatchStatus === 'PENDING' || state.dispatchStatus === 'FAILED' ? [state] : [],
     approvalEnvelope: () => ({ schemaVersion: 1, type: 'VERIFICATION_APPROVAL_REQUEST', requestId: state.freezeId, releaseId: 'REL-1', roundId: 'ROUND-1', productName: '曙光云 Stack', version: '8.0.6.2', roundNo: 2, reportTitle: '验证报告', manifestSha256: 'a'.repeat(64) }),
     markDispatchAttempt: () => { state.dispatchStatus = 'SENDING'; state.dispatchAttempts += 1; return state; },
-    markDispatchSuccess: (_id, response) => { state.dispatchStatus = 'DELIVERED'; state.coreApprovalId = response.item.cloudApprovalId; state.coreStatus = response.item.status; return state; },
+    markDispatchSuccess: () => { state.dispatchStatus = 'DELIVERED'; return state; },
     markDispatchFailure: (_id, error) => { state.dispatchStatus = 'FAILED'; state.dispatchLastError = error.message; return state; },
-    markCoreStatus: (_id, response) => { state.coreApprovalId = response.item.cloudApprovalId ?? state.coreApprovalId; state.coreStatus = response.item.status; return state; }
+    markCoreStatus: () => { throw new Error('Edge must not poll Core for approval status'); }
   };
   return { state, freezes };
 }
@@ -28,12 +28,11 @@ test('approval dispatcher sends an outbox request through the mapped Core contro
     freezes,
     gateConfig: { get: () => ({ coreControlUrl: 'http://gate.example:3201', connectTimeoutMs: 1000 }) },
     keyring: { currentSecret: async () => Buffer.from('shared-secret') },
-    fetchImpl: async (url, options) => { request = { url, options }; return { ok: true, status: 202, json: async () => ({ item: { status: 'CLOUD_SUBMITTED', cloudApprovalId: 'APR-1' }, cloudSubmission: true }) }; },
+    fetchImpl: async (url, options) => { request = { url, options }; return { ok: true, status: 202, json: async () => ({ accepted: true, requestId: state.freezeId, idempotent: false }) }; },
     logger: { warn() {} }
   });
   const result = await dispatcher.dispatchOne(state.freezeId);
   assert.equal(result.dispatchStatus, 'DELIVERED');
-  assert.equal(result.coreApprovalId, 'APR-1');
   assert.equal(request.url, 'http://gate.example:3201/api/v1/gate/approval-requests');
   assert.equal(request.options.headers['x-cam-gate-secret'], Buffer.from('shared-secret').toString('base64url'));
   assert.equal(JSON.parse(request.options.body).requestId, state.freezeId);
@@ -56,22 +55,19 @@ test('approval dispatcher keeps a failed outbox request retryable', async () => 
   await dispatcher.close();
 });
 
-test('approval dispatcher polls Core while cloud work-order creation is pending', async () => {
+test('approval dispatcher never polls Core after request delivery', async () => {
   const { state, freezes } = fixture();
   state.dispatchStatus = 'DELIVERED';
   state.dispatchAttempts = 1;
-  state.coreStatus = 'CLOUD_PENDING';
-  let request;
+  let requests = 0;
   const dispatcher = createApprovalDispatcher({
     freezes,
     gateConfig: { get: () => ({ coreControlUrl: 'http://gate.example:3201', connectTimeoutMs: 1000 }) },
     keyring: { currentSecret: async () => Buffer.from('shared-secret') },
-    fetchImpl: async (url, options) => { request = { url, options }; return { ok: true, status: 200, json: async () => ({ item: { status: 'CLOUD_SUBMITTED', cloudApprovalId: 'APR-1' } }) }; },
+    fetchImpl: async () => { requests += 1; throw new Error('delivered request must not be resent'); },
     logger: { warn() {} }
   });
   await dispatcher.pump();
-  assert.equal(request.url, 'http://gate.example:3201/api/v1/gate/approval-requests/FREEZE-1/sync');
-  assert.equal(JSON.parse(request.options.body).presentation.roundNo, 2);
-  assert.equal(state.coreApprovalId, 'APR-1');
+  assert.equal(requests, 0);
   await dispatcher.close();
 });

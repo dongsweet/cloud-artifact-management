@@ -191,6 +191,16 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     try { return { item: await keyring.confirmAtEdge(request.params.keyId) }; }
     catch (err) { return error(reply, 409, err.code ?? 'gate_rotation_state_invalid', err.message); }
   });
+  app.post('/api/v1/gate/approval-results', { bodyLimit: 16 * 1024 }, async (request, reply) => {
+    if (!await keyring.verifySecret(request.headers['x-cam-gate-secret'])) return error(reply, 401, 'gate_auth_required', '网闸审批结果回告身份校验失败');
+    try {
+      const result = freezes.applyCoreDecision(request.body ?? {});
+      return reply.send({ accepted: true, requestId: result.item.freezeId, eventId: request.body.eventId, idempotent: result.idempotent });
+    } catch (err) {
+      const status = err.code === 'freeze_not_found' ? 404 : ['approval_result_conflict', 'approval_event_conflict'].includes(err.code) ? 409 : 400;
+      return error(reply, status, err.code ?? 'approval_result_rejected', err.message);
+    }
+  });
   app.get('/api/v1/rounds/:roundId/freezes', async (request, reply) => {
     if (!store.getRound(request.params.roundId)) return error(reply, 404, 'round_not_found', 'round not found');
     return reply.send({ item: freezes.latest(request.params.roundId) });
@@ -254,9 +264,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
 
   app.post('/api/v1/freezes/:freezeId/decision', { bodyLimit: 8192 }, async (request, reply) => {
-    if (process.env.CAM_APPROVAL_MODE === 'cloud') return error(reply, 409, 'cloud_workflow_required', '生产环境必须通过 cam-core 和统一云管完成审批');
-    try { return reply.send(freezes.decide(request.params.freezeId, request.body ?? {}, principal(request).principalId)); }
-    catch (err) { return error(reply, err.code === 'freeze_not_found' ? 404 : err.code === 'self_approval_forbidden' || err.code === 'freeze_not_pending' ? 409 : 400, err.code ?? 'freeze_decision_failed', err.message); }
+    return error(reply, 409, 'cloud_workflow_required', '审批结果由 CAM Core 从统一云管获取并回告，不能在外部交换区直接处理');
   });
 
   app.get('/api/v1/freezes/:freezeId/report-file', async (request, reply) => {

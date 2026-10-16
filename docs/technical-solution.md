@@ -723,11 +723,11 @@ CAM 的账号体系按“人员身份、服务身份、下载授权”三类对�
 
 ### 版本固化与验证报告
 
-首期在外部交换区的 `cam-edge` 实现按候选轮次提交验证报告和固化清单。接入云管审批时，报告与清单摘要作为审批申请消息经网闸映射控制通道送至 `cam-core`，并由 `cam-core` 自动创建云管工单；Edge 记录投递状态、重试次数、Core 返回的云管工单号和错误信息。云管暂时不可用时，Core 按请求编号幂等保留待处理申请并在后续同步时重试。验证人员先创建固化草稿，填写报告标题、结论和验证环境，再上传不超过 20 MiB 的 DOCX、PDF、WPS、TXT 或 MD 报告。只有轮次非空且所有候选包状态为 `COMPLETED`、具有实测 SHA-256 才可创建草稿。系统展开该轮的继承映射并生成不可变 JSON 清单快照，连同清单 SHA-256、报告 SHA-256、提交账号和时间保存。
+首期在外部交换区的 `cam-edge` 实现按候选轮次提交验证报告和固化清单。审批申请经网闸映射控制通道送至 `cam-core` 后，Edge 只记录是否已进入内网；它不查询或展示云管工单号、云管状态及 Core/云管错误。`cam-core` 在内网自动创建云管工单并自行轮询审批结果；通过持久 outbox 将“通过/驳回”结果主动回告 Edge，失败时按退避策略重试。验证人员先创建固化草稿，填写报告标题、结论和验证环境，再上传不超过 20 MiB 的 DOCX、PDF、WPS、TXT 或 MD 报告。只有轮次非空且所有候选包状态为 `COMPLETED`、具有实测 SHA-256 才可创建草稿。系统展开该轮的继承映射并生成不可变 JSON 清单快照，连同清单 SHA-256、报告 SHA-256、提交账号和时间保存。
 
-验证人员提交草稿后，状态变为 `PENDING_APPROVAL`，当前轮次的候选映射锁定。审批由统一云管工作流处理；`cam-core` 将云管工单状态与关联标识写回 CAM。申请人不得自批，拒绝必须填写意见。批准后状态为 `APPROVED`，清单成为该轮正式固化基线且保持锁定；拒绝后保留申请、报告和意见并解除轮次锁定，后续重新申请新建一条固化记录。报告文件保存在外部交换区数据目录下的 `verification-reports/` 子目录，数据库仅保存受控路径、文件名及摘要，不存报告二进制。
+验证人员提交草稿后，状态变为 `PENDING_APPROVAL`，当前轮次的候选映射锁定。审批由统一云管工作流处理；`cam-core` 保留完整云管工单状态，Edge 仅在 Core 主动回告后显示审批结果。审批通过后状态为 `APPROVED`，清单成为该轮正式固化基线且保持锁定；审批驳回后保留申请和报告并解除轮次锁定，后续重新申请新建一条固化记录。报告文件保存在外部交换区数据目录下的 `verification-reports/` 子目录，数据库仅保存受控路径、文件名及摘要，不存报告二进制。
 
-SQLite 新增 `round_freezes` 表，保存轮次、状态、报告元数据、清单快照和摘要、提交人/时间、审批人/时间、云管工单编号及意见，并保存 outbox 投递状态、尝试次数、最近错误和 Core 回执。`POST /api/v1/freezes/:freezeId/submit` 先在外部区原子生成 `exchange/outbox/approval-requests/<freezeId>.json`，然后立即尝试通过 Core 控制映射地址投递；后台调度器会对失败任务按退避策略重试，`POST /api/v1/freezes/:freezeId/dispatch` 可由具备验证权限的人员手动触发重试。消息只包含摘要和业务关联信息，报告文件按现场交换规则作为受控附件传送。`cam-core` 接收申请并创建云管工单，再经网闸回传审批状态。申请人与审批人必须分离。具备相关角色的用户通过 `GET /api/v1/freezes/:freezeId/report-file` 下载报告。上传限制 DOCX、PDF、WPS、TXT、MD 五种类型，单文件不超过 20 MiB；PDF 文件校验 `%PDF-` 文件头。云管批准前的清单不作为内网正式制品或网闸传输授权。
+SQLite 的 `round_freezes` 保存轮次、状态、报告元数据、清单快照和摘要、提交人/时间、审批结果及 Edge 到 Core 的投递状态；不向 Edge API 返回 Core/云管错误、工单号或投递重试细节。`POST /api/v1/freezes/:freezeId/submit` 先在外部区原子生成 `exchange/outbox/approval-requests/<freezeId>.json`，然后由后台调度器通过 Core 控制映射地址投递并自动重试。Core 使用持久 `core_approval_result_outbox` 保存审批结果回告，调用 Edge 的 `POST /api/v1/gate/approval-results`；接口要求当前网闸共享密钥、事件编号幂等，并仅接受 `APPROVED` 或 `REJECTED`。Edge 不提供人工审批入口，结果只由 Core 回告更新。消息只包含摘要和业务关联信息，报告文件按现场交换规则作为受控附件传送。具备相关角色的用户通过 `GET /api/v1/freezes/:freezeId/report-file` 下载报告。上传限制 DOCX、PDF、WPS、TXT、MD 五种类型，单文件不超过 20 MiB；PDF 文件校验 `%PDF-` 文件头。云管批准前的清单不作为内网正式制品或网闸传输授权。
 
 `cam-core` 的 `core_approval_requests` 保存云管工单标识、当前云管状态、批准的 `transferTaskId`、批准清单摘要和有效期；`core_message_inbox` 对申请消息做幂等接收。收到外部区的申请后，`cam-core` 调用云管创建工单。审批状态只能由 `cam-core` 通过云管查询或受认证回调更新，外部区回执只用于展示流程状态。制品送达时，`transfer-authorize` 再检查当前状态为 `APPROVED`、清单摘要一致、传输任务编号一致且未过期，检查通过后才生成 `core_transfer_tasks`。因此，单独伪造外部区的“审批通过”消息不能放行制品。
 

@@ -47,6 +47,15 @@ export class FreezeStore {
       report_size: 'INTEGER'
     };
     for (const [name, definition] of Object.entries(additions)) if (!columns.has(name)) db.exec(`ALTER TABLE round_freezes ADD COLUMN ${name} ${definition}`);
+    db.exec(`CREATE TABLE IF NOT EXISTS edge_core_approval_events (
+      event_id TEXT PRIMARY KEY,
+      freeze_id TEXT NOT NULL REFERENCES round_freezes(freeze_id),
+      payload_sha256 TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('APPROVED','REJECTED')),
+      received_at TEXT NOT NULL
+    )`);
+    // Cloud work-order identifiers, states and error payloads are internal to Core.
+    db.prepare('UPDATE round_freezes SET core_approval_id = NULL, core_status = NULL, core_response_json = NULL').run();
     db.prepare("UPDATE round_freezes SET dispatch_status = 'PENDING' WHERE status = 'PENDING_APPROVAL' AND dispatch_status = 'SENDING'").run();
   }
 
@@ -103,10 +112,7 @@ export class FreezeStore {
       submittedBy: row.submitted_by, submittedAt: row.submitted_at,
       decidedBy: row.decided_by, decidedAt: row.decided_at,
       decisionReference: row.decision_reference, decisionComment: row.decision_comment,
-      dispatchStatus: row.dispatch_status ?? 'PENDING', dispatchAttempts: row.dispatch_attempts ?? 0,
-      dispatchLastError: row.dispatch_last_error, dispatchAt: row.dispatch_at,
-      coreApprovalId: row.core_approval_id, coreStatus: row.core_status,
-      coreResponse: row.core_response_json ? JSON.parse(row.core_response_json) : null,
+      dispatchStatus: row.dispatch_status ?? 'PENDING', dispatchAt: row.dispatch_at,
       createdAt: row.created_at, updatedAt: row.updated_at
     };
   }
@@ -229,17 +235,44 @@ export class FreezeStore {
   }
 
   markDispatchSuccess(freezeId, response) {
-    const item = response?.item ?? response ?? {};
     const timestamp = now();
-    this.db.prepare("UPDATE round_freezes SET dispatch_status = 'DELIVERED', dispatch_at = ?, dispatch_last_error = NULL, core_approval_id = ?, core_status = ?, core_response_json = ?, updated_at = ? WHERE freeze_id = ?").run(timestamp, item.cloudApprovalId ?? null, item.status ?? null, JSON.stringify(response ?? {}), timestamp, freezeId);
+    this.db.prepare("UPDATE round_freezes SET dispatch_status = 'DELIVERED', dispatch_at = ?, dispatch_last_error = NULL, core_approval_id = NULL, core_status = NULL, core_response_json = NULL, updated_at = ? WHERE freeze_id = ?").run(timestamp, timestamp, freezeId);
     return this.get(freezeId);
   }
 
-  markCoreStatus(freezeId, response) {
-    const item = response?.item ?? response ?? {};
-    const timestamp = now();
-    this.db.prepare('UPDATE round_freezes SET core_approval_id = COALESCE(?, core_approval_id), core_status = ?, core_response_json = ?, updated_at = ? WHERE freeze_id = ?').run(item.cloudApprovalId ?? null, item.status ?? null, JSON.stringify(response ?? {}), timestamp, freezeId);
-    return this.get(freezeId);
+  applyCoreDecision(input) {
+    const requestId = String(input?.requestId ?? '').trim();
+    const freezeId = String(input?.freezeId ?? '').trim();
+    const eventId = String(input?.eventId ?? '').trim();
+    const status = String(input?.status ?? '').toUpperCase();
+    const decidedAt = typeof input?.decidedAt === 'string' && Number.isFinite(Date.parse(input.decidedAt)) ? input.decidedAt : now();
+    if (!requestId || requestId !== freezeId || !eventId || eventId.length > 128 || !['APPROVED', 'REJECTED'].includes(status)) {
+      throw Object.assign(new Error('Core 审批结果格式无效'), { code: 'invalid_approval_result' });
+    }
+    const freeze = this.get(freezeId);
+    if (!freeze) throw Object.assign(new Error('固化申请不存在'), { code: 'freeze_not_found' });
+    const payloadSha256 = hash(JSON.stringify({ eventId, requestId, freezeId, status, decidedAt }));
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const prior = this.db.prepare('SELECT * FROM edge_core_approval_events WHERE event_id = ?').get(eventId);
+      if (prior) {
+        if (prior.freeze_id !== freezeId || prior.status !== status || prior.payload_sha256 !== payloadSha256) throw Object.assign(new Error('Core 审批事件编号冲突'), { code: 'approval_event_conflict' });
+        this.db.exec('COMMIT');
+        return { item: this.get(freezeId), idempotent: true };
+      }
+      const current = this.get(freezeId);
+      if (current.status === status) {
+        this.db.prepare('INSERT INTO edge_core_approval_events (event_id, freeze_id, payload_sha256, status, received_at) VALUES (?, ?, ?, ?, ?)').run(eventId, freezeId, payloadSha256, status, now());
+        this.db.exec('COMMIT');
+        return { item: current, idempotent: true };
+      }
+      if (current.status !== 'PENDING_APPROVAL') throw Object.assign(new Error('申请已处理，不能覆盖现有结果'), { code: 'approval_result_conflict' });
+      this.db.prepare('INSERT INTO edge_core_approval_events (event_id, freeze_id, payload_sha256, status, received_at) VALUES (?, ?, ?, ?, ?)').run(eventId, freezeId, payloadSha256, status, now());
+      this.db.prepare('UPDATE round_freezes SET status = ?, decided_by = ?, decided_at = ?, decision_reference = NULL, decision_comment = NULL, updated_at = ? WHERE freeze_id = ? AND status = \'PENDING_APPROVAL\'')
+        .run(status, 'CAM_CORE', decidedAt, now(), freezeId);
+      this.db.exec('COMMIT');
+      return { item: this.get(freezeId), idempotent: false };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   markDispatchFailure(freezeId, error) {

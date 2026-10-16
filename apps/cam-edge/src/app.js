@@ -16,7 +16,7 @@ import { createApprovalDispatcher } from './approval-dispatcher.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/edge' : join(process.cwd(), 'data', 'edge'));
 
-export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSize = Number(process.env.CHUNK_SIZE ?? DEFAULT_CHUNK_SIZE), allowlist, principalProvider = null, secureCookies } = {}) {
+export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSize = Number(process.env.CHUNK_SIZE ?? DEFAULT_CHUNK_SIZE), allowlist, principalProvider = null, secureCookies, gateSecret = process.env.CAM_GATE_SHARED_SECRET, previousGateSecret = process.env.CAM_GATE_PREVIOUS_SHARED_SECRET } = {}) {
   const db = await openDatabase(join(dataDir, 'edge.sqlite'));
   const store = new CandidateStore({ db, dataDir, defaultChunkSize });
   const receiver = createCandidateReceiver({ store, allowlist, finalize: (candidateId) => finalizeCandidate(store, candidateId) });
@@ -25,7 +25,7 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   const auth = new AuthStore(db);
   const freezes = new FreezeStore({ db, dataDir, candidateStore: store });
   const gateConfig = new GateConfigStore(db, { table: 'edge_gate_config', eventsTable: 'edge_gate_config_events', requiredUrlFields: ['coreControlUrl', 'coreTransferUrl'] });
-  const keyring = new GateKeyring({ filePath: join(dataDir, 'gate-keyring.json'), role: 'edge', bootstrapSecret: process.env.CAM_GATE_SHARED_SECRET, bootstrapPreviousSecret: process.env.CAM_GATE_PREVIOUS_SHARED_SECRET });
+  const keyring = new GateKeyring({ filePath: join(dataDir, 'gate-keyring.json'), role: 'edge', bootstrapSecret: gateSecret, bootstrapPreviousSecret: previousGateSecret });
   await keyring.ready;
   const approvalDispatcher = createApprovalDispatcher({ freezes, gateConfig, keyring });
   const app = await buildServer({

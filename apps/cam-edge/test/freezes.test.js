@@ -8,7 +8,7 @@ import { buildEdgeApp } from '../src/app.js';
 
 const sha256 = (data) => createHash('sha256').update(data).digest('hex');
 
-test('completed round can be submitted with a PDF report, approved by another user, and stays immutable', async () => {
+test('completed round report stays immutable while approval is pending and Edge rejects local decisions', async () => {
   let identity = { id: 'validator-1', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER', 'VALIDATOR', 'RELEASE_APPLICANT'] };
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-freeze-'));
   const app = await buildEdgeApp({ principalProvider: () => identity, dataDir, defaultChunkSize: 8 });
@@ -54,15 +54,10 @@ test('completed round can be submitted with a PDF report, approved by another us
   identity = { id: 'validator-1', type: 'TEST_IDP', roles: ['VALIDATOR'] };
   const unauthorizedApproval = await app.inject({ method: 'POST', url: `/api/v1/freezes/${draft.freezeId}/decision`, payload: { decision: 'APPROVE' } });
   assert.equal(unauthorizedApproval.statusCode, 403);
-  identity = { id: 'validator-1', type: 'TEST_IDP', roles: ['RELEASE_APPLICANT'] };
-  const selfApproval = await app.inject({ method: 'POST', url: `/api/v1/freezes/${draft.freezeId}/decision`, payload: { decision: 'APPROVE' } });
-  assert.equal(selfApproval.statusCode, 409);
-
   identity = { id: 'approver-2', type: 'TEST_IDP', roles: ['RELEASE_APPLICANT'] };
-  const approved = await app.inject({ method: 'POST', url: `/api/v1/freezes/${draft.freezeId}/decision`, payload: { decision: 'APPROVE', reference: 'UC-1234', comment: '审批通过' } });
-  assert.equal(approved.statusCode, 200, approved.body);
-  assert.equal(approved.json().status, 'APPROVED');
-  assert.equal(approved.json().decisionReference, 'UC-1234');
+  const localApproval = await app.inject({ method: 'POST', url: `/api/v1/freezes/${draft.freezeId}/decision`, payload: { decision: 'APPROVE' } });
+  assert.equal(localApproval.statusCode, 409);
+  assert.equal(localApproval.json().error.code, 'cloud_workflow_required');
   assert.equal((await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.roundId}/candidates`, payload: { sourceUrl: 'https://example.invalid/next.tar.gz', fileName: 'next.tar.gz', packageKey: 'next', size: 0 } })).statusCode, 403);
   await app.close();
 });
@@ -79,4 +74,35 @@ test('freeze requires every candidate to have completed integrity verification',
   assert.equal(blocked.statusCode, 400);
   assert.equal(blocked.json().error.code, 'round_incomplete');
   await app.close();
+});
+
+test('Edge accepts only authenticated, idempotent Core approval-result callbacks', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-core-result-'));
+  const app = await buildEdgeApp({ dataDir, gateSecret: 'gate-test', principalProvider: () => ({ id: 'test-admin', type: 'TEST_IDP', roles: ['EDGE_ADMIN', 'CANDIDATE_RECEIVER', 'VALIDATOR'] }) });
+  const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Callback product' } })).json();
+  const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } })).json();
+  const freezeId = 'FREEZE-CALLBACK';
+  const now = new Date().toISOString();
+  app.candidateStore.db.prepare(`INSERT INTO round_freezes
+    (freeze_id, round_id, status, report_title, conclusion, environment, manifest_json, manifest_sha256, submitted_by, submitted_at, created_at, updated_at)
+    VALUES (?, ?, 'PENDING_APPROVAL', 'Test report', 'PASS', 'test', '{}', ?, 'validator', ?, ?, ?)`)
+    .run(freezeId, release.initialRound.roundId, 'a'.repeat(64), now, now, now);
+  const payload = { schemaVersion: 1, type: 'APPROVAL_RESULT', eventId: 'DECISION-1', requestId: freezeId, freezeId, status: 'APPROVED', decidedAt: now };
+  try {
+    const unauthorized = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-results', payload });
+    assert.equal(unauthorized.statusCode, 401);
+    const headers = { 'x-cam-gate-secret': Buffer.from('gate-test').toString('base64url') };
+    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-results', headers, payload });
+    assert.equal(accepted.statusCode, 200, accepted.body);
+    assert.deepEqual(accepted.json(), { accepted: true, requestId: freezeId, eventId: payload.eventId, idempotent: false });
+    const replay = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-results', headers, payload });
+    assert.equal(replay.statusCode, 200, replay.body);
+    assert.equal(replay.json().idempotent, true);
+    const status = await app.inject({ method: 'GET', url: `/api/v1/rounds/${release.initialRound.roundId}/freezes` });
+    assert.equal(status.json().item.status, 'APPROVED');
+    assert.equal('coreApprovalId' in status.json().item, false);
+    assert.equal('coreStatus' in status.json().item, false);
+    assert.equal('dispatchAttempts' in status.json().item, false);
+    assert.equal('dispatchLastError' in status.json().item, false);
+  } finally { await app.close(); }
 });

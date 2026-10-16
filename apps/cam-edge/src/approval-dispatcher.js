@@ -5,7 +5,6 @@ export function createApprovalDispatcher({ freezes, gateConfig, keyring, fetchIm
   let busy = false;
   let closed = false;
   const nextAttemptAt = new Map();
-  const nextStatusPollAt = new Map();
 
   async function coreRequest(path, config, secret, options = {}) {
     const controller = new AbortController();
@@ -35,9 +34,9 @@ export function createApprovalDispatcher({ freezes, gateConfig, keyring, fetchIm
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw Object.assign(new Error(body.error?.message ?? `Core 接收审批请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_dispatch_rejected', statusCode: response.status });
+      if (body.accepted !== true || body.requestId !== freeze.freezeId) throw Object.assign(new Error('Core 未确认接收该审批申请'), { code: 'core_dispatch_ack_invalid' });
       const updated = freezes.markDispatchSuccess(freezeId, body);
       nextAttemptAt.delete(freezeId);
-      nextStatusPollAt.set(freezeId, Date.now() + 30_000);
       return updated;
     } catch (error) {
       freezes.markDispatchFailure(freezeId, error);
@@ -45,19 +44,6 @@ export function createApprovalDispatcher({ freezes, gateConfig, keyring, fetchIm
       logger.warn?.({ freezeId, attempt, code: error.code, message: error.message }, 'CAM 审批请求投递 Core 失败，将自动重试');
       return freezes.get(freezeId);
     }
-  }
-
-  async function pollCoreStatus(freeze) {
-    const config = gateConfig.get();
-    if (!config.coreControlUrl) return;
-    const secret = await keyring.currentSecret();
-    if (!secret) return;
-    const presentation = freezes.approvalEnvelope(freeze.freezeId);
-    const response = await coreRequest(`/api/v1/gate/approval-requests/${encodeURIComponent(freeze.freezeId)}/sync`, config, secret, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ presentation }) });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(body.error?.message ?? `Core 状态查询失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_status_sync_failed' });
-    freezes.markCoreStatus(freeze.freezeId, body);
-    nextStatusPollAt.set(freeze.freezeId, Date.now() + 30_000);
   }
 
   async function pump() {
@@ -68,16 +54,6 @@ export function createApprovalDispatcher({ freezes, gateConfig, keyring, fetchIm
         if (closed) break;
         if ((nextAttemptAt.get(item.freezeId) ?? 0) > Date.now()) continue;
         await dispatchOne(item.freezeId);
-      }
-      for (const item of freezes.list()) {
-        if (closed) break;
-        if (item.status !== 'PENDING_APPROVAL' || item.dispatchStatus !== 'DELIVERED' || ['APPROVED', 'REJECTED', 'CLOSED'].includes(item.coreStatus)) continue;
-        if ((nextStatusPollAt.get(item.freezeId) ?? 0) > Date.now()) continue;
-        try { await pollCoreStatus(item); }
-        catch (error) {
-          nextStatusPollAt.set(item.freezeId, Date.now() + 60_000);
-          logger.warn?.({ freezeId: item.freezeId, code: error.code, message: error.message }, 'CAM 云管审批状态同步失败，将稍后重试');
-        }
       }
     } finally { busy = false; }
   }

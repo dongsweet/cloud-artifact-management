@@ -44,9 +44,11 @@ async function rotateEdgeKey({ keyring, gateConfig }) {
   return keyring.markEdgeConfirmed(pending.id);
 }
 
-export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGateSecret, gateConfig, keyring, enableKeyRotation = false, cloudRetryDelayMs = 30_000, fetchImpl = fetch }) {
-  const cloudNextAttempt = new Map();
+export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGateSecret, gateConfig, keyring, enableKeyRotation = false, cloudRetryDelayMs = 30_000, cloudStatusPollMs = 30_000, approvalResultRetryBaseMs = 5_000, workerIntervalMs = 5_000, fetchImpl = fetch }) {
   const cloudInFlight = new Set();
+  const cloudStatusNextAttempt = new Map();
+  const cloudStatusInFlight = new Set();
+  let workerBusy = false;
   const ensureCloudReport = async (requestId, envelope) => {
     // Older control envelopes may contain only a report name/digest. New Edge
     // envelopes include reportSize and therefore require the binary transfer.
@@ -95,19 +97,83 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
     try {
       const item = store.get(requestId);
       if (!item || item.status !== 'CLOUD_PENDING' || item.cloudApprovalId) return;
+      store.markCloudSubmissionAttempt(requestId);
       const envelope = await ensureCloudReport(requestId, store.envelope(requestId));
       store.markCloudSubmitted(requestId, await cloud.createApproval(envelope, store.getCloudConfig()));
-      cloudNextAttempt.delete(requestId);
+      cloudStatusNextAttempt.set(requestId, Date.now() + cloudStatusPollMs);
     } catch (err) {
-      store.markError(requestId, err);
-      cloudNextAttempt.set(requestId, Date.now() + cloudRetryDelayMs);
-      app.log.warn?.({ requestId, code: err.code, message: err.message }, '云管工单创建失败，将自动重试');
+      const retryAt = new Date(Date.now() + cloudRetryDelayMs).toISOString();
+      const item = store.markCloudSubmissionFailure(requestId, err, retryAt);
+      app.log.warn?.({ requestId, attempt: item?.cloudSubmissionAttempts, retryAt, code: err.code, message: err.message }, '云管工单创建失败，将自动重试');
     } finally { cloudInFlight.delete(requestId); }
   };
-  const cloudTimer = setInterval(() => {
-    for (const requestId of store.listCloudPending()) if ((cloudNextAttempt.get(requestId) ?? 0) <= Date.now()) void submitCloud(requestId);
-  }, 5_000);
+  const syncCloudStatus = async (requestId) => {
+    if (cloudStatusInFlight.has(requestId)) return store.get(requestId);
+    const current = store.get(requestId);
+    if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
+    if (['APPROVED', 'REJECTED'].includes(current.status)) {
+      store.enqueueApprovalResult(requestId);
+      return current;
+    }
+    if (!current.cloudApprovalId || !['CLOUD_SUBMITTED', 'CLOUD_STATUS_UNCONFIRMED'].includes(current.status)) return current;
+    cloudStatusInFlight.add(requestId);
+    try {
+      const updated = store.applyCloudStatus(requestId, await cloud.getApproval(current.cloudApprovalId, current));
+      if (['APPROVED', 'REJECTED'].includes(updated.status)) {
+        store.enqueueApprovalResult(requestId);
+        cloudStatusNextAttempt.delete(requestId);
+        queueMicrotask(() => { void pumpWorkers(); });
+      } else cloudStatusNextAttempt.set(requestId, Date.now() + cloudStatusPollMs);
+      return updated;
+    } catch (err) {
+      store.markError(requestId, err);
+      cloudStatusNextAttempt.set(requestId, Date.now() + Math.min(300_000, cloudStatusPollMs * 2));
+      throw err;
+    } finally { cloudStatusInFlight.delete(requestId); }
+  };
+  const sendApprovalResult = async (entry) => {
+    store.markApprovalResultAttempt(entry.event_id);
+    try {
+      const config = gateConfig.get();
+      if (!config.edgeControlUrl) throw Object.assign(new Error('Edge 审批结果回告地址尚未配置'), { code: 'gate_address_missing' });
+      const secret = await keyring.currentSecret();
+      if (!secret) throw Object.assign(new Error('网闸共享密钥尚未初始化'), { code: 'gate_key_not_configured' });
+      const response = await fetchImpl(`${config.edgeControlUrl.replace(/\/$/u, '')}/api/v1/gate/approval-results`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-cam-gate-secret': secret.toString('base64url') },
+        body: JSON.stringify(entry.payload),
+        signal: AbortSignal.timeout(config.connectTimeoutMs)
+      });
+      if (!response.ok) throw Object.assign(new Error(`Edge 审批结果回告失败（HTTP ${response.status}）`), { code: 'approval_result_delivery_failed' });
+      const acknowledgement = await response.json().catch(() => ({}));
+      if (acknowledgement.accepted !== true || acknowledgement.requestId !== entry.payload.requestId || acknowledgement.eventId !== entry.event_id) {
+        throw Object.assign(new Error('Edge 未确认接收该审批结果'), { code: 'approval_result_ack_invalid' });
+      }
+      store.markApprovalResultDelivered(entry.event_id);
+    } catch (err) {
+      const attempts = entry.attempts + 1;
+      const retryAt = new Date(Date.now() + Math.min(300_000, approvalResultRetryBaseMs * (2 ** Math.min(attempts - 1, 6)))).toISOString();
+      store.markApprovalResultFailure(entry.event_id, err, retryAt);
+      app.log.warn?.({ requestId: entry.request_id, eventId: entry.event_id, code: err.code, message: err.message }, 'CAM 审批结果回告 Edge 失败，将自动重试');
+    }
+  };
+  async function pumpWorkers() {
+    if (workerBusy) return;
+    workerBusy = true;
+    try {
+      const timestamp = Date.now();
+      for (const requestId of store.listCloudPending()) void submitCloud(requestId);
+      for (const requestId of store.listCloudApprovalPending()) {
+        if ((cloudStatusNextAttempt.get(requestId) ?? 0) > timestamp) continue;
+        try { await syncCloudStatus(requestId); }
+        catch (err) { app.log.warn?.({ requestId, code: err.code, message: err.message }, '云管审批状态查询失败，将自动重试'); }
+      }
+      for (const entry of store.listPendingApprovalResults()) await sendApprovalResult(entry);
+    } finally { workerBusy = false; }
+  }
+  const cloudTimer = setInterval(() => { void pumpWorkers(); }, workerIntervalMs);
   cloudTimer.unref?.();
+  queueMicrotask(() => { void pumpWorkers(); });
   app.addHook('onClose', async () => clearInterval(cloudTimer));
   app.addHook('onRequest', async (request, reply) => {
     const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts');
@@ -178,31 +244,8 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
       const accepted = store.receiveApproval(request.body ?? {});
       let item = accepted.item;
       if (!accepted.idempotent || (item.status === 'CLOUD_PENDING' && !item.cloudApprovalId)) queueMicrotask(() => { void submitCloud(item.requestId); });
-      return reply.code(accepted.idempotent ? 200 : 202).send({ item, idempotent: accepted.idempotent, cloudSubmission: false });
+      return reply.code(accepted.idempotent ? 200 : 202).send({ accepted: true, requestId: item.requestId, idempotent: accepted.idempotent });
     } catch (err) { return error(reply, err.code === 'request_conflict' ? 409 : 400, err.code ?? 'approval_request_rejected', err.message); }
-  });
-
-  app.get('/api/v1/gate/approval-requests/:requestId', async (request, reply) => {
-    const item = store.get(request.params.requestId);
-    return item ? reply.send({ item }) : error(reply, 404, 'request_not_found', 'approval request not found');
-  });
-
-  app.post('/api/v1/gate/approval-requests/:requestId/sync', { bodyLimit: 8192 }, async (request, reply) => {
-    try {
-      if (request.body?.presentation) store.updatePresentationMetadata(request.params.requestId, request.body.presentation);
-      let item = store.get(request.params.requestId);
-      if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
-      if (!item.cloudApprovalId) {
-        cloudNextAttempt.delete(item.requestId);
-        queueMicrotask(() => { void submitCloud(item.requestId); });
-        return reply.send({ item });
-      }
-      return reply.send({ item: store.applyCloudStatus(item.requestId, await cloud.getApproval(item.cloudApprovalId, item)) });
-    } catch (err) {
-      if (['presentation_mismatch', 'invalid_presentation'].includes(err.code)) return error(reply, err.code === 'presentation_mismatch' ? 409 : 400, err.code, err.message);
-      store.markError(request.params.requestId, err);
-      return error(reply, err.code === 'cloud_not_configured' ? 503 : err.code === 'request_not_found' ? 404 : 502, err.code ?? 'cloud_sync_failed', err.message);
-    }
   });
 
   app.get('/api/v1/cloud/config', async (request, reply) => {
@@ -235,6 +278,17 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
     return item ? reply.send({ item }) : error(reply, 404, 'request_not_found', 'approval request not found');
   });
 
+  app.post('/api/v1/approval-requests/:requestId/retry', async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    const item = store.get(request.params.requestId);
+    if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
+    if (item.status !== 'CLOUD_PENDING' || item.cloudApprovalId) return error(reply, 409, 'cloud_retry_not_available', '只有尚未创建云管工单的请求可以重试提交');
+    if (cloudInFlight.has(item.requestId)) return reply.code(202).send({ item, inProgress: true });
+    const queued = store.queueCloudRetry(item.requestId);
+    queueMicrotask(() => { void submitCloud(item.requestId); });
+    return reply.code(202).send({ item: queued, queued: true });
+  });
+
   app.get('/api/v1/approval-requests/:requestId/report-file', async (request, reply) => {
     const item = store.get(request.params.requestId);
     const path = store.reportPath(request.params.requestId);
@@ -248,7 +302,8 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
       if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
       if (!item.cloudApprovalId) return error(reply, 409, 'cloud_submission_pending', 'cloud approval has not been created');
       if (item.closeStatus === 'CLOSED') return reply.send({ item });
-      return reply.send({ item: store.applyCloudStatus(item.requestId, await cloud.getApproval(item.cloudApprovalId, item)) });
+      const updated = await syncCloudStatus(item.requestId);
+      return reply.send({ item: updated });
     } catch (err) { store.markError(request.params.requestId, err); return error(reply, err.code === 'cloud_not_configured' ? 503 : 502, err.code ?? 'cloud_sync_failed', err.message); }
   });
 

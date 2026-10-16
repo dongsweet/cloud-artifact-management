@@ -11,10 +11,9 @@ function showAlert(message, type = 'success') {
   window.setTimeout(() => alert.classList.add('d-none'), 5000);
 }
 
-function statusLabel(status) { return { OPEN: '开放', CREATED: '待接收', RECEIVING: '接收中', PARTIAL: '待完成', ASSEMBLING: '组装校验中', FAILED: '失败', COMPLETED: '已完成', DRAFT: '固化草稿', PENDING_APPROVAL: '待审批', APPROVED: '已固化', REJECTED: '已拒绝' }[status] ?? status; }
+function statusLabel(status) { return { OPEN: '开放', CREATED: '待接收', RECEIVING: '接收中', PARTIAL: '待完成', ASSEMBLING: '组装校验中', FAILED: '失败', COMPLETED: '已完成', DRAFT: '固化草稿', PENDING_APPROVAL: '等待审批', APPROVED: '审批通过，已固化', REJECTED: '审批驳回' }[status] ?? status; }
 function statusClass(status) { return { OPEN: 'text-bg-primary', CREATED: 'text-bg-secondary', RECEIVING: 'text-bg-info', PARTIAL: 'text-bg-warning', ASSEMBLING: 'text-bg-primary', FAILED: 'text-bg-danger', COMPLETED: 'text-bg-success', DRAFT: 'text-bg-secondary', PENDING_APPROVAL: 'text-bg-warning', APPROVED: 'text-bg-success', REJECTED: 'text-bg-danger' }[status] ?? 'text-bg-secondary'; }
-function dispatchLabel(status) { return { PENDING: '等待发送', SENDING: '正在发送到 Core', FAILED: '发送失败，等待重试', DELIVERED: 'Core 已接收' }[status] ?? status ?? '未发送'; }
-function coreApprovalLabel(status) { return { CLOUD_PENDING: '云管工单创建中', CLOUD_SUBMITTED: '云管审批中', CLOUD_STATUS_UNCONFIRMED: '云管状态待确认', APPROVED: '云管已批准', REJECTED: '云管已拒绝', CLOSED: '工单已关闭' }[status] ?? status ?? ''; }
+function internalDeliveryLabel(status) { return status === 'DELIVERED' ? '已进入内网，等待审批' : '正在进入内网，系统会自动重试'; }
 function queueLabel(status) { return { QUEUED: '排队中', RUNNING: '调度中', PAUSED: '已暂停', FAILED: '调度失败', CANCELLED: '已取消', COMPLETED: '已完成' }[status] ?? status; }
 function queueClass(status) { return { QUEUED: 'text-bg-secondary', RUNNING: 'text-bg-info', PAUSED: 'text-bg-warning', FAILED: 'text-bg-danger', CANCELLED: 'text-bg-secondary', COMPLETED: 'text-bg-success' }[status] ?? 'text-bg-secondary'; }
 function formatBytes(value) { if (!Number.isFinite(Number(value))) return '-'; if (value < 1024) return `${value} B`; const units = ['KB', 'MB', 'GB', 'TB']; let amount = value; let index = -1; while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index += 1; } return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${units[index]}`; }
@@ -303,7 +302,6 @@ async function loadRoundFreeze(round, candidates, generation = state.routeGenera
   state.currentFreeze = freeze;
   const complete = candidates.length > 0 && candidates.every((item) => item.status === 'COMPLETED' && item.finalSha256);
   const canSubmit = hasRole('VALIDATOR');
-  const canApprove = hasRole('RELEASE_APPLICANT');
   const locked = ['PENDING_APPROVAL', 'APPROVED'].includes(freeze?.status);
   const readOnly = round.readOnly || locked;
   for (const selector of ['#new-package-button', '#import-packages-button', '#batch-receive-button']) $(selector).disabled = readOnly;
@@ -312,17 +310,11 @@ async function loadRoundFreeze(round, candidates, generation = state.routeGenera
   if (!freeze) {
     html = `<div class="alert alert-light border d-flex justify-content-between align-items-center gap-2 mb-0"><span>本轮尚未提交验证报告。${complete ? '所有候选包均已完成，可以申请固化。' : '需先完成本轮全部候选包接收。'}</span>${canSubmit && !round.readOnly ? `<button id="freeze-start" class="btn btn-outline-primary btn-sm" ${complete ? '' : 'disabled'}><i class="bi bi-file-earmark-check me-1"></i>提交验证报告</button>` : ''}</div>`;
   } else {
-    html = `<div class="card card-outline ${freeze.status === 'APPROVED' ? 'card-success' : freeze.status === 'REJECTED' ? 'card-danger' : 'card-primary'} mb-0"><div class="card-header d-flex justify-content-between align-items-center"><strong>验证报告与版本固化</strong><span class="badge ${statusClass(freeze.status)}">${statusLabel(freeze.status)}</span></div><div class="card-body"><div class="row g-2"><div class="col-lg-4"><strong>报告：</strong>${escapeHtml(freeze.reportTitle)}</div><div class="col-lg-4"><strong>结论：</strong>${freeze.conclusion === 'PASS' ? '通过' : '有条件通过'}</div><div class="col-lg-4"><strong>提交时间：</strong>${escapeHtml(freeze.submittedAt ?? freeze.createdAt)}</div><div class="col-12"><strong>清单摘要：</strong><code class="text-break">${escapeHtml(freeze.manifestSha256)}</code></div>${freeze.status === 'PENDING_APPROVAL' ? `<div class="col-12"><strong>跨区投递：</strong>${escapeHtml(dispatchLabel(freeze.dispatchStatus))}${freeze.dispatchAttempts ? `（尝试 ${freeze.dispatchAttempts} 次）` : ''}${freeze.coreApprovalId ? `；云管工单：${escapeHtml(freeze.coreApprovalId)}` : ''}${freeze.coreStatus ? `；云管进度：${escapeHtml(coreApprovalLabel(freeze.coreStatus))}` : ''}</div>${freeze.dispatchLastError ? `<div class="col-12 text-danger"><strong>最近错误：</strong>${escapeHtml(freeze.dispatchLastError)}</div>` : ''}${freeze.coreResponse?.item?.lastError ? `<div class="col-12 text-danger"><strong>Core/云管最近错误：</strong>${escapeHtml(freeze.coreResponse.item.lastError)}</div>` : ''}` : ''}${freeze.decisionReference ? `<div class="col-12"><strong>审批编号：</strong>${escapeHtml(freeze.decisionReference)}</div>` : ''}${freeze.decisionComment ? `<div class="col-12"><strong>审批意见：</strong>${escapeHtml(freeze.decisionComment)}</div>` : ''}${freeze.reportFileName ? `<div class="col-12"><a href="/api/v1/freezes/${encodeURIComponent(freeze.freezeId)}/report-file" target="_blank" rel="noopener">下载验证报告</a></div>` : ''}</div>${freeze.status === 'DRAFT' && canSubmit ? '<button id="freeze-resume" class="btn btn-outline-primary btn-sm mt-3">继续上传并提交</button>' : ''}${freeze.status === 'REJECTED' && canSubmit ? '<button id="freeze-start" class="btn btn-outline-primary btn-sm mt-3">重新提交验证报告</button>' : ''}${freeze.status === 'PENDING_APPROVAL' && freeze.dispatchStatus === 'FAILED' && canSubmit ? '<div class="d-flex justify-content-end mt-3"><button id="freeze-dispatch-retry" class="btn btn-outline-primary btn-sm"><i class="bi bi-arrow-repeat me-1"></i>立即重试发送</button></div>' : ''}${freeze.status === 'PENDING_APPROVAL' && canApprove ? `<div class="border-top mt-3 pt-3"><div class="row g-2"><div class="col-md-4"><input id="freeze-reference" class="form-control form-control-sm" maxlength="200" placeholder="云管工单编号（可选）"></div><div class="col-md-8"><input id="freeze-comment" class="form-control form-control-sm" maxlength="2000" placeholder="审批意见；拒绝时必填"></div></div><div class="d-flex justify-content-end gap-2 mt-2"><button id="freeze-reject" class="btn btn-outline-danger btn-sm">拒绝</button><button id="freeze-approve" class="btn btn-success btn-sm">审批通过并固化</button></div></div>` : ''}</div></div>`;
+    html = `<div class="card card-outline ${freeze.status === 'APPROVED' ? 'card-success' : freeze.status === 'REJECTED' ? 'card-danger' : 'card-primary'} mb-0"><div class="card-header d-flex justify-content-between align-items-center"><strong>验证报告与版本固化</strong><span class="badge ${statusClass(freeze.status)}">${statusLabel(freeze.status)}</span></div><div class="card-body"><div class="row g-2"><div class="col-lg-4"><strong>报告：</strong>${escapeHtml(freeze.reportTitle)}</div><div class="col-lg-4"><strong>结论：</strong>${freeze.conclusion === 'PASS' ? '通过' : '有条件通过'}</div><div class="col-lg-4"><strong>提交时间：</strong>${escapeHtml(freeze.submittedAt ?? freeze.createdAt)}</div><div class="col-12"><strong>清单摘要：</strong><code class="text-break">${escapeHtml(freeze.manifestSha256)}</code></div>${freeze.status === 'PENDING_APPROVAL' ? `<div class="col-12"><strong>审批状态：</strong>${escapeHtml(internalDeliveryLabel(freeze.dispatchStatus))}</div>` : ''}${freeze.status === 'REJECTED' && freeze.decisionComment ? `<div class="col-12"><strong>审批意见：</strong>${escapeHtml(freeze.decisionComment)}</div>` : ''}${freeze.reportFileName ? `<div class="col-12"><a href="/api/v1/freezes/${encodeURIComponent(freeze.freezeId)}/report-file" target="_blank" rel="noopener">下载验证报告</a></div>` : ''}</div>${freeze.status === 'DRAFT' && canSubmit ? '<button id="freeze-resume" class="btn btn-outline-primary btn-sm mt-3">继续上传并提交</button>' : ''}${freeze.status === 'REJECTED' && canSubmit ? '<button id="freeze-start" class="btn btn-outline-primary btn-sm mt-3">重新提交验证报告</button>' : ''}</div></div>`;
   }
   panel.innerHTML = html;
   $('#freeze-start')?.addEventListener('click', () => openFreezeForm());
   $('#freeze-resume')?.addEventListener('click', () => openFreezeForm(freeze));
-  $('#freeze-approve')?.addEventListener('click', () => decideFreeze('APPROVE'));
-  $('#freeze-reject')?.addEventListener('click', () => decideFreeze('REJECT'));
-  $('#freeze-dispatch-retry')?.addEventListener('click', async () => {
-    try { await api(`/api/v1/freezes/${encodeURIComponent(freeze.freezeId)}/dispatch`, { method: 'POST', body: '{}' }); showAlert('已重试审批请求投递'); await loadRound(state.routeGeneration); }
-    catch (error) { showAlert(error.message, 'danger'); }
-  });
 }
 
 function openFreezeForm(draft = null) {
@@ -333,17 +325,6 @@ function openFreezeForm(draft = null) {
   $('#freeze-report').value = '';
   $('#freeze-report').required = true;
   modal('freeze').show();
-}
-
-async function decideFreeze(decision) {
-  const comment = $('#freeze-comment')?.value.trim() ?? '';
-  if (decision === 'REJECT' && !comment) return showAlert('拒绝申请时必须填写审批意见', 'warning');
-  if (decision === 'APPROVE' && !await confirmAction({ title: '确认固化该候选轮次', message: '审批通过后，这份清单将成为该轮正式固化基线，轮次内容会保持锁定。', confirmText: '审批通过并固化', variant: 'success' })) return;
-  try {
-    await api(`/api/v1/freezes/${encodeURIComponent(state.currentFreeze.freezeId)}/decision`, { method: 'POST', body: JSON.stringify({ decision, reference: $('#freeze-reference')?.value.trim(), comment }) });
-    showAlert(decision === 'APPROVE' ? '已审批通过，本轮清单已固化' : '申请已拒绝，验证人员可重新提交');
-    await loadRound(state.routeGeneration);
-  } catch (error) { showAlert(error.message, 'danger'); }
 }
 
 async function renderRound(round, candidates) {
