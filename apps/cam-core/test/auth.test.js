@@ -32,6 +32,14 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
     assert.equal(relogin.statusCode, 200, relogin.body);
     const coreCookie = cookies(relogin);
     const coreCsrf = relogin.json().csrfToken;
+    app.coreStore.receiveApproval({ schemaVersion: 1, type: 'VERIFICATION_APPROVAL_REQUEST', requestId: 'FREEZE-MANUAL-RETRY', freezeId: 'FREEZE-MANUAL-RETRY', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64) });
+    const retryDenied = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-MANUAL-RETRY/retry', headers: { cookie: coreCookie }, payload: {} });
+    assert.equal(retryDenied.statusCode, 403, 'manual retry requires CSRF');
+    const retry = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-MANUAL-RETRY/retry', headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: {} });
+    assert.equal(retry.statusCode, 202, retry.body);
+    assert.equal(retry.json().queued, true);
+    for (let attempt = 0; attempt < 20 && app.coreStore.get('FREEZE-MANUAL-RETRY').status === 'CLOUD_PENDING'; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(app.coreStore.get('FREEZE-MANUAL-RETRY').cloudSubmissionState, 'SUBMITTED');
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests', headers: { cookie: coreCookie } })).statusCode, 200);
     const cloudConfig = { priorityLabel: '常规变更', sourceLabel: '内部需求', businessTypePath: '平台类/其他', deptName: '成都', teamName: '运维团队', processUserNames: 'zhuren_luan', titlePrefix: '发布审批' };
     const configSaved = await app.inject({ method: 'PUT', url: '/api/v1/cloud/config', headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: cloudConfig });

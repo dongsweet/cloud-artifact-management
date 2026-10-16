@@ -52,3 +52,23 @@
 @media (max-width: 960px) {
   .app-main .card { min-width: 0; }
 }
+
+
+.cam-detail-modal {
+  width: min(880px, calc(100vw - 2rem));
+  max-width: none;
+  max-height: min(88vh, 900px);
+  padding: 0;
+  border: 0;
+  border-radius: .5rem;
+  color: inherit;
+  background: var(--bs-body-bg);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 25%);
+}
+.cam-detail-modal::backdrop { background: rgb(0 0 0 / 55%); }
+.cam-detail-dialog { max-height: inherit; overflow-y: auto; }
+.cam-detail-modal .card-header { position: sticky; top: 0; z-index: 1; background: var(--bs-body-bg); }
+@media (max-width: 576px) {
+  .cam-detail-modal { width: calc(100vw - 1rem); max-height: 94vh; }
+  .cam-detail-modal .card-body { padding: 1rem; }
+}

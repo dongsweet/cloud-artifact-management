@@ -5,15 +5,17 @@ let coreRoles = {};
 let coreUsers = [];
 let resetUserId = null;
 let cloudMappings = null;
+let requestPollTimer = null;
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[c]));
 const statusLabels = { CLOUD_PENDING:'待提交云管', CLOUD_SUBMITTED:'云管处理中', APPROVED:'已审批', REJECTED:'已拒绝', CLOUD_STATUS_UNCONFIRMED:'状态未确认', CLOSED:'已关单' };
+const submissionStateLabels = { IDLE:'等待提交', QUEUED:'重试已排队', SUBMITTING:'正在提交', RETRY_WAIT:'等待自动重试', SUBMITTED:'已提交' };
 function headers(options = {}) { return { ...(options.headers ?? {}), ...(csrf ? { 'x-cam-core-csrf': csrf } : {}) }; }
 async function api(path, options = {}) { const response = await fetch(path, { ...options, headers: headers(options) }); const body = await response.json().catch(() => ({})); if (!response.ok) { if (response.status === 401 && path !== '/api/v1/auth/login') showLogin(); throw new Error(body.error?.message ?? `请求失败（${response.status}）`); } return body; }
 function clearMessage() { const el = $('#alert'); el.className = 'alert d-none'; el.textContent = ''; }
 function showLogin() { forcedPasswordChange = false; $('#app').classList.add('d-none'); $('#password-change').classList.add('d-none'); $('#login').classList.remove('d-none'); clearMessage(); }
 function showPasswordChange(forced) { forcedPasswordChange = forced; $('#password-title').textContent = forced ? '修改初始密码' : '修改密码'; $('#password-help').textContent = forced ? '首次登录必须修改初始密码。' : '修改密码后需要重新登录。'; $('#password-cancel').classList.toggle('d-none', forced); $('#password-error').classList.add('d-none'); $('#password-change').classList.remove('d-none'); }
-function showApp(user) { currentUser = user; forcedPasswordChange = Boolean(user.mustChangePassword); $('#login').classList.add('d-none'); $('#app').classList.remove('d-none'); clearMessage(); $('#user-label').textContent = `${user.displayName}（${user.username}）`; if (user.mustChangePassword) showPasswordChange(true); else $('#password-change').classList.add('d-none'); return user; }
+function showApp(user) { currentUser = user; forcedPasswordChange = Boolean(user.mustChangePassword); $('#login').classList.add('d-none'); $('#app').classList.remove('d-none'); clearMessage(); $('#user-label').textContent = `${user.displayName}（${user.username}）`; if (user.mustChangePassword) showPasswordChange(true); else { $('#password-change').classList.add('d-none'); startRequestPolling(); } return user; }
 function statusBadge(value) { const kind = value === 'APPROVED' ? 'success' : value === 'REJECTED' ? 'danger' : 'warning'; return `<span class="badge text-bg-${kind}">${escapeHtml(statusLabels[value] ?? value)}</span>`; }
 function message(text, type = 'success') { const el = $('#alert'); el.className = `alert alert-${type}`; el.textContent = text; }
 function renderCloudMappings(mappings = null) {
@@ -33,17 +35,81 @@ function displayTime(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
+function retryCountdown(value) {
+  const retryAt = new Date(value).getTime();
+  if (!Number.isFinite(retryAt)) return '';
+  const seconds = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+  return seconds ? `约 ${seconds} 秒后自动重试` : '自动重试即将执行';
+}
 function render(items) {
-  $('#rows').innerHTML = items.length ? items.map((item) => `<tr><td><div class="fw-semibold">${escapeHtml(requestSubject(item))}</div>${item.reportTitle ? `<div class="small text-body-secondary">${escapeHtml(item.reportTitle)}</div>` : '<div class="small text-body-secondary">旧版请求未携带软件版本信息</div>'}</td><td>${statusBadge(item.status)}</td><td>${escapeHtml(item.cloudApprovalId ?? '-')}<br><span class="small text-body-secondary">${escapeHtml(item.cloudStatus ?? '-')}</span></td><td class="font-monospace small" title="${escapeHtml(item.manifestSha256)}">${escapeHtml(item.manifestSha256?.slice(0, 16))}…</td><td>${escapeHtml(displayTime(item.updatedAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-primary btn-sm detail-button" data-id="${escapeHtml(item.requestId)}">详情</button></div></td></tr>`).join('') : '<tr><td colspan="6" class="text-center text-body-secondary py-4">暂无审批请求</td></tr>';
+  $('#rows').innerHTML = items.length ? items.map((item) => `<tr><td><div class="fw-semibold">${escapeHtml(requestSubject(item))}</div>${item.reportTitle ? `<div class="small text-body-secondary">${escapeHtml(item.reportTitle)}</div>` : '<div class="small text-body-secondary">旧版请求未携带软件版本信息</div>'}</td><td>${statusBadge(item.status)}${item.status === 'CLOUD_PENDING' ? `<div class="small text-body-secondary mt-1">${escapeHtml(submissionStateLabels[item.cloudSubmissionState] ?? '等待提交')}${item.cloudSubmissionAttempts ? ` · 累计 ${escapeHtml(item.cloudSubmissionAttempts)} 次` : ''}</div>${item.cloudSubmissionState === 'RETRY_WAIT' && item.cloudRetryAt ? `<div class="small text-warning-emphasis mt-1">${escapeHtml(retryCountdown(item.cloudRetryAt))}</div>` : ''}${item.lastError ? `<div class="small text-danger mt-1" title="${escapeHtml(item.lastError)}">最近错误：${escapeHtml(item.lastError.length > 80 ? `${item.lastError.slice(0, 80)}…` : item.lastError)}</div>` : ''}` : ''}</td><td>${escapeHtml(item.cloudApprovalId ?? '-')}<br><span class="small text-body-secondary">${escapeHtml(item.cloudStatus ?? '-')}</span></td><td class="font-monospace small" title="${escapeHtml(item.manifestSha256)}">${escapeHtml(item.manifestSha256?.slice(0, 16))}…</td><td>${escapeHtml(displayTime(item.updatedAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-primary btn-sm detail-button" data-id="${escapeHtml(item.requestId)}">详情</button></div></td></tr>`).join('') : '<tr><td colspan="6" class="text-center text-body-secondary py-4">暂无审批请求</td></tr>';
   document.querySelectorAll('.detail-button').forEach((button) => { button.onclick = () => showDetail(button.dataset.id); });
 }
-async function load() { try { render((await api('/api/v1/approval-requests')).items); clearMessage(); } catch (error) { message(error.message, 'danger'); } }
+async function load({ quiet = false } = {}) { try { render((await api('/api/v1/approval-requests')).items); if (!quiet) clearMessage(); if ($('#detail').open && $('#detail').dataset.requestId) await showDetail($('#detail').dataset.requestId); } catch (error) { if (!quiet) message(error.message, 'danger'); } }
+function startRequestPolling() { if (requestPollTimer) return; requestPollTimer = setInterval(() => { if (!$('#app').classList.contains('d-none') && !$('#page-requests').classList.contains('d-none') && !document.hidden) void load({ quiet: true }); }, 5000); }
 function renderArtifacts(items) {
   $('#artifact-rows').innerHTML = items.length ? items.map((item) => `<tr><td><div class="fw-semibold">${escapeHtml(item.productName ?? '历史产品')} / ${escapeHtml(item.version ?? '-')}</div><div class="small text-body-secondary">${item.roundNo ? `第 ${escapeHtml(item.roundNo)} 轮` : escapeHtml(item.roundId)}</div></td><td>${escapeHtml(item.releaseId)}</td><td><div>${escapeHtml(item.cloudApprovalId ?? '-')}</div><div class="small text-body-secondary">${escapeHtml(item.transferTaskId ?? item.cloudTransferTaskId ?? '-')}</div></td><td class="font-monospace small" title="${escapeHtml(item.manifestSha256)}">${escapeHtml(item.manifestSha256?.slice(0, 16))}…</td><td>${escapeHtml(displayTime(item.receivedAt))}</td><td><button class="btn btn-outline-primary btn-sm artifact-detail" data-id="${escapeHtml(item.requestId)}">审批记录</button></td></tr>`).join('') : '<tr><td colspan="6" class="text-center text-body-secondary py-4">暂无已接收的正式发布基线。审批通过后，完成网闸交付并收到回执后会显示在这里。</td></tr>';
   document.querySelectorAll('.artifact-detail').forEach((button) => { button.onclick = async () => { location.hash = 'requests'; showPage('requests'); await showDetail(button.dataset.id); }; });
 }
 async function loadArtifacts() { try { renderArtifacts((await api('/api/v1/artifacts')).items); clearMessage(); } catch (error) { message(error.message, 'danger'); } }
-async function showDetail(id) { const item = (await api(`/api/v1/approval-requests/${encodeURIComponent(id)}`)).item; $('#detail').classList.remove('d-none'); $('#detail .card-title').textContent = requestSubject(item); $('#fields').innerHTML = [['审批事项', requestSubject(item)], ['验证报告标题', item.reportTitle ?? '旧版请求未携带'], ['软件产品', item.productName ?? '-'], ['软件版本', item.version ?? '-'], ['候选轮次', item.roundNo ? `第 ${item.roundNo} 轮` : '-'], ['申请编号', item.requestId], ['发布版本标识', item.releaseId], ['候选轮次标识', item.roundId], ['状态', statusLabels[item.status] ?? item.status], ['云管审批 ID', item.cloudApprovalId ?? '-'], ['传输任务 ID', item.cloudTransferTaskId ?? '-'], ['清单 SHA-256', item.manifestSha256], ['报告文件', item.reportReceived ? `<a href="/api/v1/approval-requests/${encodeURIComponent(id)}/report-file" target="_blank" rel="noopener">${escapeHtml(item.reportFileName ?? '下载报告')}</a>` : (item.reportFileName ? `${escapeHtml(item.reportFileName)}（待接收）` : '-')], ['报告 SHA-256', item.reportSha256 ?? '-'], ['报告状态', item.reportReceived ? `Core 已校验（${escapeHtml(item.reportReceivedSha256 ?? '')}）` : '待从 Edge 接收'], ['云管附件标识', item.cloudAttachmentId ?? '待上传'], ['最后错误', item.lastError ?? '-']].map(([label, value]) => `<dt class="col-sm-3">${escapeHtml(label)}</dt><dd class="col-sm-9 ${String(value).startsWith('<a ') ? '' : 'font-monospace small'}">${String(value).startsWith('<a ') ? value : escapeHtml(value)}</dd>`).join(''); const actions = []; if (item.status === 'CLOUD_SUBMITTED') actions.push('<button id="sync-button" class="btn btn-primary">查询云管结果</button>'); if (item.status === 'APPROVED' && item.transferTaskId) actions.push('<button id="close-button" class="btn btn-success">确认关单</button>'); $('#actions').innerHTML = actions.join(''); $('#sync-button')?.addEventListener('click', async () => { try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/sync`, { method: 'POST' }); message('已同步云管状态'); await load(); await showDetail(id); } catch (error) { message(error.message, 'danger'); } }); $('#close-button')?.addEventListener('click', async () => { if (!window.confirm('确认将该审批工单关单？')) return; try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/close`, { method: 'POST', body: '{}' }); message('已完成关单'); await load(); await showDetail(id); } catch (error) { message(error.message, 'danger'); } }); }
+async function showDetail(id) {
+  const item = (await api(`/api/v1/approval-requests/${encodeURIComponent(id)}`)).item;
+  const dialog = $('#detail');
+  dialog.dataset.requestId = id;
+  $('#detail .card-title').textContent = requestSubject(item);
+  const cloudRetryStatus = item.status === 'CLOUD_PENDING'
+    ? `${submissionStateLabels[item.cloudSubmissionState] ?? '等待提交'}（累计 ${item.cloudSubmissionAttempts ?? 0} 次）`
+    : '-';
+  const fields = [
+    ['审批事项', requestSubject(item)], ['验证报告标题', item.reportTitle ?? '旧版请求未携带'],
+    ['软件产品', item.productName ?? '-'], ['软件版本', item.version ?? '-'],
+    ['候选轮次', item.roundNo ? `第 ${item.roundNo} 轮` : '-'], ['申请编号', item.requestId],
+    ['发布版本标识', item.releaseId], ['候选轮次标识', item.roundId],
+    ['状态', statusLabels[item.status] ?? item.status], ['云管提交状态', cloudRetryStatus],
+    ['最近提交尝试', item.cloudSubmissionAttemptedAt ? displayTime(item.cloudSubmissionAttemptedAt) : '-'],
+    ['下次自动重试', item.cloudRetryAt ? `${retryCountdown(item.cloudRetryAt)}（${displayTime(item.cloudRetryAt)}）` : '-'],
+    ['云管审批 ID', item.cloudApprovalId ?? '-'], ['传输任务 ID', item.cloudTransferTaskId ?? '-'],
+    ['清单 SHA-256', item.manifestSha256],
+    ['报告文件', item.reportReceived ? `<a href="/api/v1/approval-requests/${encodeURIComponent(id)}/report-file" target="_blank" rel="noopener">${escapeHtml(item.reportFileName ?? '下载报告')}</a>` : (item.reportFileName ? `${item.reportFileName}（待接收）` : '-')],
+    ['报告 SHA-256', item.reportSha256 ?? '-'],
+    ['报告状态', item.reportReceived ? `Core 已校验（${item.reportReceivedSha256 ?? ''}）` : '待从 Edge 接收'],
+    ['云管附件标识', item.cloudAttachmentId ?? '待上传'], ['最后错误', item.lastError ?? '-']
+  ];
+  $('#fields').innerHTML = fields.map(([label, value]) => `<dt class="col-sm-3">${escapeHtml(label)}</dt><dd class="col-sm-9 ${String(value).startsWith('<a ') ? '' : 'font-monospace small'}">${String(value).startsWith('<a ') ? value : escapeHtml(value)}</dd>`).join('');
+  const actions = [];
+  if (item.status === 'CLOUD_PENDING' && currentUser?.roles?.includes('CORE_ADMIN')) {
+    const busy = ['QUEUED', 'SUBMITTING'].includes(item.cloudSubmissionState);
+    actions.push(`<button id="retry-cloud-button" class="btn btn-warning" ${busy ? 'disabled' : ''}>${busy ? '正在提交…' : '立即重试云管提交'}</button>`);
+  }
+  if (item.status === 'CLOUD_SUBMITTED') actions.push('<button id="sync-button" class="btn btn-primary">查询云管结果</button>');
+  if (item.status === 'APPROVED' && item.transferTaskId) actions.push('<button id="close-button" class="btn btn-success">确认关单</button>');
+  $('#actions').innerHTML = actions.join('');
+  if (!dialog.open) dialog.showModal();
+  $('#retry-cloud-button')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = '正在提交…';
+    try {
+      const result = await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/retry`, { method: 'POST', body: '{}' });
+      message(result.inProgress ? '云管提交已在处理中' : '已触发云管提交重试');
+      await load();
+      await showDetail(id);
+    } catch (error) {
+      message(error.message, 'danger');
+      button.disabled = false;
+      button.textContent = '立即重试云管提交';
+    }
+  });
+  $('#sync-button')?.addEventListener('click', async () => {
+    try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/sync`, { method: 'POST' }); message('已同步云管状态'); await load(); await showDetail(id); }
+    catch (error) { message(error.message, 'danger'); }
+  });
+  $('#close-button')?.addEventListener('click', async () => {
+    if (!window.confirm('确认将该审批工单关单？')) return;
+    try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/close`, { method: 'POST', body: '{}' }); message('已完成关单'); await load(); await showDetail(id); }
+    catch (error) { message(error.message, 'danger'); }
+  });
+}
 async function loadCloudConfig() {
   const form = $('#cloud-config-form');
   renderCloudMappings();
@@ -106,7 +172,9 @@ $('#login-form').addEventListener('submit', async (event) => { event.preventDefa
 $('#password-form').addEventListener('submit', async (event) => { event.preventDefault(); $('#password-error').classList.add('d-none'); if ($('#new-password').value !== $('#repeat-password').value) { $('#password-error').textContent = '两次新密码不一致'; $('#password-error').classList.remove('d-none'); return; } try { await api('/api/v1/auth/password', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ oldPassword: $('#old-password').value, password: $('#new-password').value }) }); $('#password-form').reset(); showLogin(); } catch (error) { $('#password-error').textContent = error.message; $('#password-error').classList.remove('d-none'); } });
 $('#change-password').addEventListener('click', () => showPasswordChange(false));
 $('#password-cancel').addEventListener('click', () => { if (!forcedPasswordChange) { $('#password-form').reset(); $('#password-change').classList.add('d-none'); } });
-$('#logout').addEventListener('click', async () => { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); }); $('#refresh').addEventListener('click', load); $('#artifacts-refresh').addEventListener('click', loadArtifacts);
+$('#logout').addEventListener('click', async () => { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); }); $('#refresh').addEventListener('click', load);
+$('#detail-close').addEventListener('click', () => $('#detail').close());
+$('#detail').addEventListener('click', (event) => { if (event.target === $('#detail')) $('#detail').close(); }); $('#artifacts-refresh').addEventListener('click', loadArtifacts);
 document.querySelectorAll('[data-page]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); location.hash = link.dataset.page; showPage(link.dataset.page); }));
 $('#new-user').addEventListener('click', () => openUserEditor()); $('#user-cancel').addEventListener('click', () => $('#user-editor').classList.add('d-none')); $('#reset-cancel').addEventListener('click', () => $('#user-reset').classList.add('d-none'));
 $('#user-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const userId = form.dataset.userId; const roles = [...document.querySelectorAll('#user-roles input:checked')].map((input) => input.value); const body = { username: $('#user-name').value, displayName: $('#user-display').value, status: $('#user-status').value, roles }; if (!userId) body.password = $('#user-password').value; try { const result = await api(userId ? `/api/v1/users/${encodeURIComponent(userId)}` : '/api/v1/users', { method: userId ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); message(userId ? '账号信息已保存；该账号需要重新登录' : `账号 ${result.user.username} 已创建，首次登录须修改初始密码`); $('#user-editor').classList.add('d-none'); if (userId === currentUser?.id) { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); } else await loadUsers(); } catch (error) { $('#user-error').textContent = error.message; $('#user-error').classList.remove('d-none'); } });
