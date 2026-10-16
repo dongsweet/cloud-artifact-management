@@ -67,7 +67,9 @@
 }
 .cam-detail-modal::backdrop { background: rgb(0 0 0 / 55%); }
 .cam-detail-dialog { max-height: inherit; overflow-y: auto; }
-.cam-detail-modal .card-header { position: sticky; top: 0; z-index: 1; background: var(--bs-body-bg); }
+.cam-detail-modal .card-header { position: sticky; top: 0; z-index: 1; background: var(--bs-body-bg); padding-right: 4.75rem; }
+.cam-detail-modal .card-header > .d-flex { margin-right: 2rem; }
+.cam-detail-modal #detail-close { position: absolute; top: .85rem; right: .9rem; z-index: 2; flex: 0 0 auto; }
 .cam-detail-title-wrap { min-width: 0; }
 .cam-detail-title-wrap .card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cam-detail-modal .card-body { padding: 1.25rem; }

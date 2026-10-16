@@ -73,6 +73,14 @@ async function showDetail(id) {
   const retryPanel = item.status === 'CLOUD_PENDING'
     ? `<div class="cam-retry-panel"><div><span class="fw-semibold">${escapeHtml(cloudRetryStatus)}</span>${item.cloudSubmissionAttemptedAt ? `<span class="small text-body-secondary ms-2">最近尝试：${escapeHtml(displayTime(item.cloudSubmissionAttemptedAt))}</span>` : ''}</div>${item.cloudRetryAt ? `<div class="small text-warning-emphasis mt-1"><i class="bi bi-clock me-1"></i>${escapeHtml(retryCountdown(item.cloudRetryAt))} · ${escapeHtml(displayTime(item.cloudRetryAt))}</div>` : ''}${item.lastError ? `<div class="small text-danger mt-2"><i class="bi bi-exclamation-circle me-1"></i>${escapeHtml(item.lastError)}</div>` : ''}</div>`
     : `<div class="cam-retry-panel cam-retry-panel-muted">${escapeHtml(statusLabels[item.status] ?? item.status)}${item.cloudWorkflowStep ? ` · 云管环节：${escapeHtml(item.cloudWorkflowStep)}` : ''}</div>`;
+  const transferLabel = item.transferStatus === 'RECEIVED'
+    ? '传输完成，Core 已收到回执'
+    : item.transferTaskId
+      ? '已准备传输，等待网闸传输并回执'
+      : item.status === 'APPROVED'
+        ? (item.cloudTransferTaskId ? '审批已通过，待准备传输' : '审批已通过，等待云管返回传输任务')
+        : '审批通过后可准备传输';
+  const transferPanel = `<div class="cam-transfer-state"><span class="badge text-bg-${item.transferStatus === 'RECEIVED' ? 'success' : item.transferTaskId ? 'primary' : item.status === 'APPROVED' ? 'warning' : 'secondary'}">${escapeHtml(transferLabel)}</span>${item.transferStatus === 'RECEIVED' && item.updatedAt ? `<div class="small text-body-secondary mt-1">最近更新：${escapeHtml(displayTime(item.updatedAt))}</div>` : ''}${item.status === 'APPROVED' && !item.transferTaskId ? '<div class="small text-body-secondary mt-1">准备动作会绑定云管审批返回的任务编号和已批准清单，不会修改制品内容。</div>' : ''}</div>`;
   $('#fields').innerHTML = `
     <section class="cam-detail-section"><h4><i class="bi bi-box-seam me-2"></i>发布信息</h4><div class="cam-detail-grid">
       ${textField('软件产品', item.productName)}${textField('软件版本', item.displayVersion ?? item.version)}${textField('候选轮次', item.roundNo ? `第 ${item.roundNo} 轮` : '-')}${textField('验证报告标题', item.reportTitle ?? '旧版请求未携带')}
@@ -80,6 +88,7 @@ async function showDetail(id) {
     </div></section>
     <section class="cam-detail-section"><h4><i class="bi bi-arrow-left-right me-2"></i>审批与传输</h4><div class="cam-detail-grid">
       ${detailField('云管提交状态', retryPanel, { wide: true })}${textField('云管审批 ID', item.cloudApprovalId, { mono: true })}${textField('传输任务 ID', item.cloudTransferTaskId, { mono: true })}
+      ${detailField('正式制品传输进度', transferPanel, { wide: true })}
       ${textField('清单 SHA-256', item.manifestSha256, { mono: true, wide: true })}${textField('云管附件标识', item.cloudAttachmentId ?? '待上传', { mono: true })}
     </div></section>
     <section class="cam-detail-section"><h4><i class="bi bi-file-earmark-check me-2"></i>验证报告</h4><div class="cam-detail-grid">
@@ -92,7 +101,8 @@ async function showDetail(id) {
     actions.push(`<button id="retry-cloud-button" class="btn btn-warning" ${busy ? 'disabled' : ''}>${busy ? '正在提交…' : '立即重试云管提交'}</button>`);
   }
   if (item.status === 'CLOUD_SUBMITTED') actions.push('<button id="sync-button" class="btn btn-primary">查询云管结果</button>');
-  if (item.status === 'APPROVED' && item.transferTaskId) actions.push('<button id="close-button" class="btn btn-success">确认关单</button>');
+  if (item.status === 'APPROVED' && !item.transferTaskId && item.cloudTransferTaskId && currentUser?.roles?.includes('CORE_ADMIN')) actions.push('<button id="prepare-transfer-button" class="btn btn-primary"><i class="bi bi-send-check me-1"></i>准备正式制品传输</button>');
+  if (item.status === 'APPROVED' && item.transferStatus === 'RECEIVED') actions.push('<button id="close-button" class="btn btn-success">确认关单</button>');
   $('#actions').innerHTML = actions.join('');
   if (!dialog.open) dialog.showModal();
   $('#retry-cloud-button')?.addEventListener('click', async (event) => {
@@ -113,6 +123,23 @@ async function showDetail(id) {
   $('#sync-button')?.addEventListener('click', async () => {
     try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/sync`, { method: 'POST' }); message('已同步云管状态'); await load(); await showDetail(id); }
     catch (error) { message(error.message, 'danger'); }
+  });
+  $('#prepare-transfer-button')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>正在准备…';
+    try {
+      await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/transfer-authorize`, {
+        method: 'POST', body: JSON.stringify({ manifestSha256: item.manifestSha256, transferTaskId: item.cloudTransferTaskId })
+      });
+      message('已准备正式制品传输。传输任务已绑定获批清单，等待网闸发送与接收回执。');
+      await load();
+      await showDetail(id);
+    } catch (error) {
+      message(error.message, 'danger');
+      button.disabled = false;
+      button.innerHTML = '<i class="bi bi-send-check me-1"></i>准备正式制品传输';
+    }
   });
   $('#close-button')?.addEventListener('click', async () => {
     if (!window.confirm('确认将该审批工单关单？')) return;
