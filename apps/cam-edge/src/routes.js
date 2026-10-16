@@ -457,7 +457,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
 
   app.post('/api/v1/products/:productId/releases', async (request, reply) => {
-    try { return reply.code(201).send(store.createRelease(request.params.productId, request.body ?? {})); }
+    try { return reply.code(201).send(store.createReleaseWithFirstRound(request.params.productId, { ...(request.body ?? {}), createdBy: principal(request).principalId })); }
     catch (err) { return error(reply, 400, 'invalid_release', err.message); }
   });
 
@@ -483,12 +483,12 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
 
   app.post('/api/v1/releases/:releaseId/rounds', async (request, reply) => {
-    try { return reply.code(201).send(store.createRound(request.params.releaseId, { ...(request.body ?? {}), createdBy: principal(request).principalId })); }
+    try { return reply.code(201).send(store.createNextRound(request.params.releaseId, { changeNote: request.body?.changeNote, createdBy: principal(request).principalId })); }
     catch (err) { return error(reply, 400, 'invalid_round', err.message); }
   });
 
   app.get('/api/v1/releases/:releaseId/rounds', async (request, reply) => {
-    try { return reply.send({ items: store.listRounds(request.params.releaseId) }); }
+    try { return reply.send({ items: store.listRounds(request.params.releaseId), nextRound: store.roundCreationPreview(request.params.releaseId) }); }
     catch (err) { return error(reply, 400, 'invalid_round_query', err.message); }
   });
 

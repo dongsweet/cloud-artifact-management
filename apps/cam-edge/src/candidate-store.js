@@ -233,6 +233,27 @@ export class CandidateStore {
     return this.getRelease(releaseId);
   }
 
+  createReleaseWithFirstRound(productId, { version, createdBy = null }) {
+    const product = this.getProduct(productId);
+    if (!product) throw new Error('product not found');
+    const releaseVersion = safeText(version, 'version', { max: 128 });
+    const timestamp = now();
+    const releaseId = id('REL');
+    const roundId = id('ROUND');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('INSERT INTO releases (release_id, product_id, version, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(releaseId, productId, releaseVersion, 'OPEN', timestamp, timestamp);
+      this.db.prepare('INSERT INTO release_rounds (round_id, release_id, round_no, base_round_id, change_note, created_by, status, created_at, updated_at) VALUES (?, ?, 1, NULL, ?, ?, ?, ?, ?)')
+        .run(roundId, releaseId, '发布版本创建，开始第一轮候选包收集', createdBy, 'OPEN', timestamp, timestamp);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      if (String(error.message).includes('UNIQUE')) throw new Error('release version already exists for this product');
+      throw error;
+    }
+    return { ...this.getRelease(releaseId), initialRound: this.getRound(roundId) };
+  }
+
   getRelease(releaseId) {
     return parseRelease(this.db.prepare(`SELECT r.*, p.name AS product_name,
       (SELECT COUNT(*) FROM candidates c WHERE c.release_id = r.release_id) AS candidate_count,
@@ -351,6 +372,24 @@ export class CandidateStore {
   listRounds(releaseId) {
     if (!this.getRelease(releaseId)) throw new Error('release not found');
     return this.db.prepare('SELECT round_id FROM release_rounds WHERE release_id = ? ORDER BY round_no DESC').all(releaseId).map(({ round_id: roundId }) => this.getRound(roundId));
+  }
+
+  roundCreationPreview(releaseId) {
+    const release = this.getRelease(releaseId);
+    if (!release) return null;
+    const latestRound = this.db.prepare('SELECT round_id, round_no FROM release_rounds WHERE release_id = ? ORDER BY round_no DESC LIMIT 1').get(releaseId);
+    return {
+      productName: release.productName,
+      version: release.version,
+      roundNo: Number(latestRound?.round_no ?? 0) + 1,
+      baseRoundId: latestRound?.round_id ?? null
+    };
+  }
+
+  createNextRound(releaseId, { changeNote = '', createdBy = null } = {}) {
+    const preview = this.roundCreationPreview(releaseId);
+    if (!preview) throw new Error('release not found');
+    return this.createRound(releaseId, { baseRoundId: preview.baseRoundId, changeNote, createdBy });
   }
 
   listRoundCandidates(roundId) {

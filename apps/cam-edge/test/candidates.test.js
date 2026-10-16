@@ -269,6 +269,26 @@ test('release rounds inherit unchanged candidate packages and replace only updat
   await app.close();
 });
 
+test('release creation atomically creates the first round and server calculates the next round', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-release-round-atomic-'));
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'release-operator', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }), dataDir });
+  const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Atomic Stack' } })).json();
+  const created = await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '8.0.6.4' } });
+  assert.equal(created.statusCode, 201, created.body);
+  const release = created.json();
+  assert.equal(release.initialRound.roundNo, 1);
+  assert.equal(release.initialRound.releaseId, release.releaseId);
+  const preview = await app.inject({ method: 'GET', url: `/api/v1/releases/${release.releaseId}/rounds` });
+  assert.equal(preview.statusCode, 200);
+  assert.equal(preview.json().nextRound.roundNo, 2);
+  assert.equal(preview.json().nextRound.baseRoundId, release.initialRound.roundId);
+  const second = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: { changeNote: '第二轮变更' } });
+  assert.equal(second.statusCode, 201, second.body);
+  assert.equal(second.json().roundNo, 2);
+  assert.equal(second.json().baseRoundId, release.initialRound.roundId);
+  await app.close();
+});
+
 test('round creation requires an audit note and accepts downloadable evidence attachments', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-round-audit-'));
   const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'release-operator', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER'] }) });

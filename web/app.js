@@ -265,7 +265,6 @@ async function loadReleaseDetail(generation = state.routeGeneration) {
     getRounds(state.releaseId)
   ]);
   if (generation !== state.routeGeneration) return;
-  state.releaseRounds = rounds;
   state.productId = release.productId;
   state.currentRelease = release;
   $('#release-title').textContent = `${release.productName} / ${release.version}`;
@@ -761,27 +760,23 @@ $('#release-form').addEventListener('submit', async (event) => {
     // Every release starts with an auditable first collection round. The
     // release API remains backward compatible for non-UI callers; the UI
     // creates the initial round immediately and opens it for package entry.
-    const round = await api(`/api/v1/releases/${encodeURIComponent(release.releaseId)}/rounds`, { method: 'POST', body: JSON.stringify({ changeNote: '发布版本创建，开始第一轮候选包收集' }) });
-    modal('release').hide(); form.reset(); showAlert('发布版本及第一轮候选轮次已创建'); navigate('release-detail', { releaseId: release.releaseId, roundId: round.roundId });
+    modal('release').hide(); form.reset(); showAlert('发布版本及第一轮候选轮次已创建'); navigate('release-detail', { releaseId: release.releaseId, roundId: release.initialRound.roundId });
   } catch (error) { showAlert(error.message, 'danger'); }
 });
 
 $('#new-round-button').addEventListener('click', async () => {
   $('#round-form').reset();
-  const release = state.currentRelease ?? (state.releaseId ? await api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}`) : null);
-  const rounds = state.releaseId ? await getRounds(state.releaseId) : [];
-  state.releaseRounds = rounds;
-  const nextRoundNo = (rounds.reduce((max, item) => Math.max(max, Number(item.roundNo) || 0), 0) + 1);
-  $('#round-product-preview').value = release?.productName ?? '-';
-  $('#round-release-preview').value = release?.version ?? '-';
-  $('#round-number-preview').value = `第 ${nextRoundNo} 轮`;
+  const roundsResponse = state.releaseId ? await api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}/rounds`) : { items: [], nextRound: null };
+  const nextRound = roundsResponse.nextRound;
+  $('#round-product-preview').value = nextRound?.productName ?? state.currentRelease?.productName ?? '-';
+  $('#round-release-preview').value = nextRound?.version ?? state.currentRelease?.version ?? '-';
+  $('#round-number-preview').value = nextRound ? `第 ${nextRound.roundNo} 轮` : '-';
   modal('round').show();
 });
 $('#round-form').addEventListener('submit', async (event) => {
   event.preventDefault(); const button = event.currentTarget.querySelector('button[type=submit]'); button.disabled = true;
   try {
-    const latestRoundId = state.releaseRounds?.reduce((latest, item) => !latest || item.roundNo > latest.roundNo ? item : latest, null)?.roundId ?? null;
-    const round = await api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}/rounds`, { method: 'POST', body: JSON.stringify({ baseRoundId: latestRoundId, changeNote: $('#round-change-note').value.trim() }) });
+    const round = await api(`/api/v1/releases/${encodeURIComponent(state.releaseId)}/rounds`, { method: 'POST', body: JSON.stringify({ changeNote: $('#round-change-note').value.trim() }) });
     for (const file of Array.from($('#round-attachments').files ?? [])) { const headers = { 'x-attachment-filename': encodeURIComponent(file.name), 'content-type': file.type || 'application/octet-stream' }; await api(`/api/v1/rounds/${encodeURIComponent(round.roundId)}/attachments`, { method: 'POST', headers, body: await file.arrayBuffer() }); }
     modal('round').hide(); showAlert(`第 ${round.roundNo} 轮已创建${round.baseRoundId ? '，已继承上一轮候选包' : ''}`); navigate('release-detail', { releaseId: state.releaseId, roundId: round.roundId });
   } catch (error) { showAlert(error.message, 'danger'); } finally { button.disabled = false; }
