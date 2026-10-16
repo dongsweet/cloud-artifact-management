@@ -25,6 +25,21 @@
 .file-name { max-width: 16rem; }
 .compact-progress { min-width: 5.5rem; height: .45rem; }
 .font-monospace { overflow-wrap: anywhere; }
+#import-preview-scroll { max-height: 52vh; overflow: auto; }
+#import-preview-table { width: max-content; min-width: 100%; table-layout: fixed; }
+#import-preview-table th,
+#import-preview-table td { vertical-align: middle; }
+#import-preview-table thead th { position: sticky; top: 0; z-index: 4; background: #f8f9fa; }
+#import-preview-table th:nth-child(1),
+#import-preview-table td:nth-child(1) { position: sticky; left: 0; width: 2.75rem; min-width: 2.75rem; max-width: 2.75rem; }
+#import-preview-table th:nth-child(2),
+#import-preview-table td:nth-child(2) { position: sticky; left: 2.75rem; width: 3.5rem; min-width: 3.5rem; max-width: 3.5rem; }
+#import-preview-table th:nth-child(3),
+#import-preview-table td:nth-child(3) { position: sticky; left: 6.25rem; width: 15rem; min-width: 15rem; max-width: 15rem; box-shadow: .2rem 0 .35rem rgb(20 32 44 / 10%); }
+#import-preview-table tbody td:nth-child(-n+3) { z-index: 2; background: var(--bs-body-bg, #fff); }
+#import-preview-table thead th:nth-child(-n+3) { z-index: 6; }
+#import-preview-table th:nth-child(n+4),
+#import-preview-table td:nth-child(n+4) { width: 14rem; min-width: 14rem; max-width: 22rem; white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 767.98px) {
   .app-sidebar { width: 4.5rem; }
   .app-sidebar .brand-text, .app-sidebar .nav-link p { display: none; }
