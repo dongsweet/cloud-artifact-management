@@ -131,11 +131,16 @@ cloud-artifact-management/
 │  ├─ cam-transfer/             # 分块、续传、重试和合并
 │  ├─ cam-sqlite/               # SQLite 连接、迁移和事务封装
 │  └─ cam-protocol/             # 区内 API 和跨区消息结构
-├─ web/
+├─ edge-web/                    # cam-edge-web 页面工程
 │  ├─ index.html                # 外部交换区管理页面入口
 │  ├─ app.js                    # 页面交互和候选任务操作
 │  └─ app.css                   # 页面定制样式
-├─ web.Dockerfile               # Caddy、静态资源和反向代理镜像
+├─ core-web/                    # cam-core-web 页面工程
+│  ├─ index.html                # 统一运维内网管理页面入口
+│  ├─ core.js                   # 页面交互和云管审批操作
+│  └─ core.css                  # 页面定制样式
+├─ edge-web.Dockerfile          # Edge 管理页面静态资源和反向代理镜像
+├─ core-web.Dockerfile          # Core 管理页面静态资源和反向代理镜像
 ├─ deploy/
 │  ├─ docker/                   # Dockerfile、启动脚本和健康检查
 │  ├─ compose/                  # edge、core、agent 部署文件

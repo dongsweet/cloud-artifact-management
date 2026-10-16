@@ -2,9 +2,9 @@ ARG CADDY_BASE_IMAGE=caddy:2.11.4
 
 FROM node:24-bookworm-slim AS assets
 WORKDIR /build
-COPY web/package.json web/package-lock.json ./
+COPY edge-web/package.json edge-web/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
-COPY web/index.html web/app.js web/account-ui.js web/app.css ./
+COPY edge-web/index.html edge-web/app.js edge-web/account-ui.js edge-web/app.css ./
 RUN mkdir -p /out/assets/fonts \
   && cp node_modules/bootstrap/dist/css/bootstrap.min.css /out/assets/ \
   && cp node_modules/bootstrap/dist/js/bootstrap.bundle.min.js /out/assets/ \
@@ -19,7 +19,7 @@ ARG CADDY_BASE_IMAGE
 FROM ${CADDY_BASE_IMAGE} AS caddy-runtime
 
 FROM caddy-runtime
-COPY web/Caddyfile /etc/caddy/Caddyfile
+COPY edge-web/Caddyfile /etc/caddy/Caddyfile
 COPY --from=assets /out /srv/web
 RUN addgroup -S -g 10001 cam && adduser -S -D -H -u 10001 -G cam cam \
   && chown -R cam:cam /srv/web /data /config

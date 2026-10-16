@@ -39,7 +39,7 @@ services:
   cam-edge-web:
     build:
       context: .
-      dockerfile: web.Dockerfile
+      dockerfile: edge-web.Dockerfile
       args:
         CADDY_BASE_IMAGE: ${CADDY_BASE_IMAGE:-caddy:2.11.4}
     image: cam-edge-web:dev
