@@ -266,7 +266,7 @@ test('release rounds inherit unchanged candidate packages and replace only updat
   assert.equal(round2.canDeleteEmpty, true);
   assert.equal((await app.inject({ method: 'POST', url: `/api/v1/releases/${releaseId}/rounds`, payload: { changeNote: '不能从空轮次继续创建' } })).statusCode, 409);
   const inherited = await app.inject({ method: 'GET', url: `/api/v1/rounds/${round2.roundId}/candidates` });
-  assert.deepEqual(inherited.json().items.map((item) => [item.packageKey, item.candidateId, item.mappingSource]), [['agent', packageB.candidateId, 'INHERITED'], ['base', packageA.candidateId, 'INHERITED']]);
+  assert.deepEqual(inherited.json().items.map((item) => [item.packageKey, item.candidateId, item.mappingSource, item.inheritedFromRoundNo]), [['agent', packageB.candidateId, 'INHERITED', 1], ['base', packageA.candidateId, 'INHERITED', 1]]);
   const replacement = (await createPackage(round2.roundId, 'agent', 'agent-v2.tar')).json();
   const updated = await app.inject({ method: 'GET', url: `/api/v1/rounds/${round2.roundId}/candidates` });
   const items = updated.json().items;

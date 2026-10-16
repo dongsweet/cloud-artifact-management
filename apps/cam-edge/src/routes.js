@@ -92,6 +92,7 @@ function candidateResponse(candidate) {
     type: candidate.metadata?.type ?? null,
     mappingSource: candidate.mapping_source,
     inheritedFromRoundId: candidate.inherited_from_round_id,
+    inheritedFromRoundNo: candidate.inherited_from_round_no,
     sourceUrl: candidate.source_url,
     fileName: candidate.file_name,
     version: candidate.version,

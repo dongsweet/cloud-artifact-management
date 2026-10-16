@@ -498,10 +498,12 @@ export class CandidateStore {
 
   listRoundCandidates(roundId) {
     if (!this.getRound(roundId)) throw new Error('round not found');
-    return this.db.prepare(`SELECT rc.package_key, rc.source AS mapping_source, rc.inherited_from_round_id, c.*,
+    return this.db.prepare(`SELECT rc.package_key, rc.source AS mapping_source, rc.inherited_from_round_id,
+      inherited_round.round_no AS inherited_from_round_no, c.*,
       (SELECT COUNT(*) FROM candidate_parts p WHERE p.candidate_id = c.candidate_id AND p.status = 'COMPLETED') AS completed_parts,
       (c.chunk_count - (SELECT COUNT(*) FROM candidate_parts p WHERE p.candidate_id = c.candidate_id AND p.status = 'COMPLETED')) AS missing_parts
       FROM round_candidates rc JOIN candidates c ON c.candidate_id = rc.candidate_id
+      LEFT JOIN release_rounds inherited_round ON inherited_round.round_id = rc.inherited_from_round_id
       WHERE rc.round_id = ? ORDER BY rc.package_key`).all(roundId).map(parseCandidate);
   }
 
