@@ -196,7 +196,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, ena
   queueMicrotask(() => { void pumpWorkers(); });
   app.addHook('onClose', async () => clearInterval(cloudTimer));
   app.addHook('onRequest', async (request, reply) => {
-    const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/');
+    const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/') || request.url.startsWith('/api/v1/gate/pairing-probe');
     if (!exchangePath) return;
     const authorization = await gateAuthorized(request, keyring);
     if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Core 尚未完成 Edge 身份配对，暂不能接收跨区业务消息');
@@ -229,6 +229,25 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, ena
   app.get('/api/v1/gate/keys', async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置权限');
     return { item: await keyring.status(), identityBundle: await keyring.identity() };
+  });
+  app.post('/api/v1/gate/keys/test', async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置管理员权限');
+    const status = await keyring.status();
+    if (!status.peerTrusted || !status.keyConfigured) return error(reply, 409, 'gate_pairing_required', '身份配对或首个共享密钥尚未完成，业务通道仍不可用');
+    const config = gateConfig.get();
+    if (!config.edgeControlUrl) return error(reply, 400, 'gate_address_missing', '请先配置 Edge 控制地址（内侧）');
+    try {
+      const secret = await keyring.currentSecret();
+      const response = await fetchImpl(`${config.edgeControlUrl.replace(/\/$/u, '')}/api/v1/gate/pairing-probe`, { headers: { 'x-cam-gate-secret': secret.toString('base64url'), accept: 'application/json' }, signal: AbortSignal.timeout(config.connectTimeoutMs) });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.role !== 'edge' || body.peerTrusted !== true || body.keyConfigured !== true) return error(reply, 502, body.error?.code ?? 'gate_pairing_probe_failed', body.error?.message ?? 'Edge 未确认身份配对和共享密钥状态');
+      return { ok: true, checks: { local: { role: 'core', peerTrusted: true, keyConfigured: true }, remote: { role: body.role, peerTrusted: body.peerTrusted, keyConfigured: body.keyConfigured }, authenticated: true } };
+    } catch (err) { return error(reply, 502, err.code ?? 'gate_pairing_probe_failed', err.message ?? '无法连接 Edge 配对测试接口'); }
+  });
+  app.get('/api/v1/gate/pairing-probe', async (request, reply) => {
+    const status = await keyring.status();
+    if (!status.peerTrusted || !status.keyConfigured) return error(reply, 503, 'gate_pairing_required', 'Core 身份配对或共享密钥尚未完成');
+    return { role: 'core', peerTrusted: true, keyConfigured: true };
   });
   app.put('/api/v1/gate/keys/trusted-peer', { bodyLimit: 16 * 1024 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置管理员权限');
