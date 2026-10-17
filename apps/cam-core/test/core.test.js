@@ -38,6 +38,20 @@ test('Core rejects cross-zone business messages before identity pairing and shar
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Core pairing probe authenticates the paired Edge without requiring a browser session', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-pairing-probe-'));
+  const app = await buildCoreApp({ dataDir });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
+  try {
+    const unauthorized = await app.inject({ method: 'GET', url: '/api/v1/gate/pairing-probe' });
+    assert.equal(unauthorized.statusCode, 401);
+    const secret = await app.gateKeyring.currentSecret();
+    const accepted = await app.inject({ method: 'GET', url: '/api/v1/gate/pairing-probe', headers: { 'x-cam-gate-secret': secret.toString('base64url') } });
+    assert.equal(accepted.statusCode, 200, accepted.body);
+    assert.deepEqual(accepted.json(), { role: 'core', peerTrusted: true, keyConfigured: true });
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('cam-core only authorizes transfer after cloud approval is queried and matched', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-'));
   const calls = [];

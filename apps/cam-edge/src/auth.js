@@ -30,7 +30,7 @@ export function registerAuth(app, { auth, principalProvider, secureCookies = pro
     if (path.startsWith('/api/v1/auth/')) return;
     let required;
     if (path.startsWith('/api/v1/users') || path === '/api/v1/auth-events') required = ['EDGE_ADMIN', ...(writing ? [] : ['EDGE_AUDITOR'])];
-    else if (path === '/api/v1/gate/config' || path === '/api/v1/gate/config/test' || path === '/api/v1/gate/keys' || path === '/api/v1/gate/keys/trusted-peer') required = writing ? ['EDGE_ADMIN'] : ['EDGE_ADMIN', 'EDGE_AUDITOR'];
+    else if (path === '/api/v1/gate/config' || path === '/api/v1/gate/config/test' || path === '/api/v1/gate/keys' || path === '/api/v1/gate/keys/test' || path === '/api/v1/gate/keys/trusted-peer') required = writing ? ['EDGE_ADMIN'] : ['EDGE_ADMIN', 'EDGE_AUDITOR'];
     else if (path === '/api/v1/validators') required = ['VALIDATOR'];
     else if (path.startsWith('/api/v1/download-grants')) required = writing ? ['VALIDATOR'] : ['VALIDATOR', 'EDGE_AUDITOR'];
     else if (/^\/api\/v1\/rounds\/[^/]+\/freezes$/.test(path)) required = writing ? ['VALIDATOR'] : ['VALIDATOR', 'RELEASE_APPLICANT', 'EDGE_AUDITOR'];
