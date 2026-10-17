@@ -15,7 +15,8 @@ function error(reply, statusCode, code, message) {
 
 async function gateAuthorized(keyring, received, options = {}) {
   const status = await keyring.status();
-  if (!status.peerTrusted || !status.keyConfigured) return 'pairing_required';
+  const initialKeyConfirmation = options.includePending && !status.keyConfigured && status.rotationState === 'PREPARED';
+  if (!status.peerTrusted || (!status.keyConfigured && !initialKeyConfirmation)) return 'pairing_required';
   const verified = await keyring.verifySecret(received, options);
   if (!verified) return false;
   return true;
