@@ -32,8 +32,8 @@ test('Core rejects cross-zone business messages before identity pairing and shar
     assert.equal((await app.gateKeyring.status()).keyConfigured, false);
     assert.equal((await app.gateKeyring.status()).peerTrusted, false);
     const result = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: { 'x-cam-gate-secret': 'bootstrap-secret' }, payload: envelope });
-    assert.equal(result.statusCode, 401, result.body);
-    assert.equal(result.json().error.code, 'gate_auth_required');
+    assert.equal(result.statusCode, 503, result.body);
+    assert.equal(result.json().error.code, 'gate_pairing_required');
     assert.deepEqual(app.coreStore.list(), []);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });

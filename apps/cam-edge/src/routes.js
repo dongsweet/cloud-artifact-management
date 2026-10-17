@@ -14,9 +14,11 @@ function error(reply, statusCode, code, message) {
 }
 
 async function gateAuthorized(keyring, received, options = {}) {
+  const status = await keyring.status();
+  if (!status.peerTrusted || !status.keyConfigured) return 'pairing_required';
   const verified = await keyring.verifySecret(received, options);
   if (!verified) return false;
-  return (await keyring.status()).peerTrusted ? true : 'pairing_required';
+  return true;
 }
 
 function principal(request) {

@@ -99,8 +99,8 @@ test('Edge accepts only authenticated, idempotent Core approval-result callbacks
     const unpaired = await buildEdgeApp({ dataDir: unpairedDir });
     try {
       const blocked = await unpaired.inject({ method: 'POST', url: '/api/v1/gate/approval-results', headers: { 'x-cam-gate-secret': 'gate-test' }, payload: {} });
-      assert.equal(blocked.statusCode, 401, blocked.body);
-      assert.equal(blocked.json().error.code, 'gate_auth_required');
+      assert.equal(blocked.statusCode, 503, blocked.body);
+      assert.equal(blocked.json().error.code, 'gate_pairing_required');
     } finally { await unpaired.close(); await rm(unpairedDir, { recursive: true, force: true }); }
     const unauthorized = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-results', payload });
     assert.equal(unauthorized.statusCode, 401);

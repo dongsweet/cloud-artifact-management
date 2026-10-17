@@ -10,9 +10,11 @@ import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/c
 function error(reply, status, code, message) { return reply.code(status).send({ error: { code, message } }); }
 
 async function gateAuthorized(request, keyring) {
+  const status = await keyring.status();
+  if (!status.peerTrusted || !status.keyConfigured) return 'pairing_required';
   const verified = await keyring.verifySecret(request.headers['x-cam-gate-secret']);
   if (!verified) return false;
-  return (await keyring.status()).peerTrusted ? true : 'pairing_required';
+  return true;
 }
 
 async function rotateEdgeKey({ keyring, gateConfig }) {
