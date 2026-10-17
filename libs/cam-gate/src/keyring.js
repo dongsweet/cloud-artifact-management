@@ -32,12 +32,10 @@ function encryptedKey(secret, recipientPublicKey) {
 }
 
 export class GateKeyring {
-  constructor({ filePath, role, bootstrapSecret = '', bootstrapPreviousSecret = '', now = () => Date.now() }) {
+  constructor({ filePath, role, now = () => Date.now() }) {
     if (!filePath || !['core', 'edge'].includes(role)) throw new TypeError('filePath and core/edge role are required');
     this.filePath = filePath;
     this.role = role;
-    this.bootstrapSecret = bootstrapSecret;
-    this.bootstrapPreviousSecret = bootstrapPreviousSecret;
     this.now = now;
     this.state = null;
     this.ready = this.#load();
@@ -57,24 +55,17 @@ export class GateKeyring {
         events: [],
         updatedAt: new Date(this.now()).toISOString()
       };
-      if (this.bootstrapSecret) {
-        const secret = Buffer.from(this.bootstrapSecret);
-        this.state.active = { id: 'BOOTSTRAP', secret: secret.toString('base64url'), activatedAt: new Date(this.now()).toISOString() };
-        this.state.nextRotationAt = new Date(this.now() + this.state.rotationIntervalDays * 86400000).toISOString();
-        if (this.bootstrapPreviousSecret) this.state.previous = { id: 'BOOTSTRAP_PREVIOUS', secret: Buffer.from(this.bootstrapPreviousSecret).toString('base64url'), activatedAt: new Date(this.now()).toISOString(), expiresAt: new Date(this.now() + this.state.gracePeriodHours * 3600000).toISOString() };
-      }
       await this.#save();
     }
     if (this.state.version !== VERSION || this.state.role !== this.role) throw new Error('CAM 网闸密钥环文件版本或安全区不匹配');
     this.state.events ??= [];
-    // Also bootstrap a keyring file that was created before the shared secret
-    // was configured. Never replace an already active (possibly rotated) key.
-    if (!this.state.active && this.bootstrapSecret) {
-      const now = this.now();
-      this.state.active = { id: 'BOOTSTRAP', secret: Buffer.from(this.bootstrapSecret).toString('base64url'), activatedAt: new Date(now).toISOString() };
-      if (this.bootstrapPreviousSecret) this.state.previous = { id: 'BOOTSTRAP_PREVIOUS', secret: Buffer.from(this.bootstrapPreviousSecret).toString('base64url'), activatedAt: new Date(now).toISOString(), expiresAt: new Date(now + this.state.gracePeriodHours * 3600000).toISOString() };
-      this.state.nextRotationAt ??= new Date(now + this.state.rotationIntervalDays * 86400000).toISOString();
-      this.#event('BOOTSTRAP_SECRET_IMPORTED');
+    // Retire legacy environment-provisioned keys. Initial keys are established
+    // only after both peers trust each other's identity bundles.
+    if (this.state.active?.id === 'BOOTSTRAP' || this.state.previous?.id === 'BOOTSTRAP_PREVIOUS') {
+      if (this.state.active?.id === 'BOOTSTRAP') this.state.active = null;
+      if (this.state.previous?.id === 'BOOTSTRAP_PREVIOUS') this.state.previous = null;
+      this.state.nextRotationAt = null;
+      this.#event('BOOTSTRAP_SECRET_RETIRED');
       await this.#save();
     }
   }

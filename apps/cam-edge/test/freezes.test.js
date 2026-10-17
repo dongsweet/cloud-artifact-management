@@ -81,7 +81,7 @@ test('freeze requires every candidate to have completed integrity verification',
 
 test('Edge accepts only authenticated, idempotent Core approval-result callbacks', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-core-result-'));
-  const app = await buildEdgeApp({ dataDir, gateSecret: 'gate-test', principalProvider: () => ({ id: 'test-admin', type: 'TEST_IDP', roles: ['EDGE_ADMIN', 'CANDIDATE_RECEIVER', 'VALIDATOR'] }) });
+  const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'test-admin', type: 'TEST_IDP', roles: ['EDGE_ADMIN', 'CANDIDATE_RECEIVER', 'VALIDATOR'] }) });
   await trustTestPeer(app.gateKeyring, dataDir, 'core');
   const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Callback product' } })).json();
   const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } })).json();
@@ -96,11 +96,11 @@ test('Edge accepts only authenticated, idempotent Core approval-result callbacks
   const payload = { schemaVersion: 1, type: 'APPROVAL_RESULT', eventId: 'DECISION-1', requestId: freezeId, freezeId, status: 'APPROVED', decidedAt: now };
   try {
     const unpairedDir = `${dataDir}-unpaired`;
-    const unpaired = await buildEdgeApp({ dataDir: unpairedDir, gateSecret: 'gate-test' });
+    const unpaired = await buildEdgeApp({ dataDir: unpairedDir });
     try {
       const blocked = await unpaired.inject({ method: 'POST', url: '/api/v1/gate/approval-results', headers: { 'x-cam-gate-secret': 'gate-test' }, payload: {} });
-      assert.equal(blocked.statusCode, 503, blocked.body);
-      assert.equal(blocked.json().error.code, 'gate_pairing_required');
+      assert.equal(blocked.statusCode, 401, blocked.body);
+      assert.equal(blocked.json().error.code, 'gate_auth_required');
     } finally { await unpaired.close(); await rm(unpairedDir, { recursive: true, force: true }); }
     const unauthorized = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-results', payload });
     assert.equal(unauthorized.statusCode, 401);

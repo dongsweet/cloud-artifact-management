@@ -140,4 +140,4 @@ node tools/cam-gate-simulator.js --root /tmp/cam-gate-test --direction outside-t
 
 生产环境的山石网闸按现场确认采用映射模式：只映射 CAM 指定的虚拟 IP/端口到指定服务端口，并限制源对象、目的对象、协议和方向。网闸模式调研、映射规则建议、测试目录约定和云管联调现状见 [`docs/gate-integration-and-simulator.md`](docs/gate-integration-and-simulator.md)。
 
-跨区受控接口的共享密钥由 Core 的密钥环自动管理。首次配对前，`CAM_GATE_SHARED_SECRET` 仅作为一次性引导密钥注入两端；完成 Edge/Core 身份配对后，Core 按页面配置的轮换周期生成新密钥，经加密提案、双端确认和短期新旧密钥过渡自动完成轮换。密钥环保存在各安全区数据目录的 `gate-keyring.json`，不写 SQLite、交换包或日志；`.env` 中不再手工维护日常轮换值。
+跨区受控接口的共享密钥由 Core 的密钥环自动管理。初始化不注入共享密钥；双方互信身份包后，Core 生成首个密钥并通过签名、加密提案和双端确认完成建立，之后按页面配置的轮换周期自动轮换并保留短期新旧密钥过渡。密钥环保存在各安全区数据目录的 `gate-keyring.json`，不写 SQLite、交换包或日志；`.env` 中不再手工维护日常轮换值。

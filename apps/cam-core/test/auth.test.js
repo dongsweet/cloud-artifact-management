@@ -11,7 +11,7 @@ function cookieValue(response, name) { return response.headers['set-cookie'].map
 
 test('Core local accounts are isolated, require password change, CSRF, and leave gate authentication independent', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-local-auth-'));
-  const app = await buildCoreApp({ dataDir, gateSecret: 'gate-test', cloudAdapter: {
+  const app = await buildCoreApp({ dataDir, cloudAdapter: {
     createApproval: async () => ({ approvalId: 'APR-1' }),
     resolveMappings: async () => ({ priority: { id: '394', label: '常规变更' }, source: { id: '402', label: '内部需求' }, businessType: { id: '231', path: '平台类/其他' }, dept: { id: '215', label: '成都' }, team: { id: '3', label: '运维团队' }, processUserIds: ['2308'], processUsers: [{ userId: '2308', username: 'zhuren_luan' }], resolvedAt: new Date().toISOString() })
   } });
@@ -71,13 +71,13 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
-test('gate key rotation accepts current and previous keys during overlap, but rejects retired keys', async () => {
+test('gate key authentication accepts the negotiated key and rejects unknown keys', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-gate-rotation-'));
-  const app = await buildCoreApp({ dataDir, gateSecret: 'new-gate-key', previousGateSecret: 'old-gate-key', enableAuth: false, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) } });
+  const app = await buildCoreApp({ dataDir, enableAuth: false, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) } });
   await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   const payload = { schemaVersion: 1, requestId: 'R-ROTATE', freezeId: 'F-ROTATE', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64) };
   try {
-    for (const [index, secret] of ['new-gate-key', 'old-gate-key'].entries()) {
+    for (const [index, secret] of ['gate-test', 'gate-test'].entries()) {
       const response = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: { 'x-cam-gate-secret': secret }, payload });
       assert.equal(response.statusCode, index === 0 ? 202 : 200, response.body);
     }

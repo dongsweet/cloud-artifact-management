@@ -203,11 +203,11 @@ async function loadGateKeys() {
   $('#gate-identity-bundle').value = JSON.stringify(result.identityBundle, null, 2);
   $('#gate-peer-fingerprint').textContent = result.item.peerTrusted ? result.item.peerFingerprint : '尚未配对';
   $('#gate-key-state').textContent = !result.item.peerTrusted
-    ? '对端身份尚未配对；当前初始化共享密钥不能用于业务传输，审批消息、回执和制品传输均已禁用。完成 Edge 身份配对后才可启用。'
+    ? '对端身份尚未配对；当前没有业务共享密钥，审批消息、回执和制品传输均已禁用。双方完成身份配对后，Core 才会自动建立密钥。'
     : result.item.keyConfigured
-      ? `Edge 身份已配对；当前密钥 ${result.item.activeKeyId}；${result.item.previousKeyExpiresAt ? `旧密钥过渡至 ${new Date(result.item.previousKeyExpiresAt).toLocaleString()}` : '无旧密钥过渡'}`
-      : 'Edge 身份已配对，尚未建立共享密钥；完成密钥初始化后才可传输';
-  $('#gate-secret-status').value = !result.item.peerTrusted ? '未配对，业务传输已禁用' : result.item.keyConfigured ? (result.item.previousKeyExpiresAt ? '已配对（新旧密钥过渡中）' : '已配对，密钥可用') : '已配对，等待初始化密钥';
+      ? `双向身份配对成功；当前密钥 ${result.item.activeKeyId}；${result.item.previousKeyExpiresAt ? `旧密钥过渡至 ${new Date(result.item.previousKeyExpiresAt).toLocaleString()}` : '无旧密钥过渡'}`
+      : '已导入 Edge 身份包，等待 Edge 互信确认及首个业务密钥建立；密钥确认前仍不可传输';
+  $('#gate-secret-status').value = !result.item.peerTrusted ? '未配对，业务传输已禁用' : result.item.keyConfigured ? (result.item.previousKeyExpiresAt ? '配对成功（新旧密钥过渡中）' : '配对成功，密钥可用') : '配对握手中，业务传输禁用';
   $('#gate-rotation-days').value = result.item.rotationIntervalDays;
   $('#gate-grace-hours').value = result.item.gracePeriodHours;
 }

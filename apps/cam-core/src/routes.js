@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -9,21 +9,10 @@ import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/c
 
 function error(reply, status, code, message) { return reply.code(status).send({ error: { code, message } }); }
 
-async function gateAuthorized(request, secrets, keyring) {
-  if (keyring) {
-    const verified = await keyring.verifySecret(request.headers['x-cam-gate-secret']);
-    if (!verified) return false;
-    return (await keyring.status()).peerTrusted ? true : 'pairing_required';
-  }
-  const accepted = Array.isArray(secrets) ? secrets.filter(Boolean) : [secrets].filter(Boolean);
-  if (!accepted.length) return process.env.NODE_ENV !== 'production';
-  const received = request.headers['x-cam-gate-secret'];
-  if (typeof received !== 'string') return false;
-  const actual = Buffer.from(received);
-  return accepted.some((secret) => {
-    const expected = Buffer.from(secret);
-    return actual.length === expected.length && timingSafeEqual(actual, expected);
-  });
+async function gateAuthorized(request, keyring) {
+  const verified = await keyring.verifySecret(request.headers['x-cam-gate-secret']);
+  if (!verified) return false;
+  return (await keyring.status()).peerTrusted ? true : 'pairing_required';
 }
 
 async function rotateEdgeKey({ keyring, gateConfig }) {
@@ -33,9 +22,8 @@ async function rotateEdgeKey({ keyring, gateConfig }) {
   const baseUrl = config.edgeControlUrl.replace(/\/$/u, '');
   if (pending.status === 'PROPOSAL_PENDING') {
     const secret = await keyring.currentSecret();
-    if (!secret) throw Object.assign(new Error('尚未建立初始网闸密钥，不能发起轮换'), { code: 'gate_key_not_configured' });
     const proposed = await fetch(`${baseUrl}/api/v1/gate/key-rotation/proposals`, {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-cam-gate-secret': secret.toString('base64url') }, body: JSON.stringify(pending.proposal), signal: AbortSignal.timeout(config.connectTimeoutMs)
+      method: 'POST', headers: { 'content-type': 'application/json', ...(secret ? { 'x-cam-gate-secret': secret.toString('base64url') } : {}) }, body: JSON.stringify(pending.proposal), signal: AbortSignal.timeout(config.connectTimeoutMs)
     });
     const response = await proposed.json().catch(() => ({}));
     if (!proposed.ok) throw Object.assign(new Error(response.error?.message ?? `Edge 密钥提案失败（HTTP ${proposed.status}）`), { code: 'gate_rotation_proposal_failed' });
@@ -51,7 +39,7 @@ async function rotateEdgeKey({ keyring, gateConfig }) {
   return keyring.markEdgeConfirmed(pending.id);
 }
 
-export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGateSecret, gateConfig, keyring, enableKeyRotation = false, cloudRetryDelayMs = 30_000, cloudStatusPollMs = 30_000, approvalResultRetryBaseMs = 5_000, workerIntervalMs = 5_000, fetchImpl = fetch }) {
+export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, enableKeyRotation = false, cloudRetryDelayMs = 30_000, cloudStatusPollMs = 30_000, approvalResultRetryBaseMs = 5_000, workerIntervalMs = 5_000, fetchImpl = fetch }) {
   const cloudInFlight = new Set();
   const cloudStatusNextAttempt = new Map();
   const cloudStatusInFlight = new Set();
@@ -208,7 +196,7 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
   app.addHook('onRequest', async (request, reply) => {
     const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/');
     if (!exchangePath) return;
-    const authorization = await gateAuthorized(request, [gateSecret, previousGateSecret], keyring);
+    const authorization = await gateAuthorized(request, keyring);
     if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Core 尚未完成 Edge 身份配对，暂不能接收跨区业务消息');
     if (!authorization) return error(reply, 401, 'gate_auth_required', '受控交换身份校验失败');
   });

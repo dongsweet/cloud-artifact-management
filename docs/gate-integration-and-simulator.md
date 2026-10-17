@@ -21,7 +21,7 @@ CAM 应为每条业务链路配置独立、最小化的映射规则。建议至�
 
 实际虚拟 IP、目标 IP、端口、入口设备和出口设备由网闸管理员根据现场地址规划填写，不能写死在 CAM 代码中。若现场将审批控制消息和大文件合并为一个 HTTPS 映射端口，应仍在应用层区分消息接口和制品接口，并分别校验权限、摘要和任务编号。
 
-部署配置按通信方向区分映射地址：Edge 配置 `CAM_GATE_CORE_CONTROL_URL` 和 `CAM_GATE_CORE_TRANSFER_URL`，即 Edge 外侧访问的 Core 控制与制品传输虚拟地址；Core 配置 `CAM_GATE_EDGE_CONTROL_URL` 和 `CAM_GATE_EDGE_TRANSFER_URL`，即 Core 内侧访问的 Edge 控制与制品/回执虚拟地址。地址填写山石网闸提供的本区可达虚拟地址，不填写对端容器内网地址；业务路径继续由 CAM 固定。`CAM_GATE_CHUNK_SIZE_BYTES`、`CAM_GATE_RETRY_LIMIT`、`CAM_GATE_CONNECT_TIMEOUT_MS`、`CAM_GATE_TRANSFER_TIMEOUT_MS`、`CAM_GATE_MAX_IN_FLIGHT_CHUNKS` 和 `CAM_GATE_REQUEST_TTL_SECONDS` 分别控制分块、重试、超时、并发和请求有效期。当前版本提供 Edge 和 Core 的“网闸对接配置”页面。Edge 页面填写外侧访问 Core 的控制/制品传输地址，Core 页面填写内侧访问 Edge 的控制/制品回执地址；两类配置分别保存到本区 SQLite 的 `edge_gate_config` 或 `core_gate_config` 并记录变更审计。首次使用通过页面互相配对身份包，之后由 Core 自动生成并轮换共享密钥；双端身份配对是审批消息、回执和正式制品传输的强制前置条件，只有引导共享密钥但未配对时所有业务通道均拒绝服务；私钥和密钥环分别持久化在各自安全区的数据目录中，页面不会展示密钥内容。
+部署配置按通信方向区分映射地址：Edge 配置 `CAM_GATE_CORE_CONTROL_URL` 和 `CAM_GATE_CORE_TRANSFER_URL`，即 Edge 外侧访问的 Core 控制与制品传输虚拟地址；Core 配置 `CAM_GATE_EDGE_CONTROL_URL` 和 `CAM_GATE_EDGE_TRANSFER_URL`，即 Core 内侧访问的 Edge 控制与制品/回执虚拟地址。地址填写山石网闸提供的本区可达虚拟地址，不填写对端容器内网地址；业务路径继续由 CAM 固定。`CAM_GATE_CHUNK_SIZE_BYTES`、`CAM_GATE_RETRY_LIMIT`、`CAM_GATE_CONNECT_TIMEOUT_MS`、`CAM_GATE_TRANSFER_TIMEOUT_MS`、`CAM_GATE_MAX_IN_FLIGHT_CHUNKS` 和 `CAM_GATE_REQUEST_TTL_SECONDS` 分别控制分块、重试、超时、并发和请求有效期。当前版本提供 Edge 和 Core 的“网闸对接配置”页面。Edge 页面填写外侧访问 Core 的控制/制品传输地址，Core 页面填写内侧访问 Edge 的控制/制品回执地址；两类配置分别保存到本区 SQLite 的 `edge_gate_config` 或 `core_gate_config` 并记录变更审计。首次使用通过页面互相配对身份包；双方互信后，Core 才生成首个业务密钥，并通过对端身份签名验证、加密提案和双端确认建立密钥，之后自动轮换。双端身份配对和首个密钥确认是审批消息、回执和正式制品传输的强制前置条件；初始化阶段不配置共享密钥，未完成配对的业务通道一律拒绝请求。私钥和密钥环分别持久化在各自安全区的数据目录中，页面不会展示密钥内容。
 
 在映射模式下，CAM 的应用链路仍应保持异步和幂等：
 
@@ -76,7 +76,7 @@ node tools/cam-gate-simulator.js \
 
 Edge/Core 在此测试 Compose 中通过 `http://cam-gate-sim:<端口>` 访问对应通道。模拟器按流转发请求和响应，不缓存完整请求体；每条通道只允许访问 Compose 中预先指定的单一上游地址，拒绝 CONNECT 和 Upgrade 隧道。镜像使用 Node.js 原生 HTTP 能力，不增加运行依赖。可用 `/healthz` 检查单个映射监听器。
 
-这是应用层端口转发测试替身，只能验证地址、端口、HTTP 消息和大请求流式转发；Edge/Core 仍处于同一 Docker 网络，不能验证物理隔离、网闸策略、抗病毒、协议过滤、网闸审计或安全边界。该服务只加入 `compose.direct.yaml`，不得用于正式部署；`compose.yaml` 不包含该容器。模拟器可验证四条通道的地址、端口和流式转发。它不模拟山石设备管理 API，也不改变 CAM 的业务接口契约。生产映射通道的业务接口包括 `POST /api/v1/gate/approval-requests`（Edge 提交申请到 Core）、`POST /api/v1/gate/approval-results`（Core 回告审批）、`POST /api/v1/gate/transfer-requests`（Core 授权通知 Edge）、`GET /api/v1/gate/transfers/:taskId/manifest` 与 `PUT /api/v1/gate/transfers/:taskId/artifacts/:sha256/parts/:index`（Edge 推送，Core 分块接收），以及 `POST /api/v1/gate/receipts`（Edge 提交回执）。这些接口均要求本端已信任对端身份，并校验网闸共享密钥和获批任务绑定；任一侧未完成身份配对时以 gate_pairing_required 拒绝业务消息、回执和文件传输，即使引导共享密钥已配置也不可传输。Core 按获批清单校验分块摘要、组装后的整文件 SHA-256 和文件大小，同摘要对象只存储一次。Edge 发送失败会自动退避重试，并在固化详情中显示状态、尝试次数和最近错误。
+这是应用层端口转发测试替身，只能验证地址、端口、HTTP 消息和大请求流式转发；Edge/Core 仍处于同一 Docker 网络，不能验证物理隔离、网闸策略、抗病毒、协议过滤、网闸审计或安全边界。该服务只加入 `compose.direct.yaml`，不得用于正式部署；`compose.yaml` 不包含该容器。模拟器可验证四条通道的地址、端口和流式转发。它不模拟山石设备管理 API，也不改变 CAM 的业务接口契约。生产映射通道的业务接口包括 `POST /api/v1/gate/approval-requests`（Edge 提交申请到 Core）、`POST /api/v1/gate/approval-results`（Core 回告审批）、`POST /api/v1/gate/transfer-requests`（Core 授权通知 Edge）、`GET /api/v1/gate/transfers/:taskId/manifest` 与 `PUT /api/v1/gate/transfers/:taskId/artifacts/:sha256/parts/:index`（Edge 推送，Core 分块接收），以及 `POST /api/v1/gate/receipts`（Edge 提交回执）。这些接口均要求本端已信任对端身份，并校验网闸共享密钥和获批任务绑定；未完成身份配对或首个密钥确认时拒绝业务消息、回执和文件传输。Core 按获批清单校验分块摘要、组装后的整文件 SHA-256 和文件大小，同摘要对象只存储一次。Edge 发送失败会自动退避重试，并在固化详情中显示状态、尝试次数和最近错误。
 
 ## 云管工单联调现状与启用条件
 

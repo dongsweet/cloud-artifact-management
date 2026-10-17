@@ -193,7 +193,10 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     catch (err) { return error(reply, 400, err.code ?? 'gate_peer_invalid', err.message); }
   });
   app.post('/api/v1/gate/key-rotation/proposals', { bodyLimit: 16 * 1024 }, async (request, reply) => {
-    const authorization = await gateAuthorized(keyring, request.headers['x-cam-gate-secret']);
+    const status = await keyring.status();
+    const authorization = !status.keyConfigured && status.peerTrusted
+      ? true
+      : await gateAuthorized(keyring, request.headers['x-cam-gate-secret']);
     if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Edge 尚未完成 Core 身份配对，暂不能处理密钥轮换');
     if (!authorization) return error(reply, 401, 'gate_auth_required', '网闸密钥轮换身份校验失败');
     try { return await keyring.acceptProposal(request.body ?? {}); }

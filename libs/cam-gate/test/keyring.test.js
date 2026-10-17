@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GateKeyring } from '../src/keyring.js';
 
-test('Core rotates a shared key over a signed encrypted proposal and keeps a bounded overlap', async () => {
+test('Core establishes the first shared key only after mutual identity trust, then rotates with bounded overlap', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cam-gate-keyring-'));
   try {
     let now = Date.now();
@@ -19,7 +19,7 @@ test('Core rotates a shared key over a signed encrypted proposal and keeps a bou
     const proposal = await core.prepareProposal();
     const proof = await edge.acceptProposal(proposal.proposal);
     await core.verifyProof(proof);
-    const newKey = (await core.acceptedSecrets()).find((item) => item.id !== 'BOOTSTRAP');
+    const newKey = (await core.acceptedSecrets())[0];
     assert.ok(newKey);
     assert.equal(await edge.verifySecret(newKey.secret.toString('base64url')), false, 'Edge must not activate the proposal before Core confirms it');
     await edge.confirmAtEdge(proposal.id);
@@ -51,19 +51,18 @@ test('Edge rejects unauthenticated and tampered rotation proposals', async () =>
   }
 });
 
-test('a configured bootstrap secret initializes an existing empty keyring without overwriting a rotated key', async () => {
+test('legacy bootstrap secrets are retired on load', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cam-gate-bootstrap-'));
   const filePath = join(dir, 'core.json');
   try {
     const empty = new GateKeyring({ filePath, role: 'core' });
     assert.equal((await empty.status()).keyConfigured, false);
-
-    const bootstrapped = new GateKeyring({ filePath, role: 'core', bootstrapSecret: 'initial-secret' });
-    assert.equal(await bootstrapped.verifySecret('initial-secret'), 'BOOTSTRAP');
-
-    const restarted = new GateKeyring({ filePath, role: 'core', bootstrapSecret: 'different-env-secret' });
-    assert.equal(await restarted.verifySecret('initial-secret'), 'BOOTSTRAP');
-    assert.equal(await restarted.verifySecret('different-env-secret'), false);
+    const legacy = JSON.parse(await readFile(filePath, 'utf8'));
+    legacy.active = { id: 'BOOTSTRAP', secret: Buffer.from('old-secret').toString('base64url'), activatedAt: new Date().toISOString() };
+    await (await import('node:fs/promises')).writeFile(filePath, JSON.stringify(legacy));
+    const restarted = new GateKeyring({ filePath, role: 'core' });
+    assert.equal((await restarted.status()).keyConfigured, false);
+    assert.equal(await restarted.verifySecret('old-secret'), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
