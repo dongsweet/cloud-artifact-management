@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { buildCoreApp } from '../src/server.js';
+import { trustTestPeer } from '../../../libs/cam-gate/test-helper.js';
 
 function cookies(response) { return response.headers['set-cookie'].map((value) => value.split(';', 1)[0]).join('; '); }
 function cookieValue(response, name) { return response.headers['set-cookie'].map((value) => value.split(';', 1)[0]).find((value) => value.startsWith(`${name}=`)).slice(name.length + 1); }
@@ -14,6 +15,7 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
     createApproval: async () => ({ approvalId: 'APR-1' }),
     resolveMappings: async () => ({ priority: { id: '394', label: '常规变更' }, source: { id: '402', label: '内部需求' }, businessType: { id: '231', path: '平台类/其他' }, dept: { id: '215', label: '成都' }, team: { id: '3', label: '运维团队' }, processUserIds: ['2308'], processUsers: [{ userId: '2308', username: 'zhuren_luan' }], resolvedAt: new Date().toISOString() })
   } });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   try {
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests' })).statusCode, 401);
     assert.deepEqual(app.coreStore.list(), []);
@@ -72,6 +74,7 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
 test('gate key rotation accepts current and previous keys during overlap, but rejects retired keys', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-gate-rotation-'));
   const app = await buildCoreApp({ dataDir, gateSecret: 'new-gate-key', previousGateSecret: 'old-gate-key', enableAuth: false, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) } });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   const payload = { schemaVersion: 1, requestId: 'R-ROTATE', freezeId: 'F-ROTATE', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64) };
   try {
     for (const [index, secret] of ['new-gate-key', 'old-gate-key'].entries()) {

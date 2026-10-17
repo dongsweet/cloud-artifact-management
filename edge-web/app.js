@@ -122,8 +122,12 @@ async function loadGateKeys() {
   const result = await api('/api/v1/gate/keys');
   $('#gate-identity-bundle').value = JSON.stringify(result.identityBundle, null, 2);
   $('#gate-peer-fingerprint').textContent = result.item.peerTrusted ? result.item.peerFingerprint : '尚未配对';
-  $('#gate-secret-status').value = result.item.keyConfigured ? (result.item.previousKeyExpiresAt ? '自动管理（新旧密钥过渡中）' : '自动管理（已配置）') : '等待 Core 配对并初始化';
-  $('#gate-key-state').textContent = result.item.keyConfigured ? `当前密钥 ${result.item.activeKeyId}；${result.item.previousKeyExpiresAt ? `旧密钥过渡至 ${new Date(result.item.previousKeyExpiresAt).toLocaleString()}` : '无旧密钥过渡'}` : '尚未建立共享密钥，完成双端身份配对后由 Core 自动初始化';
+  $('#gate-key-state').textContent = !result.item.peerTrusted
+    ? '对端身份尚未配对；当前初始化共享密钥不能用于业务传输，审批消息、回执和制品传输均已禁用。完成 Core 身份配对后才可启用。'
+    : result.item.keyConfigured
+      ? `Core 身份已配对；当前密钥 ${result.item.activeKeyId}；${result.item.previousKeyExpiresAt ? `旧密钥过渡至 ${new Date(result.item.previousKeyExpiresAt).toLocaleString()}` : '无旧密钥过渡'}`
+      : 'Core 身份已配对，尚未建立共享密钥；完成密钥初始化后才可传输';
+  $('#gate-secret-status').value = !result.item.peerTrusted ? '未配对，业务传输已禁用' : result.item.keyConfigured ? (result.item.previousKeyExpiresAt ? '已配对（新旧密钥过渡中）' : '已配对，密钥可用') : '已配对，等待初始化密钥';
 }
 
 function productFilterItems(products) { return products.map((item) => ({ id: item.productId, name: item.name })); }

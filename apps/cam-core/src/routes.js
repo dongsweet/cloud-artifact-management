@@ -10,7 +10,11 @@ import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/c
 function error(reply, status, code, message) { return reply.code(status).send({ error: { code, message } }); }
 
 async function gateAuthorized(request, secrets, keyring) {
-  if (keyring && await keyring.verifySecret(request.headers['x-cam-gate-secret'])) return true;
+  if (keyring) {
+    const verified = await keyring.verifySecret(request.headers['x-cam-gate-secret']);
+    if (!verified) return false;
+    return (await keyring.status()).peerTrusted ? true : 'pairing_required';
+  }
   const accepted = Array.isArray(secrets) ? secrets.filter(Boolean) : [secrets].filter(Boolean);
   if (!accepted.length) return process.env.NODE_ENV !== 'production';
   const received = request.headers['x-cam-gate-secret'];
@@ -204,7 +208,9 @@ export function registerCoreRoutes(app, { store, cloud, gateSecret, previousGate
   app.addHook('onRequest', async (request, reply) => {
     const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/');
     if (!exchangePath) return;
-    if (!await gateAuthorized(request, [gateSecret, previousGateSecret], keyring)) return error(reply, 401, 'gate_auth_required', '受控交换身份校验失败');
+    const authorization = await gateAuthorized(request, [gateSecret, previousGateSecret], keyring);
+    if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Core 尚未完成 Edge 身份配对，暂不能接收跨区业务消息');
+    if (!authorization) return error(reply, 401, 'gate_auth_required', '受控交换身份校验失败');
   });
 
   app.get('/api/v1/gate/config', async (request, reply) => {

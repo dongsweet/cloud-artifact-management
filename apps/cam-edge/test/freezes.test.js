@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { buildEdgeApp } from '../src/app.js';
+import { trustTestPeer } from '../../../libs/cam-gate/test-helper.js';
 
 const sha256 = (data) => createHash('sha256').update(data).digest('hex');
 
@@ -81,6 +82,7 @@ test('freeze requires every candidate to have completed integrity verification',
 test('Edge accepts only authenticated, idempotent Core approval-result callbacks', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-core-result-'));
   const app = await buildEdgeApp({ dataDir, gateSecret: 'gate-test', principalProvider: () => ({ id: 'test-admin', type: 'TEST_IDP', roles: ['EDGE_ADMIN', 'CANDIDATE_RECEIVER', 'VALIDATOR'] }) });
+  await trustTestPeer(app.gateKeyring, dataDir, 'core');
   const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Callback product' } })).json();
   const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } })).json();
   const candidate = (await app.inject({ method: 'POST', url: `/api/v1/rounds/${release.initialRound.roundId}/candidates`, payload: { packageKey: 'base', sourceUrl: 'https://example.invalid/base.tar', fileName: 'base.tar', size: 0 } })).json();
@@ -93,6 +95,13 @@ test('Edge accepts only authenticated, idempotent Core approval-result callbacks
     .run(freezeId, release.initialRound.roundId, 'a'.repeat(64), now, now, now);
   const payload = { schemaVersion: 1, type: 'APPROVAL_RESULT', eventId: 'DECISION-1', requestId: freezeId, freezeId, status: 'APPROVED', decidedAt: now };
   try {
+    const unpairedDir = `${dataDir}-unpaired`;
+    const unpaired = await buildEdgeApp({ dataDir: unpairedDir, gateSecret: 'gate-test' });
+    try {
+      const blocked = await unpaired.inject({ method: 'POST', url: '/api/v1/gate/approval-results', headers: { 'x-cam-gate-secret': 'gate-test' }, payload: {} });
+      assert.equal(blocked.statusCode, 503, blocked.body);
+      assert.equal(blocked.json().error.code, 'gate_pairing_required');
+    } finally { await unpaired.close(); await rm(unpairedDir, { recursive: true, force: true }); }
     const unauthorized = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-results', payload });
     assert.equal(unauthorized.statusCode, 401);
     const headers = { 'x-cam-gate-secret': Buffer.from('gate-test').toString('base64url') };

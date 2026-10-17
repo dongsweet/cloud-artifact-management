@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { buildCoreApp } from '../src/server.js';
+import { trustTestPeer } from '../../../libs/cam-gate/test-helper.js';
 
 const manifestSha256 = 'a'.repeat(64);
 const reportSha256 = 'b'.repeat(64);
@@ -24,6 +25,19 @@ const envelope = {
   conclusion: 'PASS'
 };
 
+test('Core rejects cross-zone business messages until the Edge identity is paired, even with a bootstrap secret', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-unpaired-'));
+  const app = await buildCoreApp({ dataDir, gateSecret: 'bootstrap-secret', enableAuth: false, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-UNEXPECTED' }) } });
+  try {
+    assert.equal((await app.gateKeyring.status()).keyConfigured, true);
+    assert.equal((await app.gateKeyring.status()).peerTrusted, false);
+    const result = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: { 'x-cam-gate-secret': 'bootstrap-secret' }, payload: envelope });
+    assert.equal(result.statusCode, 503, result.body);
+    assert.equal(result.json().error.code, 'gate_pairing_required');
+    assert.deepEqual(app.coreStore.list(), []);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('cam-core only authorizes transfer after cloud approval is queried and matched', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-'));
   const calls = [];
@@ -34,6 +48,7 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     async closeApproval(id) { calls.push(['close', id]); return { status: 'CLOSED' }; }
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   const headers = { 'x-cam-gate-secret': 'gate-test' };
   try {
     const received = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: envelope });
@@ -123,6 +138,7 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
 test('gate approval messages require the configured exchange identity', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-auth-'));
   const app = await buildCoreApp({ dataDir, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) }, gateSecret: 'secret', enableAuth: false });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   try {
     const response = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', payload: envelope });
     assert.equal(response.statusCode, 401);
@@ -144,6 +160,7 @@ test('Core polls cloud approval status and reliably pushes only the decision to 
     return Response.json({ accepted: true, requestId: 'FREEZE-CALLBACK', eventId: callbacks.at(-1).payload.eventId, idempotent: false });
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false, fetchImpl, approvalResultRetryBaseMs: 5, workerIntervalMs: 10 });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   app.gateConfigStore.save({ edgeControlUrl: 'http://edge-map:3101', edgeTransferUrl: 'http://edge-map:3101' }, 'test');
   const headers = { 'x-cam-gate-secret': Buffer.from('gate-test').toString('base64url') };
   try {
@@ -169,6 +186,7 @@ test('Core acknowledges an approval before a slow cloud work-order create finish
   let finishCreate;
   const cloud = { createApproval: () => new Promise((resolve) => { finishCreate = resolve; }) };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   const headers = { 'x-cam-gate-secret': 'gate-test' };
   try {
     const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: { ...envelope, requestId: 'FREEZE-SLOW', freezeId: 'FREEZE-SLOW' } });
@@ -193,6 +211,7 @@ test('Core retries a failed cloud work-order submission from its own background 
     async getApproval(approvalId) { return { approvalId, status: 'PENDING', workflowStep: '审批中' }; }
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false, cloudRetryDelayMs: 300, workerIntervalMs: 10 });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   const headers = { 'x-cam-gate-secret': 'gate-test' };
   const payload = { schemaVersion: 1, type: 'VERIFICATION_APPROVAL_REQUEST', requestId: 'FREEZE-RETRY', freezeId: 'FREEZE-RETRY', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64), reportSha256: 'b'.repeat(64), reportFileName: 'report.pdf', conclusion: 'PASS' };
   try {
@@ -229,6 +248,7 @@ test('Core receives and verifies the PDF before uploading it and creating the cl
     return new Response(pdf, { status: 206, headers: { 'content-type': 'application/pdf', 'content-range': `bytes 0-${pdf.length - 1}/${pdf.length}`, 'x-report-sha256': pdfSha } });
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false, fetchImpl });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   app.gateConfigStore.save({ edgeControlUrl: 'http://edge-control', edgeTransferUrl: 'http://edge-transfer' }, 'test');
   const headers = { 'x-cam-gate-secret': 'gate-test' };
   try {
@@ -272,6 +292,7 @@ test('Core stores approved files by SHA-256 and lets multiple package entries sh
     async getApproval(approvalId) { return { approvalId, status: 'APPROVED', transferTaskId: 'TR-FILES', manifestSha256 }; }
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, gateSecret: 'gate-test', enableAuth: false });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   const headers = { 'x-cam-gate-secret': 'gate-test' };
   const request = { ...envelope, requestId: 'FREEZE-FILES', freezeId: 'FREEZE-FILES', manifestSha256 };
   try {
