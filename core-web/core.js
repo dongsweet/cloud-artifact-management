@@ -3,6 +3,7 @@ let forcedPasswordChange = false;
 let currentUser = null;
 let coreRoles = {};
 let coreUsers = [];
+let coreAgents = [];
 let resetUserId = null;
 let cloudMappings = null;
 let requestPollTimer = null;
@@ -79,6 +80,24 @@ function renderArtifacts(items) {
   document.querySelectorAll('.artifact-detail').forEach((button) => { button.onclick = async () => { location.hash = 'requests'; showPage('requests'); await showDetail(button.dataset.id); }; });
 }
 async function loadArtifacts() { try { renderArtifacts((await api('/api/v1/artifacts')).items); clearMessage(); } catch (error) { message(error.message, 'danger'); } }
+function renderAgents(items) {
+  coreAgents = items ?? [];
+  $('#agent-rows').innerHTML = coreAgents.length ? coreAgents.map((agent) => {
+    const active = agent.status === 'ACTIVE';
+    return `<tr><td><div class="fw-semibold">${escapeHtml(agent.name)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(agent.agentId)}</div></td><td>${escapeHtml(agent.centerId)}<div class="small text-body-secondary">${escapeHtml(agent.securityDomain)}</div></td><td><span class="badge text-bg-${active ? 'success' : 'secondary'}">${active ? '启用' : '已禁用'}</span></td><td>${escapeHtml(agent.lastSeenAt ? displayTime(agent.lastSeenAt) : '尚未连接')}</td><td>${escapeHtml(displayTime(agent.createdAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-${active ? 'warning' : 'success'} btn-sm agent-status-button" data-id="${escapeHtml(agent.agentId)}" data-status="${active ? 'DISABLED' : 'ACTIVE'}">${active ? '禁用' : '启用'}</button></div></td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="text-center text-body-secondary py-4">暂无已注册 Agent</td></tr>';
+  document.querySelectorAll('.agent-status-button').forEach((button) => { button.onclick = () => updateAgentStatus(button); });
+}
+async function loadAgents() { try { renderAgents((await api('/api/v1/agents')).items); } catch (error) { message(error.message, 'danger'); } }
+async function updateAgentStatus(button) {
+  const nextStatus = button.dataset.status;
+  button.disabled = true;
+  try {
+    await api(`/api/v1/agents/${encodeURIComponent(button.dataset.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: nextStatus }) });
+    message(nextStatus === 'ACTIVE' ? 'Agent 已启用' : 'Agent 已禁用');
+    await loadAgents();
+  } catch (error) { message(error.message, 'danger'); button.disabled = false; }
+}
 async function showDetail(id) {
   const item = (await api(`/api/v1/approval-requests/${encodeURIComponent(id)}`)).item;
   const dialog = $('#detail');
@@ -212,13 +231,14 @@ async function loadGateKeys() {
   $('#gate-grace-hours').value = result.item.gracePeriodHours;
 }
 function showPage(page) {
-  const artifacts = page === 'artifacts'; const cloud = page === 'cloud-config'; const gate = page === 'gate-config'; const users = page === 'users';
-  $('#page-requests').classList.toggle('d-none', artifacts || cloud || gate || users); $('#page-artifacts').classList.toggle('d-none', !artifacts); $('#page-cloud-config').classList.toggle('d-none', !cloud); $('#page-gate-config').classList.toggle('d-none', !gate); $('#page-users').classList.toggle('d-none', !users);
-  $('#page-title').textContent = artifacts ? '正式制品' : cloud ? '云管对接配置' : gate ? '网闸对接配置' : users ? '账号管理' : '云管审批请求';
+  const artifacts = page === 'artifacts'; const cloud = page === 'cloud-config'; const gate = page === 'gate-config'; const agents = page === 'agents'; const users = page === 'users';
+  $('#page-requests').classList.toggle('d-none', artifacts || cloud || gate || agents || users); $('#page-artifacts').classList.toggle('d-none', !artifacts); $('#page-cloud-config').classList.toggle('d-none', !cloud); $('#page-gate-config').classList.toggle('d-none', !gate); $('#page-agents').classList.toggle('d-none', !agents); $('#page-users').classList.toggle('d-none', !users);
+  $('#page-title').textContent = artifacts ? '正式制品' : cloud ? '云管对接配置' : gate ? '网闸对接配置' : agents ? 'Agent 管理' : users ? '账号管理' : '云管审批请求';
   document.querySelectorAll('[data-page]').forEach((link) => link.classList.toggle('active', link.dataset.page === page));
   if (artifacts) loadArtifacts();
   if (cloud) loadCloudConfig();
   if (gate) loadGateConfig();
+  if (agents) loadAgents();
   if (users) loadUsers();
 }
 async function loadUsers() {
@@ -244,7 +264,26 @@ $('#password-cancel').addEventListener('click', () => { if (!forcedPasswordChang
 $('#logout').addEventListener('click', async () => { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); }); $('#refresh').addEventListener('click', load);
 $('#detail-close').addEventListener('click', () => $('#detail').close());
 $('#detail').addEventListener('click', (event) => { if (event.target === $('#detail')) $('#detail').close(); }); $('#artifacts-refresh').addEventListener('click', loadArtifacts);
+$('#agents-refresh').addEventListener('click', loadAgents);
 document.querySelectorAll('[data-page]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); location.hash = link.dataset.page; showPage(link.dataset.page); }));
+$('#agent-token-copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#agent-token').value); message('服务令牌已复制'); } catch { $('#agent-token').select(); message('复制失败，请手动复制服务令牌', 'warning'); } });
+$('#agent-token-dismiss').addEventListener('click', () => { $('#agent-token').value = ''; $('#agent-token-result').classList.add('d-none'); });
+$('#agent-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('button[type="submit"]');
+  $('#agent-error').classList.add('d-none');
+  button.disabled = true;
+  try {
+    const result = await api('/api/v1/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData(form))) });
+    $('#agent-token').value = result.item.token;
+    $('#agent-token-result').classList.remove('d-none');
+    form.reset();
+    message(`Agent ${result.item.name} 已注册；请立即保存一次性服务令牌`);
+    await loadAgents();
+  } catch (error) { $('#agent-error').textContent = error.message; $('#agent-error').classList.remove('d-none'); }
+  finally { button.disabled = false; }
+});
 $('#new-user').addEventListener('click', () => openUserEditor()); $('#user-cancel').addEventListener('click', () => $('#user-editor').classList.add('d-none')); $('#reset-cancel').addEventListener('click', () => $('#user-reset').classList.add('d-none'));
 $('#user-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const userId = form.dataset.userId; const roles = [...document.querySelectorAll('#user-roles input:checked')].map((input) => input.value); const body = { username: $('#user-name').value, displayName: $('#user-display').value, status: $('#user-status').value, roles }; if (!userId) body.password = $('#user-password').value; try { const result = await api(userId ? `/api/v1/users/${encodeURIComponent(userId)}` : '/api/v1/users', { method: userId ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); message(userId ? '账号信息已保存；该账号需要重新登录' : `账号 ${result.user.username} 已创建，首次登录须修改初始密码`); $('#user-editor').classList.add('d-none'); if (userId === currentUser?.id) { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); } else await loadUsers(); } catch (error) { $('#user-error').textContent = error.message; $('#user-error').classList.remove('d-none'); } });
 $('#reset-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api(`/api/v1/users/${encodeURIComponent(resetUserId)}/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: $('#reset-password').value }) }); $('#user-reset').classList.add('d-none'); message('密码已重置；该账号下次登录须修改初始密码'); await loadUsers(); } catch (error) { $('#reset-error').textContent = error.message; $('#reset-error').classList.remove('d-none'); } });
