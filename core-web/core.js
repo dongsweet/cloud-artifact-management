@@ -19,6 +19,18 @@ function showPasswordChange(forced) { forcedPasswordChange = forced; $('#passwor
 function showApp(user) { currentUser = user; forcedPasswordChange = Boolean(user.mustChangePassword); $('#login').classList.add('d-none'); $('#app').classList.remove('d-none'); clearMessage(); $('#user-label').textContent = `${user.displayName}（${user.username}）`; if (user.mustChangePassword) showPasswordChange(true); else { $('#password-change').classList.add('d-none'); startRequestPolling(); } return user; }
 function statusBadge(value) { const kind = value === 'APPROVED' ? 'success' : value === 'REJECTED' ? 'danger' : 'warning'; return `<span class="badge text-bg-${kind}">${escapeHtml(statusLabels[value] ?? value)}</span>`; }
 function message(text, type = 'success') { const el = $('#alert'); el.className = `alert alert-${type}`; el.textContent = text; }
+function confirmDialog({ title, text, confirmLabel = '确认', confirmClass = 'btn-primary' }) {
+  const dialog = $('#confirm-dialog');
+  $('#confirm-title').textContent = title;
+  $('#confirm-text').textContent = text;
+  const confirmButton = $('#confirm-submit');
+  confirmButton.textContent = confirmLabel;
+  confirmButton.className = `btn ${confirmClass}`;
+  return new Promise((resolve) => {
+    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true });
+    dialog.showModal();
+  });
+}
 function renderCloudMappings(mappings = null) {
   cloudMappings = mappings;
   $('#cloud-id-priority').value = mappings?.priority?.id ?? '';
@@ -189,7 +201,7 @@ async function showDetail(id) {
     }
   });
   $('#close-button')?.addEventListener('click', async () => {
-    if (!window.confirm('确认将该审批工单关单？')) return;
+    if (!await confirmDialog({ title: '确认关单', text: '确认将该审批工单关单？', confirmLabel: '确认关单', confirmClass: 'btn-success' })) return;
     try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/close`, { method: 'POST', body: '{}' }); message('已完成关单'); await load(); await showDetail(id); }
     catch (error) { message(error.message, 'danger'); }
   });
@@ -264,6 +276,9 @@ $('#password-cancel').addEventListener('click', () => { if (!forcedPasswordChang
 $('#logout').addEventListener('click', async () => { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); }); $('#refresh').addEventListener('click', load);
 $('#detail-close').addEventListener('click', () => $('#detail').close());
 $('#detail').addEventListener('click', (event) => { if (event.target === $('#detail')) $('#detail').close(); }); $('#artifacts-refresh').addEventListener('click', loadArtifacts);
+$('#confirm-cancel').addEventListener('click', () => $('#confirm-dialog').close('cancel'));
+$('#confirm-submit').addEventListener('click', () => $('#confirm-dialog').close('confirm'));
+$('#confirm-dialog').addEventListener('click', (event) => { if (event.target === $('#confirm-dialog')) $('#confirm-dialog').close('cancel'); });
 $('#agents-refresh').addEventListener('click', loadAgents);
 document.querySelectorAll('[data-page]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); location.hash = link.dataset.page; showPage(link.dataset.page); }));
 $('#agent-token-copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#agent-token').value); message('服务令牌已复制'); } catch { $('#agent-token').select(); message('复制失败，请手动复制服务令牌', 'warning'); } });

@@ -112,3 +112,7 @@
   .cam-artifact-version > summary .small { width: 100%; margin-left: 1.3rem; }
   .cam-artifact-metadata { grid-template-columns: 1fr; }
 }
+
+.cam-confirm-modal { width: min(480px, calc(100vw - 2rem)); max-width: none; padding: 0; border: 0; border-radius: .5rem; color: inherit; background: transparent; box-shadow: 0 1rem 3rem rgb(0 0 0 / 25%); }
+.cam-confirm-modal::backdrop { background: rgb(0 0 0 / 55%); }
+.cam-confirm-modal .card { min-width: 0 !important; margin: 0; }
