@@ -36,3 +36,27 @@ https://cam-core.cexp.cn:24443 {
 		reverse_proxy 127.0.0.1:8092
 	}
 }
+
+https://cam-ag1.cexp.cn:24443 {
+	encode gzip zstd
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options SAMEORIGIN
+	}
+
+	reverse_proxy 127.0.0.1:3111
+}
+
+https://cam-ag2.cexp.cn:24443 {
+	encode gzip zstd
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options SAMEORIGIN
+	}
+
+	reverse_proxy 127.0.0.1:3112
+}

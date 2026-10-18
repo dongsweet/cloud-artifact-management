@@ -52,7 +52,8 @@ services:
     depends_on:
       - cam-edge
       - cam-core
-      - cam-agent
+      - cam-agent-1
+      - cam-agent-2
     networks:
       - default
     ports:
@@ -157,7 +158,7 @@ services:
       - "127.0.0.1:3102:3102"
     restart: unless-stopped
 
-  cam-agent:
+  cam-agent-1:
     build:
       context: .
       args:
@@ -168,10 +169,46 @@ services:
     tmpfs:
       - /tmp:size=256m,noexec,nosuid,nodev
     volumes:
-      - ${CAM_AGENT_DATA_DIR:-/var/lib/cloud-artifact-management/agent}:/data
+      - ${CAM_AGENT_1_DATA_DIR:-/var/lib/cloud-artifact-management/agent-1}:/data
     environment:
       HOST: 0.0.0.0
       PORT: 3103
+      DATA_DIR: /data/agent
+      CAM_CORE_URL: ${CAM_CORE_URL:-http://cam-core:3102}
+      CAM_AGENT_TOKEN: ${CAM_AGENT_1_TOKEN:-}
+      CAM_AGENT_POLL_MS: ${CAM_AGENT_POLL_MS:-5000}
+      CAM_AGENT_CHUNK_SIZE: ${CAM_AGENT_CHUNK_SIZE:-4194304}
+      CAM_AGENT_CONCURRENCY: ${CAM_AGENT_CONCURRENCY:-4}
+    ports:
+      - "127.0.0.1:3111:3103"
+    networks:
+      - default
+    restart: unless-stopped
+
+  cam-agent-2:
+    build:
+      context: .
+      args:
+        SERVICE: cam-agent
+    image: cam-agent:dev
+    read_only: true
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    volumes:
+      - ${CAM_AGENT_2_DATA_DIR:-/var/lib/cloud-artifact-management/agent-2}:/data
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3103
+      DATA_DIR: /data/agent
+      CAM_CORE_URL: ${CAM_CORE_URL:-http://cam-core:3102}
+      CAM_AGENT_TOKEN: ${CAM_AGENT_2_TOKEN:-}
+      CAM_AGENT_POLL_MS: ${CAM_AGENT_POLL_MS:-5000}
+      CAM_AGENT_CHUNK_SIZE: ${CAM_AGENT_CHUNK_SIZE:-4194304}
+      CAM_AGENT_CONCURRENCY: ${CAM_AGENT_CONCURRENCY:-4}
+    ports:
+      - "127.0.0.1:3112:3103"
     networks:
       - default
     restart: unless-stopped

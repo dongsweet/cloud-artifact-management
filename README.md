@@ -46,7 +46,9 @@ docker compose --env-file deploy/.env -f compose.direct.yaml up -d --build
 回环地址，分别为 `127.0.0.1:8088`、`127.0.0.1:3102` 和 `127.0.0.1:8092`。将
 [`deploy/caddy-cam-sites.Caddyfile`](deploy/caddy-cam-sites.Caddyfile) 中的站点块合并进现有
 Caddyfile，并保留其全局 DNS Challenge 配置。浏览器入口为
-`https://cam-edge.cexp.cn:24443` 和 `https://cam-core.cexp.cn:24443`。Core 域名的页面请求
+`https://cam-edge.cexp.cn:24443`、`https://cam-core.cexp.cn:24443`、
+`https://cam-ag1.cexp.cn:24443` 和 `https://cam-ag2.cexp.cn:24443`。两个 Agent 域名分别
+反向代理到宿主机回环端口 3111、3112；Core 域名的页面请求
 转发到 `cam-core-web`，API 请求转发到 `cam-core`；网闸联动 API 仍由 Core 的受控接口身份
 校验。不要将 core 的 3102 端口绑定到
 `0.0.0.0`。
@@ -63,8 +65,8 @@ Core 账号
 和会话保存在内网 Core 自己的 SQLite 文件，与 Edge 本地账号隔离；后续 AAA 接入时替换认证
 适配器，不改变审批业务页面。
 
-`CAM_EDGE_DATA_DIR`、`CAM_CORE_DATA_DIR` 和 `CAM_AGENT_DATA_DIR` 是宿主机本地目录，分别保存
-各安全区的 SQLite 数据库和制品文件。容器只把这些目录绑定到 `/data`，业务数据不再存放在
+`CAM_EDGE_DATA_DIR`、`CAM_CORE_DATA_DIR`、`CAM_AGENT_1_DATA_DIR` 和 `CAM_AGENT_2_DATA_DIR` 是宿主机本地目录，分别保存
+各安全区的 SQLite 数据库和制品文件。两个 Agent 使用独立数据目录，容器只把这些目录绑定到 `/data`，业务数据不再存放在
 Docker volume 中。升级镜像或重建容器前先执行 `sudo -E sh deploy/init-data-directories.sh`。
 
 `cam-core` 对接统一云管时，先将 `deploy/.env.example` 复制为目标主机的 `deploy/.env`，再使用同一个环境文件启动 Compose：
@@ -80,7 +82,7 @@ docker compose --env-file deploy/.env up -d --build cam-core
 验证报告提交采用持久化 outbox 队列。Edge 先把审批信封原子写入 `exchange/outbox/approval-requests/` 并写入 SQLite，再通过配置的 Core 控制映射地址自动投递；请求使用当前网闸共享密钥认证，投递失败会按退避策略重试，服务重启后继续处理。Core 接收后按 `requestId` 幂等处理，并自动调用云管创建工单；云管暂时不可用时，Core 自行按持久重试计划重新提交，不依赖 Edge 查询或触发。Core 轮询到云管审批结果后，再通过受共享密钥保护的回告接口主动通知 Edge；Edge 仅显示申请是否已进入内网以及通过/驳回结果，不展示云管工单号、云管进度或 Core 内部错误。
 
 SQLite 文件位于 `${CAM_EDGE_DATA_DIR}/edge/edge.sqlite`、`${CAM_CORE_DATA_DIR}/core/core.sqlite`
-和 `${CAM_AGENT_DATA_DIR}/agent/agent.sqlite`。SQLite 的 WAL、SHM 和制品目录同样位于对应
+和 `${CAM_AGENT_1_DATA_DIR}/agent/agent.sqlite`、`${CAM_AGENT_2_DATA_DIR}/agent/agent.sqlite`。SQLite 的 WAL、SHM 和制品目录同样位于对应
 本地目录中。备份时应停止写入或停止对应服务后整体备份目录，不能只复制主 `.sqlite` 文件。
 
 测试机通过现有 EasyConnect 访问 VPN 内的测试云管时，`cam-core` 保持在自己的 CAM Docker
