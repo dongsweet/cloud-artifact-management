@@ -9,7 +9,7 @@
   }
 
   handle_path /agent/* {
-    reverse_proxy cam-agent:3103
+    reverse_proxy cam-agent-1:3103
   }
 
   handle /api/* {
