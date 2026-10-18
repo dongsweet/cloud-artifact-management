@@ -76,6 +76,7 @@ services:
       - /config:size=4m,mode=0700,uid=10001,gid=10001
     depends_on:
       - cam-core
+      - cam-agent
     networks:
       - default
     ports:
@@ -170,6 +171,12 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 3103
+      DATA_DIR: /data/agent
+      CAM_CORE_URL: ${CAM_CORE_URL:-http://cam-core:3102}
+      CAM_AGENT_TOKEN: ${CAM_AGENT_TOKEN:-}
+      CAM_AGENT_POLL_MS: ${CAM_AGENT_POLL_MS:-5000}
+      CAM_AGENT_CHUNK_SIZE: ${CAM_AGENT_CHUNK_SIZE:-4194304}
+      CAM_AGENT_CONCURRENCY: ${CAM_AGENT_CONCURRENCY:-4}
     restart: unless-stopped
 
 volumes:

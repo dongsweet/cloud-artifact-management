@@ -12,6 +12,7 @@ export function registerCoreAuth(app, { auth, secureCookies = process.env.CAM_CO
   app.addHook('onRequest', async (request, reply) => {
     const path = request.url.split('?')[0];
     if (!path.startsWith('/api/')) return;
+    if (path.startsWith('/api/v1/agent/')) return;
     reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer');
     if (path.startsWith('/api/v1/gate/approval-requests') || path.startsWith('/api/v1/gate/receipts') || path.startsWith('/api/v1/gate/transfers/') || path === '/api/v1/gate/pairing-probe') return;
     const jar = cookies(request);

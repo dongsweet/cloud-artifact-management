@@ -510,11 +510,25 @@ transfer-bundle/
 | `cam-core` | `PUT /api/v1/gate/transfers/:transferTaskId/artifacts/:sha256` | 接收单个获批文件，按摘要校验并写入内容寻址正式库 |
 | `cam-core` | `POST /api/v1/gate/receipts` | 验证网闸送达的传输任务和清单摘要并登记接收回执 |
 | `cam-core` | `POST /api/v1/approval-requests/:requestId/close` | 向云管确认关单并记录结果 |
-| `cam-core` | `GET /api/v1/distribution-tasks/:id/manifest` | 向云中心提供清单和授权 |
-| `cam-core` | `GET /api/v1/distribution-tasks/:id/parts/:index` | 提供分块下载 |
-| `cam-agent` | `POST /api/v1/tasks/pull` | 拉取待执行任务 |
-| `cam-agent` | `POST /api/v1/tasks/:id/progress` | 回报分块和完整校验进度 |
-| `cam-agent` | `GET /api/v1/cache/:artifactId` | 向本中心控制节点提供 READY 制品信息 |
+| `cam-core` | `POST /api/v1/agents` | 管理员登记中心 Agent，服务令牌仅创建时返回一次 |
+| `cam-core` | `POST /api/v1/distribution-tasks` | 管理员为一个 Agent 指定已入库正式版本并建立队列任务 |
+| `cam-core` | `POST /api/v1/agent/tasks/pull` | Agent 主动轮询，仅返回目标 Agent 的到期任务 |
+| `cam-core` | `GET /api/v1/agent/tasks/:id/manifest` | 返回绑定目标 Agent 的任务清单快照 |
+| `cam-core` | `GET /api/v1/agent/tasks/:id/files/:sha256/parts/:index` | 通过并行分块拉取已授权文件 |
+| `cam-core` | `POST /api/v1/agent/tasks/:id/progress` | 接收任务进度、完成校验或失败回执 |
+| `cam-agent` | `POST /api/v1/auth/login` | 本地管理员密码登录，服务令牌与人员会话隔离 |
+| `cam-agent` | `GET /api/v1/tasks` | 查看本地持久化队列及进度 |
+| `cam-agent` | `GET /api/v1/cache/:artifactId` | 查询本中心是否有 READY 制品 |
+
+### cam-agent 首期分发详细设计
+
+采用 Core 编排、Agent 主动拉取的模式。Core 管理员登记每个中心/安全域的 Agent，Core 仅保存服务令牌摘要；令牌原文只在登记响应中显示。停用 Agent 会立即拒绝轮询、清单、进度和文件请求。Core 管理员按 Agent 单独创建分发任务，任务绑定正式 `artifactId`、清单摘要和文件摘要快照，Agent 不能自行选择其他中心或正式版本。
+
+Agent 的本地登录使用 `agent.sqlite` 中的独立账号/会话，初始管理员通过仅限终端的初始化命令创建。密码至少 12 个字符、使用 scrypt 派生，登录失败限制和 CSRF 会话校验沿用 Core/Edge 的现有机制。人员密码绝不作为 Core 的服务认证凭据。初期独立密码便于运维页面接入，后续将认证后端替换为 AAA 时不改变 Agent 服务身份。
+
+Core 任务状态为 `QUEUED → RUNNING → COMPLETED`；传输失败会记录错误、重试次数和下次重试时间，并使用从 5 秒起、最多 5 分钟的指数退避。Agent 每轮只领取归属自己的任务，任务执行和分块进度落入本地 SQLite；服务重启后继续使用缓存临时分块。每个完整文件先落入临时文件，整文件 SHA-256、大小与 Core 清单一致后才原子改名到按摘要命名的缓存文件。不同版本引用相同 SHA-256 时复用已有缓存对象。
+
+单文件默认 4 MiB 分块、4 路并发，可通过 Agent 环境变量调整，最多 16 路；这是初始配置，不代表 SD-WAN 的最优值，部署后应按链路丢包、RTT 和 CPU/磁盘吞吐观测调参。每块请求绑定 Agent、任务、文件摘要和分块序号；并发只作用于同一个文件的不同字节区间。首期不由 Agent 推送文件、不执行控制节点升级，也不开放匿名缓存读取。Core 侧分发管理目前通过受登录保护的 API 操作，图形化运维页面和 AAA 后续接入。
 
 接口必须执行输入大小限制、路径规范化、鉴权、幂等键检查和审计。下载接口只允许访问任务授权的分块，禁止把路径参数直接拼接到文件系统路径。
 
@@ -597,13 +611,13 @@ CAM 按安全区划分人员认证域和服务认证域，不让外部交换区�
 | 统一运维外部交换区 | 外部区独立本地账号 | 审批申请及回执按网闸配置的受控交换方式传送；必要时对业务消息签名 | 外部区本地 RBAC |
 | 统一运维内网管理系统 | 统一云管/AAA 单点登录 | `cam-core` 使用专属服务凭据调用云管业务 API | AAA 用户组与 CAM 角色映射 |
 | 统一云管 | AAA 登录，审批人员执行审批 | 校验 `cam-core` 的服务身份 | AAA 与统一云管审批权限 |
-| 各云中心 `cam-agent` | 默认不提供人员登录 | 每个中心或安全域独立设备证书 | 云管下发的中心授权 |
+| 各云中心 `cam-agent` | 初期提供本地独立管理员密码登录；后续可替换为 AAA | 每个中心或安全域独立 Agent 服务令牌 | Core 下发的中心授权 |
 
 外部交换区至少维护外部区管理员、候选制品接收人员、验证人员、发布申请人员和审计人员等本地角色。外部区账号只用于外部区页面和 API，不写入统一云管的用户目录，不向内网提交密码、会话 Cookie 或可复用的用户令牌。密码只保存不可逆的密码哈希和随机盐；首期可使用 Node.js 内置 `crypto.scrypt`，不得保存明文密码。
 
 统一运维内网管理页面和需要人工操作的 CAM 页面使用统一云管或 AAA 提供的标准单点登录协议，优先采用 OIDC，现有环境只支持 SAML 时使用 SAML。CAM 只保存 AAA 用户唯一标识、角色映射、会话撤销信息和审计关联，不建立第二套内网人员密码库。
 
-`cam-agent` 是云中心后台服务，不以人工账号登录。中心运维人员通过统一云管完成任务查看和授权；`cam-agent` 使用绑定中心编号和安全域的设备证书主动拉取已授权制品。证书泄露或撤销时，内网分发服务必须拒绝该中心后续任务。
+`cam-agent` 初期提供独立本地密码登录，用于查看本中心任务队列、重试次数、传输进度和缓存状态；该密码不用于跨服务调用。Agent 使用绑定中心编号和安全域的独立服务令牌主动拉取已授权制品，后续可将本地登录认证替换为 AAA。令牌泄露、禁用或任务目标不匹配时，Core 必须拒绝该中心后续任务。
 
 ### 11.1.2 外部交换区与内网云管的受控联动身份
 
@@ -682,7 +696,7 @@ CAM 的账号体系按“人员身份、服务身份、下载授权”三类对�
 
 创建下载授权必须由已认证的 VALIDATOR 或等效角色执行。Token 只代表受限下载权，数据库保存 Token 的 SHA-256 摘要、授权创建者和范围；下载事件同时记录授权创建者与实际 Token 调用身份。账号接入前接口默认拒绝匿名请求，不提供客户端身份头回退；自动化测试通过服务器构造参数 principalProvider 注入测试身份，部署服务不启用此适配器。
 
-页面上，外部交换区登录后提供“系统管理 / 外部区账号”和候选轮次中的“创建下载授权”；统一运维内网页面不显示本地账号管理入口，用户通过统一云管/AAA 登录；cam-agent 不提供人员登录页面。
+页面上，外部交换区登录后提供“系统管理 / 外部区账号”和候选轮次中的“创建下载授权”；统一运维内网页面不显示本地账号管理入口，用户通过统一云管/AAA 登录；首期 Agent 提供本地密码登录接口查看任务和缓存，后续接入 AAA。
 
 账号体系的外部区实现、接口、SQLite 表及部署初始化说明见 [外部交换区账号及下载交付](edge-accounts.md)。目前使用 Fastify `onRequest` 统一认证与 RBAC、内置 scrypt、本地 SQLite 会话和 CSRF Cookie；不新增认证依赖。正式环境启用 HTTPS 与 Secure Cookie。轮次详情“交付验证”、已完成候选详情“下载 / 交付验证”及左侧“下载授权”关联真实本地验证人员账号。内网 AAA 和云管审批服务身份仍为后续接入项。
 

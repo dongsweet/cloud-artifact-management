@@ -203,6 +203,68 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, ena
     if (!authorization) return error(reply, 401, 'gate_auth_required', '受控交换身份校验失败');
   });
 
+  const agentPrincipal = (request) => store.authenticateAgent(request.headers['x-cam-agent-token']);
+  app.addHook('onRequest', async (request, reply) => {
+    if (!request.url.startsWith('/api/v1/agent/')) return;
+    const principal = agentPrincipal(request);
+    if (!principal) return error(reply, 401, 'agent_auth_required', 'Agent 身份凭证无效或已禁用');
+    request.agentPrincipal = principal;
+  });
+
+  app.get('/api/v1/agents', async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    return { items: store.listAgents() };
+  });
+  app.post('/api/v1/agents', { bodyLimit: 8192 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    try { return reply.code(201).send({ item: store.registerAgent(request.body ?? {}) }); }
+    catch (err) { return error(reply, 400, err.code ?? 'agent_invalid', err.message); }
+  });
+  app.patch('/api/v1/agents/:agentId', { bodyLimit: 4096 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    try { return { ok: store.setAgentStatus(request.params.agentId, request.body?.status) }; }
+    catch (err) { return error(reply, 400, err.code ?? 'agent_invalid', err.message); }
+  });
+  app.get('/api/v1/distribution-tasks', async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    return { items: store.listDistributionTasks() };
+  });
+  app.post('/api/v1/distribution-tasks', { bodyLimit: 8192 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    try { return reply.code(201).send({ item: store.createDistributionTask(request.body ?? {}) }); }
+    catch (err) { return error(reply, err.code === 'artifact_not_found' ? 404 : 409, err.code ?? 'distribution_task_invalid', err.message); }
+  });
+  app.post('/api/v1/agent/tasks/pull', async (request, reply) => {
+    const agent = request.agentPrincipal;
+    const tasks = store.listAgentTasks(agent.agentId);
+    return { items: tasks };
+  });
+  app.get('/api/v1/agent/tasks/:taskId/manifest', async (request, reply) => {
+    const task = store.getDistributionTask(request.params.taskId);
+    if (!task || task.agentId !== request.agentPrincipal.agentId) return error(reply, 404, 'distribution_task_not_found', '分发任务不存在');
+    return { item: task };
+  });
+  app.post('/api/v1/agent/tasks/:taskId/progress', { bodyLimit: 64 * 1024 }, async (request, reply) => {
+    try { return { item: store.updateDistributionTask(request.agentPrincipal.agentId, request.params.taskId, request.body ?? {}) }; }
+    catch (err) { return error(reply, 409, err.code ?? 'distribution_progress_rejected', err.message); }
+  });
+  app.get('/api/v1/agent/tasks/:taskId/files/:sha256/parts/:index', async (request, reply) => {
+    const file = store.getAuthorizedDistributionFile(request.agentPrincipal.agentId, request.params.taskId, request.params.sha256);
+    if (!file) return error(reply, 404, 'distribution_file_not_found', '分发文件不存在或未授权');
+    const chunkSize = Number(request.headers['x-cam-chunk-size'] ?? 4 * 1024 * 1024);
+    const index = Number(request.params.index);
+    if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0 || !Number.isSafeInteger(index) || index < 0) return error(reply, 400, 'distribution_chunk_invalid', '分块参数无效');
+    const count = Math.ceil(file.sizeBytes / chunkSize);
+    if (index >= count) return error(reply, 416, 'distribution_chunk_invalid', '分块序号超出范围');
+    const start = index * chunkSize; const end = Math.min(file.sizeBytes - 1, start + chunkSize - 1);
+    const stream = createReadStream(file.path, { start, end });
+    return reply.code(206).header('Accept-Ranges', 'bytes').header('Content-Length', String(end - start + 1)).header('Content-Range', `bytes ${start}-${end}/${file.sizeBytes}`).header('X-CAM-SHA256', file.sha256).type('application/octet-stream').send(stream);
+  });
+  app.get('/api/v1/agent/cache/:artifactId', async (request, reply) => {
+    const task = store.listAgentTasks(request.agentPrincipal.agentId).find((entry) => entry.artifactId === request.params.artifactId);
+    return { ready: false, task: task ?? null };
+  });
+
   app.get('/api/v1/gate/config', async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置权限');
     const item = gateConfig.get();

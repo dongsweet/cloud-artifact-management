@@ -8,6 +8,10 @@
     X-Frame-Options SAMEORIGIN
   }
 
+  handle_path /agent/* {
+    reverse_proxy cam-agent:3103
+  }
+
   handle /api/* {
     reverse_proxy cam-core:3102
   }

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
@@ -121,13 +121,97 @@ export class CoreStore {
         last_error TEXT, delivered_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS core_transfer_outbox_pending_idx ON core_transfer_outbox(delivered_at, next_attempt_at);
+      CREATE TABLE IF NOT EXISTS core_agents (
+        agent_id TEXT PRIMARY KEY, center_id TEXT NOT NULL, security_domain TEXT NOT NULL,
+        name TEXT NOT NULL, token_sha256 TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'ACTIVE',
+        created_at TEXT NOT NULL, last_seen_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS core_agents_scope_idx ON core_agents(center_id, security_domain, status);
+      CREATE TABLE IF NOT EXISTS core_distribution_tasks (
+        task_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES core_agents(agent_id),
+        artifact_id TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, files_json TEXT NOT NULL,
+        status TEXT NOT NULL, progress_json TEXT NOT NULL DEFAULT '{}', last_error TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS core_distribution_queue_idx ON core_distribution_tasks(agent_id, status, created_at);
     `);
     const columns = new Set(db.prepare('PRAGMA table_info(core_approval_requests)').all().map((column) => column.name));
+    const distributionColumns = new Set(db.prepare('PRAGMA table_info(core_distribution_tasks)').all().map((column) => column.name));
+    if (!distributionColumns.has('attempts')) db.exec('ALTER TABLE core_distribution_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
+    if (!distributionColumns.has('retry_at')) db.exec(`ALTER TABLE core_distribution_tasks ADD COLUMN retry_at TEXT NOT NULL DEFAULT '${now()}'`);
     if (!columns.has('cloud_mapping_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_mapping_json TEXT');
     if (!columns.has('cloud_request_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_request_json TEXT');
     if (!columns.has('cloud_workflow_step')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_workflow_step TEXT');
     for (const [name, definition] of Object.entries({ report_file_name: 'TEXT', report_size: 'INTEGER', report_received_sha256: 'TEXT', report_path: 'TEXT', report_received_at: 'TEXT', cloud_attachment_id: 'TEXT' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
     for (const [name, definition] of Object.entries({ cloud_submission_attempts: 'INTEGER NOT NULL DEFAULT 0', cloud_submission_state: "TEXT NOT NULL DEFAULT 'IDLE'", cloud_submission_attempted_at: 'TEXT', cloud_retry_at: 'TEXT', transfer_notification_state: "TEXT NOT NULL DEFAULT 'IDLE'", transfer_notification_attempts: 'INTEGER NOT NULL DEFAULT 0' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
+  }
+
+  registerAgent({ centerId, securityDomain, name }) {
+    for (const [field, value] of Object.entries({ centerId, securityDomain, name })) if (typeof value !== 'string' || !value.trim() || value.length > 128) throw Object.assign(new Error(`${field} is required and must be at most 128 characters`), { code: 'agent_invalid' });
+    const agentId = `AG-${randomUUID()}`;
+    const token = randomBytes(32).toString('base64url');
+    const timestamp = now();
+    this.db.prepare('INSERT INTO core_agents (agent_id, center_id, security_domain, name, token_sha256, status, created_at) VALUES (?, ?, ?, ?, ?, \'ACTIVE\', ?)')
+      .run(agentId, centerId.trim(), securityDomain.trim(), name.trim(), digest(token), timestamp);
+    return { agentId, centerId: centerId.trim(), securityDomain: securityDomain.trim(), name: name.trim(), token, status: 'ACTIVE', createdAt: timestamp };
+  }
+  authenticateAgent(token) {
+    if (typeof token !== 'string' || token.length < 32 || token.length > 256) return null;
+    const row = this.db.prepare("SELECT agent_id AS agentId, center_id AS centerId, security_domain AS securityDomain, name, status FROM core_agents WHERE token_sha256 = ?").get(digest(token));
+    if (!row || row.status !== 'ACTIVE') return null;
+    this.db.prepare('UPDATE core_agents SET last_seen_at = ? WHERE agent_id = ?').run(now(), row.agentId);
+    return row;
+  }
+  listAgents() {
+    return this.db.prepare('SELECT agent_id AS agentId, center_id AS centerId, security_domain AS securityDomain, name, status, created_at AS createdAt, last_seen_at AS lastSeenAt FROM core_agents ORDER BY created_at DESC').all();
+  }
+  setAgentStatus(agentId, status) {
+    if (!['ACTIVE', 'DISABLED'].includes(status)) throw Object.assign(new Error('invalid agent status'), { code: 'agent_invalid' });
+    const result = this.db.prepare('UPDATE core_agents SET status = ? WHERE agent_id = ?').run(status, agentId);
+    return result.changes > 0;
+  }
+  createDistributionTask({ agentId, artifactId }) {
+    const agent = this.db.prepare("SELECT agent_id FROM core_agents WHERE agent_id = ? AND status = 'ACTIVE'").get(agentId);
+    if (!agent) throw Object.assign(new Error('active agent not found'), { code: 'agent_not_found' });
+    const artifact = this.getArtifact(artifactId);
+    if (!artifact) throw Object.assign(new Error('正式制品版本不存在或尚未完成入库'), { code: 'artifact_not_found' });
+    const files = artifact.files.map(({ packageKey, fileName, sizeBytes, sha256 }) => ({ packageKey, fileName, sizeBytes, sha256 }));
+    if (!files.length || files.some((file) => !this.artifactPath(file.sha256))) throw Object.assign(new Error('正式制品文件未全部入库'), { code: 'artifact_incomplete' });
+    const taskId = `DIST-${randomUUID()}`;
+    const timestamp = now();
+    this.db.prepare("INSERT INTO core_distribution_tasks (task_id, agent_id, artifact_id, manifest_sha256, files_json, status, retry_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'QUEUED', ?, ?, ?)")
+      .run(taskId, agentId, artifactId, artifact.manifestSha256, JSON.stringify(files), timestamp, timestamp, timestamp);
+    return this.getDistributionTask(taskId);
+  }
+  getDistributionTask(taskId) {
+    const row = this.db.prepare('SELECT * FROM core_distribution_tasks WHERE task_id = ?').get(taskId);
+    return row ? { taskId: row.task_id, agentId: row.agent_id, artifactId: row.artifact_id, manifestSha256: row.manifest_sha256, files: JSON.parse(row.files_json), status: row.status, progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, lastError: row.last_error, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at } : null;
+  }
+  listDistributionTasks() { return this.db.prepare('SELECT task_id FROM core_distribution_tasks ORDER BY created_at DESC LIMIT 500').all().map(({ task_id }) => this.getDistributionTask(task_id)); }
+  listAgentTasks(agentId) {
+    return this.db.prepare("SELECT task_id FROM core_distribution_tasks WHERE agent_id = ? AND status IN ('QUEUED','RUNNING') AND retry_at <= ? ORDER BY created_at LIMIT 20").all(agentId, now()).map(({ task_id }) => this.getDistributionTask(task_id));
+  }
+  updateDistributionTask(agentId, taskId, { status, progress = {}, error = null }) {
+    const task = this.getDistributionTask(taskId);
+    if (!task || task.agentId !== agentId) throw Object.assign(new Error('task not found for this agent'), { code: 'distribution_task_not_found' });
+    if (!['RUNNING', 'COMPLETED', 'FAILED'].includes(status)) throw Object.assign(new Error('invalid distribution task status'), { code: 'distribution_status_invalid' });
+    if (task.status === 'COMPLETED' && status !== 'COMPLETED') return task;
+    const timestamp = now();
+    const attempts = status === 'FAILED' ? task.attempts + 1 : task.attempts;
+    const retryAt = status === 'FAILED' ? new Date(Date.now() + Math.min(300_000, 5_000 * (2 ** Math.min(attempts - 1, 6)))).toISOString() : timestamp;
+    const persistedStatus = status === 'FAILED' ? 'QUEUED' : status;
+    this.db.prepare('UPDATE core_distribution_tasks SET status = ?, attempts = ?, retry_at = ?, progress_json = ?, last_error = ?, updated_at = ?, completed_at = ? WHERE task_id = ? AND agent_id = ?')
+      .run(persistedStatus, attempts, retryAt, JSON.stringify(progress), typeof error === 'string' ? error.slice(0, 1000) : null, timestamp, status === 'COMPLETED' ? timestamp : null, taskId, agentId);
+    return this.getDistributionTask(taskId);
+  }
+  getAuthorizedDistributionFile(agentId, taskId, sha256) {
+    const task = this.getDistributionTask(taskId);
+    if (!task || task.agentId !== agentId || !['QUEUED', 'RUNNING'].includes(task.status)) return null;
+    const file = task.files.find((entry) => entry.sha256 === String(sha256).toLowerCase());
+    if (!file) return null;
+    const path = this.artifactPath(file.sha256);
+    return path ? { ...file, path } : null;
   }
 
   get(requestId) {
