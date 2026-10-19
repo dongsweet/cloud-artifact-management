@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 import { attachmentExtension, validAttachmentFileName } from '../../../libs/cam-server/src/attachment-types.js';
 import { fingerprint, verifyRequest } from '../../../libs/cam-agent-auth/src/protocol.js';
+import { maskApprovalCode } from './approval-code.js';
 
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}-${Date.now()}-${randomUUID()}`;
@@ -30,9 +31,9 @@ function response(row) {
     reportReceived: Boolean(row.report_received_at), reportReceivedSha256: row.report_received_sha256,
     cloudAttachmentId: row.cloud_attachment_id, cloudApprovalId: row.cloud_approval_id,
     cloudTransferTaskId: row.cloud_transfer_task_id, cloudStatus: row.cloud_status,
-    cloudWorkflowStep: row.cloud_workflow_step, cloudCheckedAt: row.cloud_checked_at, cloudResponseSummary: row.cloud_response_summary,
+    cloudWorkflowStep: row.cloud_workflow_step, cloudCheckedAt: row.cloud_checked_at, cloudResponseSummary: maskApprovalCode(row.cloud_response_summary, envelope.approvalCode),
     cloudMappingSnapshot: row.cloud_mapping_json ? JSON.parse(row.cloud_mapping_json) : null,
-    cloudRequestSnapshot: row.cloud_request_json ? JSON.parse(row.cloud_request_json) : null,
+    cloudRequestSnapshot: row.cloud_request_json ? JSON.parse(maskApprovalCode(row.cloud_request_json, envelope.approvalCode)) : null,
     approvedAt: row.approved_at, expiresAt: row.expires_at, closeStatus: row.close_status,
     closeCheckedAt: row.close_checked_at, createdAt: row.created_at, updatedAt: row.updated_at,
     lastError: row.last_error, cloudSubmissionAttempts: row.cloud_submission_attempts ?? 0,
@@ -159,8 +160,10 @@ export class CoreStore {
     let keyId; try { keyId = fingerprint(publicKey); } catch { throw Object.assign(new Error('Agent public key is invalid'), { code: 'agent_public_key_invalid' }); }
     const agentId = `AG-${randomUUID()}`;
     const timestamp = now();
-    this.db.prepare('INSERT INTO core_agents (agent_id, center_id, security_domain, name, public_key, key_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, \'ACTIVE\', ?)')
-      .run(agentId, centerId.trim(), securityDomain.trim(), name.trim(), publicKey, keyId, timestamp);
+    // Old databases require a unique token hash. Keep an inert value for that
+    // constraint; authentication accepts signed identities only.
+    this.db.prepare('INSERT INTO core_agents (agent_id, center_id, security_domain, name, public_key, key_id, token_sha256, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, \'ACTIVE\', ?)')
+      .run(agentId, centerId.trim(), securityDomain.trim(), name.trim(), publicKey, keyId, digest(agentId), timestamp);
     return { agentId, centerId: centerId.trim(), securityDomain: securityDomain.trim(), name: name.trim(), keyId, fingerprint: keyId, status: 'ACTIVE', createdAt: timestamp };
   }
   authenticateAgent({ agentId, timestamp, nonce, signature, method, path, body = '' } = {}) {
@@ -171,7 +174,7 @@ export class CoreStore {
     const keyOk = verifyRequest(row.publicKey, signature, method, path, timestamp, nonce, body) || (row.previousPublicKey && row.previousKeyExpiresAt && Date.parse(row.previousKeyExpiresAt) > Date.now() && verifyRequest(row.previousPublicKey, signature, method, path, timestamp, nonce, body));
     if (!keyOk) return null;
     this.db.prepare('DELETE FROM core_agent_nonces WHERE expires_at <= ?').run(now());
-    try { this.db.prepare('INSERT INTO core_agent_nonces (agent_id, nonce, expires_at) VALUES (?, ?, ?)').run(row.agentId, nonce, new Date(Date.now() + 5 * 60_000).toISOString()); } catch { return null; }
+    try { this.db.prepare('INSERT INTO core_agent_nonces (agent_id, nonce, expires_at) VALUES (?, ?, ?)').run(row.agentId, nonce, new Date(Math.max(Date.now(), Date.parse(timestamp)) + 5 * 60_000).toISOString()); } catch { return null; }
     this.db.prepare('UPDATE core_agents SET last_seen_at = ? WHERE agent_id = ?').run(now(), row.agentId);
     delete row.publicKey; delete row.previousPublicKey; delete row.previousKeyExpiresAt; return row;
   }

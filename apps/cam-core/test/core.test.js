@@ -57,7 +57,7 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
   const calls = [];
   let cloudStatus = 'UNKNOWN';
   const cloud = {
-    async createApproval(value) { calls.push(['create', value]); return { approvalId: 'APR-1', status: 'PENDING', mappingSnapshot: { priority: { id: '394' } }, requestBody: { priority: '394' } }; },
+    async createApproval(value) { calls.push(['create', value]); return { approvalId: 'APR-1', status: 'PENDING', mappingSnapshot: { priority: { id: '394' } }, requestBody: { priority: '394', workOrderDetail: `审批暗号：${value.approvalCode}`, nested: [{ reply: value.approvalCode.toUpperCase() }] } }; },
     async getApproval(id) { calls.push(['get', id]); return { approvalId: id, status: cloudStatus, workflowStep: cloudStatus === 'UNKNOWN' ? '已结束' : '工单确认', transferTaskId: cloudStatus === 'APPROVED' ? 'TR-1' : undefined, manifestSha256: cloudStatus === 'APPROVED' ? manifestSha256 : undefined, expiresAt: new Date(Date.now() + 60_000).toISOString() }; },
     async closeApproval(id) { calls.push(['close', id]); return { status: 'CLOSED' }; }
   };
@@ -88,9 +88,10 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     assert.equal(publicRequest.statusCode, 200);
     assert.equal(publicRequest.json().item.approvalCode, undefined, 'approval code must not be returned to the browser');
     assert.equal(publicRequest.json().item.approvalCodeConfigured, true);
+    assert.equal(publicRequest.body.toLowerCase().includes(app.coreStore.approvalCode('FREEZE-1')), false, 'nested request snapshots must not expose the approval code');
     assert.deepEqual(calls[0][0], 'create');
     assert.deepEqual(created.cloudMappingSnapshot, { priority: { id: '394' } });
-    assert.deepEqual(created.cloudRequestSnapshot, { priority: '394' });
+    assert.deepEqual(created.cloudRequestSnapshot, { priority: '394', workOrderDetail: '审批暗号：[已隐藏]', nested: [{ reply: '[已隐藏]' }] });
 
     const beforeSync = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/transfer-authorize', payload: { manifestSha256 } });
     assert.equal(beforeSync.statusCode, 409);

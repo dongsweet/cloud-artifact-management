@@ -96,8 +96,8 @@ function renderAgents(items) {
   coreAgents = items ?? [];
   $('#agent-rows').innerHTML = coreAgents.length ? coreAgents.map((agent) => {
     const active = agent.status === 'ACTIVE';
-    const keyState = agent.previousKeyExpiresAt ? `旧身份过渡至 ${escapeHtml(displayTime(agent.previousKeyExpiresAt))}` : '当前身份';
-    return `<tr><td><div class="fw-semibold">${escapeHtml(agent.name)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(agent.agentId)}</div></td><td>${escapeHtml(agent.centerId)}<div class="small text-body-secondary">${escapeHtml(agent.securityDomain)}</div></td><td><span class="badge text-bg-${active ? 'success' : 'secondary'}">${active ? '启用' : '已禁用'}</span><div class="small text-body-secondary mt-1">${escapeHtml(keyState)}</div></td><td><code class="small">${escapeHtml(agent.keyId ?? '-')}</code></td><td>${escapeHtml(agent.lastSeenAt ? displayTime(agent.lastSeenAt) : '尚未连接')}</td><td>${escapeHtml(displayTime(agent.createdAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-${active ? 'warning' : 'success'} btn-sm agent-status-button" data-id="${escapeHtml(agent.agentId)}" data-status="${active ? 'DISABLED' : 'ACTIVE'}">${active ? '禁用' : '启用'}</button></div></td></tr>`;
+    const keyState = !agent.keyId ? '待身份配对' : agent.previousKeyExpiresAt && Date.parse(agent.previousKeyExpiresAt) > Date.now() ? `旧身份过渡至 ${displayTime(agent.previousKeyExpiresAt)}` : '当前身份';
+    return `<tr><td><div class="fw-semibold">${escapeHtml(agent.name)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(agent.agentId)}</div></td><td>${escapeHtml(agent.centerId)}<div class="small text-body-secondary">${escapeHtml(agent.securityDomain)}</div></td><td><span class="badge text-bg-${active ? 'success' : 'secondary'}">${active ? '启用' : '已禁用'}</span><div class="small text-body-secondary mt-1">${escapeHtml(keyState)}</div></td><td><code class="small d-inline-block text-break" style="max-width:16rem">${escapeHtml(agent.keyId ?? '-')}</code></td><td>${escapeHtml(agent.lastSeenAt ? displayTime(agent.lastSeenAt) : '尚未连接')}</td><td>${escapeHtml(displayTime(agent.createdAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-${active ? 'warning' : 'success'} btn-sm agent-status-button" data-id="${escapeHtml(agent.agentId)}" data-status="${active ? 'DISABLED' : 'ACTIVE'}">${active ? '禁用' : '启用'}</button></div></td></tr>`;
   }).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">暂无已注册 Agent</td></tr>';
   document.querySelectorAll('.agent-status-button').forEach((button) => { button.onclick = () => updateAgentStatus(button); });
 }
@@ -282,10 +282,6 @@ $('#confirm-submit').addEventListener('click', () => $('#confirm-dialog').close(
 $('#confirm-dialog').addEventListener('click', (event) => { if (event.target === $('#confirm-dialog')) $('#confirm-dialog').close('cancel'); });
 $('#agents-refresh').addEventListener('click', loadAgents);
 document.querySelectorAll('[data-page]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); location.hash = link.dataset.page; showPage(link.dataset.page); }));
-if (!$('#agent-public-key')) { const field = document.createElement('div'); field.className = 'mt-3'; field.innerHTML = '<label class="form-label" for="agent-public-key">Agent 身份公钥</label><textarea id="agent-public-key" name="publicKey" class="form-control font-monospace" rows="5" placeholder="-----BEGIN PUBLIC KEY-----" required></textarea>'; $('#agent-form').insertBefore(field, $('#agent-form').querySelector('.d-flex')); }
-const agentHelp = $('#agent-form')?.parentElement?.querySelector('.alert-info'); if (agentHelp) agentHelp.innerHTML = '<i class="bi bi-info-circle me-1"></i>Agent 在本地生成 Ed25519 身份密钥。请从 Agent 的 <code>/api/v1/identity</code> 接口复制公钥到这里完成配对；Core 不保存 Agent 私钥。';
-$('#agent-token-result')?.classList.add('d-none');
-const agentSubmit = $('#agent-form button[type="submit"]'); if (agentSubmit) agentSubmit.innerHTML = '<i class="bi bi-shield-check me-1"></i>配对并注册 Agent';
 $('#agent-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;

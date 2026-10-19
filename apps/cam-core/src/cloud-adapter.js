@@ -2,6 +2,7 @@ import { ProxyAgent } from 'undici';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { attachmentContentType } from '../../../libs/cam-server/src/attachment-types.js';
+import { maskApprovalCode } from './approval-code.js';
 
 const EOMS_PATHS = Object.freeze({
   create: '/workflow-service/workOrderManagement/base',
@@ -127,8 +128,7 @@ function approvalResponseSummary(detail, approvalCode) {
   };
   visit(detail);
   const unique = [...new Set(values.map((value) => text(value).replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim()).filter(Boolean))];
-  const summary = unique.join('；').slice(0, 2000);
-  return approvalCode ? summary.split(approvalCode).join('[已隐藏]').split(approvalCode.toUpperCase()).join('[已隐藏]') : summary;
+  return maskApprovalCode(unique.join('；'), approvalCode).slice(0, 2000);
 }
 
 function parseProcessorNames(value) {
@@ -313,8 +313,8 @@ export class CloudAdapter {
   buildWorkOrder(envelope, mappings, overrides = undefined) {
     const config = readConfig(this.env, overrides);
     if (!mappings.processUserIds.length) throw configurationError('请配置云管审批处理人用户名');
-    const roundLabel = Number.isInteger(envelope.roundNo) ? `第 ${envelope.roundNo} 轮` : (envelope.roundId ?? '候选轮次');
-    const productLabel = envelope.productName ?? envelope.releaseId ?? '软件发布';
+    const roundLabel = Number.isInteger(envelope.roundNo) ? `第 ${envelope.roundNo} 轮` : '候选版本';
+    const productLabel = envelope.productName ?? '软件发布';
     const displayVersion = envelope.displayVersion ?? envelope.version;
     const versionLabel = displayVersion ? ` ${displayVersion}` : '';
     const title = `${config.titlePrefix} ${productLabel}${versionLabel} ${roundLabel}固化申请`.trim().slice(0, 64);
@@ -323,7 +323,7 @@ export class CloudAdapter {
       `<p>审批事项：${html(productLabel)}${versionLabel ? ` ${html(displayVersion)}` : ''} ${html(roundLabel)}固化申请</p>`,
       `<p>软件产品：${html(envelope.productName ?? '旧版请求未提供')}</p>`,
       `<p>软件版本：${html(displayVersion ?? '旧版请求未提供')}</p>`,
-      `<p>候选轮次：${Number.isInteger(envelope.roundNo) ? `第 ${envelope.roundNo} 轮` : html(envelope.roundId ?? '旧版请求未提供')}</p>`,
+      `<p>候选轮次：${Number.isInteger(envelope.roundNo) ? `第 ${envelope.roundNo} 轮` : '旧版请求未提供'}</p>`,
       ...(envelope.reportTitle ? [`<p>验证报告标题：${html(envelope.reportTitle)}</p>`] : []),
       `<p>发布申请编号：${html(envelope.requestId)}</p>`,
       `<p>验证结论：${html(envelope.conclusion)}</p>`,

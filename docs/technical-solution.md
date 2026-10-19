@@ -517,6 +517,9 @@ transfer-bundle/
 | `cam-core` | `GET /api/v1/agent/tasks/:id/files/:sha256/parts/:index` | 通过并行分块拉取已授权文件 |
 | `cam-core` | `POST /api/v1/agent/tasks/:id/progress` | 接收任务进度、完成校验或失败回执 |
 | `cam-agent` | `POST /api/v1/auth/login` | 本地管理员密码登录；设备签名身份与人员会话隔离 |
+| `cam-agent` | `GET /api/v1/identity` | 登录后读取本机公钥、指纹和已配置的 Agent 编号 |
+| `cam-agent` | `POST /api/v1/identity/test` | 使用本机签名验证 Core 配对，需要本地登录和 CSRF 校验 |
+| `cam-agent` | `POST /api/v1/identity/rotate` | 使用旧身份向 Core 提交新公钥，并在本地原子保存新身份 |
 | `cam-agent` | `GET /api/v1/tasks` | 查看本地持久化队列及进度 |
 | `cam-agent` | `GET /api/v1/cache/:artifactId` | 查询本中心是否有 READY 制品 |
 
@@ -527,6 +530,8 @@ transfer-bundle/
 Agent 的本地登录使用 `agent.sqlite` 中的独立账号/会话，初始管理员通过仅限终端的初始化命令创建。密码至少 12 个字符、使用 scrypt 派生，登录失败限制和 CSRF 会话校验沿用 Core/Edge 的现有机制。人员密码绝不作为 Core 的服务认证凭据。Agent 首次启动在本地数据目录生成 Ed25519 身份密钥，管理员把公钥提交到 Core 完成一次配对；Agent 后续请求使用 Agent ID、时间戳、随机数和请求签名认证，Core 保存公钥指纹并拒绝重放。身份轮换由 Agent 使用旧私钥签名提交新公钥，Core 在短暂过渡期接受旧、新公钥后撤销旧公钥。私钥不离开 Agent，也不写入日志、Compose 或 Core。
 
 Core 任务状态为 `QUEUED → RUNNING → COMPLETED`；传输失败会记录错误、重试次数和下次重试时间，并使用从 5 秒起、最多 5 分钟的指数退避。Agent 每轮只领取归属自己的任务，任务执行和分块进度落入本地 SQLite；服务重启后继续使用缓存临时分块。每个完整文件先落入临时文件，整文件 SHA-256、大小与 Core 清单一致后才原子改名到按摘要命名的缓存文件。不同版本引用相同 SHA-256 时复用已有缓存对象。
+
+配对操作：登录 Agent 的“Core 身份配对”卡片复制公钥，在 Core 的“Agent 管理”配对注册；将返回的 Agent 编号写入对应部署配置 `CAM_AGENT_1_ID` / `CAM_AGENT_2_ID`，重启 Agent 后点击“测试配对”。配置编号本身不代表配对成功，只有 Core 验证签名通过才显示成功。当前由 Agent 页面手动触发身份轮换，旧身份过渡期为 24 小时；尚未启用定时自动轮换。旧部署的固定令牌不再用于认证，必须完成公钥配对。
 
 单文件默认 4 MiB 分块、4 路并发，可通过 Agent 环境变量调整，最多 16 路；这是初始配置，不代表 SD-WAN 的最优值，部署后应按链路丢包、RTT 和 CPU/磁盘吞吐观测调参。每块请求绑定 Agent、任务、文件摘要和分块序号；并发只作用于同一个文件的不同字节区间。首期不由 Agent 推送文件、不执行控制节点升级，也不开放匿名缓存读取。Core 侧分发管理目前通过受登录保护的 API 操作，图形化运维页面和 AAA 后续接入。
 

@@ -4,7 +4,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { buildCoreApp } from '../src/server.js';
+import { CoreStore } from '../src/core-store.js';
 import { generateIdentity, randomNonce, signRequest } from '../../../libs/cam-agent-auth/src/protocol.js';
 
 test('Core scopes queued distribution tasks and parallel file chunks to each Agent identity', async () => {
@@ -35,16 +37,42 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     const replayHeaders = { 'x-cam-agent-id': west.agentId, 'x-cam-agent-timestamp': replayTimestamp, 'x-cam-agent-nonce': replayNonce, 'x-cam-agent-signature': signRequest(westIdentity.privateKeyPem, 'POST', '/api/v1/agent/tasks/pull', replayTimestamp, replayNonce, '') };
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: replayHeaders })).statusCode, 200);
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: replayHeaders })).statusCode, 401, 'a nonce must not be reusable');
+    const futureTimestamp = new Date(Date.now() + 4 * 60_000).toISOString(); const futureNonce = randomNonce();
+    const futureHeaders = { 'x-cam-agent-id': west.agentId, 'x-cam-agent-timestamp': futureTimestamp, 'x-cam-agent-nonce': futureNonce, 'x-cam-agent-signature': signRequest(westIdentity.privateKeyPem, 'POST', '/api/v1/agent/tasks/pull', futureTimestamp, futureNonce) };
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: futureHeaders })).statusCode, 200);
+    const futureExpiry = db.prepare('SELECT expires_at FROM core_agent_nonces WHERE agent_id = ? AND nonce = ?').get(west.agentId, futureNonce).expires_at;
+    assert.ok(Date.parse(futureExpiry) >= Date.parse(futureTimestamp) + 5 * 60_000, 'retain nonces for the full validity period of a future timestamp');
     const rotatedIdentity = generateIdentity(); app.coreStore.rotateAgentKey(west.agentId, rotatedIdentity.publicKeyPem);
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: auth(west, rotatedIdentity, 'POST', '/api/v1/agent/tasks/pull') })).statusCode, 200);
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: auth(west, westIdentity, 'POST', '/api/v1/agent/tasks/pull') })).statusCode, 200, 'the previous identity remains valid during the grace period');
+    const finalIdentity = generateIdentity(); app.coreStore.rotateAgentKey(west.agentId, finalIdentity.publicKeyPem, new Date(Date.now() - 1_000).toISOString());
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: auth(west, rotatedIdentity, 'POST', '/api/v1/agent/tasks/pull') })).statusCode, 401, 'an expired previous identity must be rejected');
 
-    const chunkPath = `/api/v1/agent/tasks/${task.taskId}/files/${sha}/parts/1`; const chunk = await app.inject({ method: 'GET', url: chunkPath, headers: { ...auth(west, westIdentity, 'GET', chunkPath), 'x-cam-chunk-size': '10' } });
+    const chunkPath = `/api/v1/agent/tasks/${task.taskId}/files/${sha}/parts/1`; const chunk = await app.inject({ method: 'GET', url: chunkPath, headers: { ...auth(west, finalIdentity, 'GET', chunkPath), 'x-cam-chunk-size': '10' } });
     assert.equal(chunk.statusCode, 206, chunk.body); assert.equal(chunk.headers['content-range'], `bytes 10-19/${payload.length}`);
     assert.deepEqual(chunk.rawPayload, payload.subarray(10, 20));
     const crossedPath = `/api/v1/agent/tasks/${task.taskId}/files/${sha}/parts/0`; const crossed = await app.inject({ method: 'GET', url: crossedPath, headers: { ...auth(east, eastIdentity, 'GET', crossedPath), 'x-cam-chunk-size': '10' } });
     assert.equal(crossed.statusCode, 404);
-    const progressPath = `/api/v1/agent/tasks/${task.taskId}/progress`; const progressBody = JSON.stringify({ status: 'COMPLETED', progress: { state: 'ready' } }); const completed = await app.inject({ method: 'POST', url: progressPath, headers: { ...auth(west, westIdentity, 'POST', progressPath, progressBody), 'content-type': 'application/json' }, payload: JSON.parse(progressBody) });
+    const progressPath = `/api/v1/agent/tasks/${task.taskId}/progress`; const progressBody = JSON.stringify({ status: 'COMPLETED', progress: { state: 'ready' } }); const completed = await app.inject({ method: 'POST', url: progressPath, headers: { ...auth(west, finalIdentity, 'POST', progressPath, progressBody), 'content-type': 'application/json' }, payload: JSON.parse(progressBody) });
     assert.equal(completed.statusCode, 200, completed.body); assert.equal(completed.json().item.status, 'COMPLETED');
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Agent public-key registration works with the legacy NOT NULL token column', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(`CREATE TABLE core_agents (
+      agent_id TEXT PRIMARY KEY, center_id TEXT NOT NULL, security_domain TEXT NOT NULL,
+      name TEXT NOT NULL, token_sha256 TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'ACTIVE',
+      created_at TEXT NOT NULL, last_seen_at TEXT
+    )`);
+    const store = new CoreStore(db);
+    const identity = generateIdentity();
+    const first = store.registerAgent({ centerId: 'TEST', securityDomain: 'TEST', name: 'first', publicKey: identity.publicKeyPem });
+    const second = store.registerAgent({ centerId: 'TEST', securityDomain: 'TEST', name: 'second', publicKey: generateIdentity().publicKeyPem });
+    assert.notEqual(first.agentId, second.agentId);
+    const timestamp = new Date().toISOString(); const nonce = randomNonce(); const path = '/api/v1/agent/tasks/pull';
+    assert.equal(store.authenticateAgent({ agentId: first.agentId, timestamp, nonce, method: 'POST', path, signature: signRequest(identity.privateKeyPem, 'POST', path, timestamp, nonce) }).agentId, first.agentId);
+    assert.equal(store.authenticateAgent({ token: db.prepare('SELECT token_sha256 FROM core_agents WHERE agent_id = ?').get(first.agentId).token_sha256 }), null);
+  } finally { db.close(); }
 });
