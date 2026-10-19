@@ -75,7 +75,7 @@ Core 与 Agent 的应用接口采用双向 Ed25519 签名。首次配对时，�
 
 Agent 页面保存的 Core 地址和信任公钥持久化到本机 `agent.sqlite`，立即生效，重启后优先于环境变量。`CAM_CORE_URL`、`CAM_CORE_PUBLIC_KEY` / `CAM_CORE_PUBLIC_KEY_B64` 及旧公钥过渡变量保留为部署默认值；页面保存之后仅改环境变量不会覆盖已保存配置。定时刷新不会覆盖正在编辑的内容。
 
-Core 服务密钥轮换可在 Core 的 Agent 管理页面执行（接口 `POST /api/v1/agent-service-identity/rotate`），会立即切换新身份。随后到各 Agent 的“Core 对接配置”点击“更换 Core 身份”，粘贴新公钥、核对指纹并明确确认，设置旧公钥过渡期（默认 24 小时，最长 30 天），保存后再次测试。原公钥默认只读；替换时自动保留已信任旧公钥，到期后不再接受旧签名。尚未更新的离线 Agent 恢复连接时会拒绝未知 Core 身份，需要管理员更新其信任配置；当前不支持自动分发 Core 新公钥。密钥文件必须和 Core 数据一起持久保存，丢失时按身份重置流程重新分发公钥。
+Core 服务密钥轮换可在 Core 的 Agent 管理页面执行（接口 `POST /api/v1/agent-service-identity/rotate`），会立即切换新身份。随后到各 Agent 的“Core 身份配对”点击“更换 Core 身份”，粘贴新公钥、核对指纹并明确确认，设置旧公钥过渡期（默认 24 小时，最长 30 天），保存后再次测试。原公钥默认只读；替换时自动保留已信任旧公钥，到期后不再接受旧签名。尚未更新的离线 Agent 恢复连接时会拒绝未知 Core 身份，需要管理员更新其信任配置；当前不支持自动分发 Core 新公钥。密钥文件必须和 Core 数据一起持久保存，丢失时按身份重置流程重新分发公钥。
 
 ```bash
 cp deploy/.env.example deploy/.env

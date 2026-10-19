@@ -6,7 +6,7 @@ Agent 请求继续使用本机独立 Ed25519 私钥签名。规范化内容为 `
 
 Core 为 Agent API 生成并持久化独立服务身份，私钥位于 Core 数据目录的 `core-agent-identity.json`（权限 `0600`），不会离开 Core。每个 `/api/v1/agent/*` 响应（包括业务错误）都签名，签名覆盖 `HTTP_STATUS`、`HTTP_METHOD`、不含 query 的 `PATH`、对应请求 nonce、响应时间戳和原始响应体 SHA-256。响应头为 `x-cam-core-key-id`、`x-cam-core-timestamp`、`x-cam-core-signature`。Agent 必须先验证时间戳、key ID 和签名，再解析响应或执行任务；缺少可信 Core 公钥或签名不匹配时拒绝响应。
 
-首次配对时，将 Core 管理界面 Agent 管理页显示的 Core 服务公钥直接粘贴到 Agent“Core 身份配对”页顶部的“Core 对接配置”，填写 Core 地址，保存并测试配对。配置在 Agent 本地 SQLite 持久化，立即生效，重启后优先于部署默认值 `CAM_CORE_URL`、`CAM_CORE_PUBLIC_KEY` / `CAM_CORE_PUBLIC_KEY_B64`。Core 服务私钥不用于 Agent 身份，也不替代每台 Agent 自己的私钥。缺少 Core 公钥时拒绝发起业务请求。
+首次配对时，将 Core 管理界面 Agent 管理页显示的 Core 服务公钥直接粘贴到 Agent“Core 身份配对”页的“Core 服务公钥”输入框，填写 Core 地址，保存并测试配对。配置在 Agent 本地 SQLite 持久化，立即生效，重启后优先于部署默认值 `CAM_CORE_URL`、`CAM_CORE_PUBLIC_KEY` / `CAM_CORE_PUBLIC_KEY_B64`。Core 服务私钥不用于 Agent 身份，也不替代每台 Agent 自己的私钥。缺少 Core 公钥时拒绝发起业务请求。
 
 Core 密钥轮换采用显式双钥过渡。Core 管理页面的轮换操作立即生成并切换新密钥，管理员随后在各 Agent 页面点击“更换 Core 身份”，粘贴新公钥、核对指纹并明确确认；保存时保留当前已信任公钥作为旧公钥，必须指定未来 30 天以内的过渡期，到期后旧签名失效。尚未更新的离线 Agent 不会自动信任未知签名密钥，需管理员更新其信任配置后恢复。当前没有自动 Core 换钥分发协议。Core 服务身份文件应持久保存；丢失后重新生成身份须按身份重置流程重新分发公钥。
 
