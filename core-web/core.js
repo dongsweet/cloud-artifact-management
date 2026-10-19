@@ -268,19 +268,25 @@ async function loadGateKeys({ preserveInputs = false } = {}) {
   else if (!preserveInputs && peerEditor.dataset.editing !== 'true') { peerEditor.classList.add('d-none'); peerEdit.classList.remove('d-none'); peerCancel.classList.add('d-none'); $('#gate-peer-bundle-input').value = ''; }
   $('#gate-trust-peer').classList.toggle('d-none', gatePeerTrusted && peerEditor.dataset.editing !== 'true');
   const states = { UNPAIRED: '未导入对端身份，业务传输已禁用', KEY_PENDING: '身份已保存，等待双端互信和密钥协商', CONFIRMING: '等待对端确认首个密钥，业务传输已禁用', PAIRED: '双向配对完成，业务密钥可用' };
-  const lines = [states[item.pairingState] ?? '等待确认配对状态'];
-  if (item.activeKeyId) lines.push(`当前密钥：${item.activeKeyId}`);
-  if (item.rotationState !== 'IDLE') lines.push(`协商进度：${{ PROPOSAL_PENDING: '等待对端接收密钥提案', PREPARED: '提案已接收，等待 Core 确认', CONFIRM_PENDING: '等待对端确认生效' }[item.rotationState] ?? item.rotationState}`);
-  if (item.previousKeyExpiresAt) lines.push(`旧密钥过渡至：${new Date(item.previousKeyExpiresAt).toLocaleString()}`);
-  if (item.lastRotationAt) lines.push(`最近完成：${new Date(item.lastRotationAt).toLocaleString()}`);
-  if (item.nextRotationAt) lines.push(`下次自动轮换：${new Date(item.nextRotationAt).toLocaleString()}`);
-  if (item.lastRotationError) lines.push(`最近失败：${item.lastRotationError}`);
-  if (item.retryAt) lines.push(`自动重试：${new Date(item.retryAt).toLocaleString()}（也可在 Core 点击“测试身份配对”重试）`);
-  $('#gate-key-state').style.whiteSpace = 'pre-line';
-  $('#gate-key-state').textContent = lines.join('\n');
+  $('#gate-key-state').textContent = states[item.pairingState] ?? '等待确认配对状态';
+  const paired = item.pairingState === 'PAIRED';
+  $('#gate-pairing-badge').className = `badge text-bg-${paired ? 'success' : 'warning'}`;
+  $('#gate-pairing-badge').textContent = paired ? '已配对' : item.pairingState === 'UNPAIRED' ? '未配对' : '配对中';
+  const rotationStates = { IDLE: '当前无协商任务', PROPOSAL_PENDING: '等待对端接收密钥提案', PREPARED: '提案已接收，等待 Core 确认', CONFIRM_PENDING: '等待对端确认生效' };
+  const fields = [
+    ['当前密钥', item.activeKeyId ?? '尚未生成'],
+    ['协商进度', rotationStates[item.rotationState] ?? item.rotationState ?? '等待配对'],
+    ['最近完成轮换', item.lastRotationAt ? displayTime(item.lastRotationAt) : '暂无记录'],
+    ['下次自动轮换', item.nextRotationAt ? displayTime(item.nextRotationAt) : '配对完成后安排'],
+    ['旧密钥过渡至', item.previousKeyExpiresAt ? displayTime(item.previousKeyExpiresAt) : '无过渡中的旧密钥'],
+  ];
+  $('#gate-key-summary').innerHTML = fields.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('');
+  const retry = $('#gate-key-retry');
+  retry.classList.toggle('d-none', !item.lastRotationError && !item.retryAt);
+  retry.textContent = [item.lastRotationError && `最近失败：${item.lastRotationError}`, item.retryAt && `下次自动重试：${displayTime(item.retryAt)}`, (item.lastRotationError || item.retryAt) && '可点击“测试身份配对”立即重试。'].filter(Boolean).join('；');
   $('#gate-secret-status').value = states[item.pairingState] ?? '等待确认配对状态';
   const events = { PEER_TRUSTED: '已保存对端身份', PEER_REPLACED_KEYS_RETIRED: '对端身份已更换，旧密钥已撤销', ROTATION_PROPOSAL_CREATED: '已发起密钥协商', ROTATION_PROPOSAL_ACCEPTED: '已接收密钥提案', ROTATION_ACTIVATED_CORE: '等待 Edge 确认密钥', ROTATION_CONFIRMED_CORE: '双方密钥确认完成', ROTATION_CONFIRMED_EDGE: '业务密钥已生效', ROTATION_RETRY_WAIT: '协商失败，等待重试', SCHEDULE_UPDATED: '轮换策略已更新', BOOTSTRAP_SECRET_RETIRED: '旧初始化密钥已撤销' };
-  $('#gate-key-events').textContent = (item.recentEvents ?? []).slice(0, 5).map((event) => `${new Date(event.at).toLocaleString()} · ${events[event.type] ?? event.type}`).join('\n') || '暂无配对与轮换记录';
+  $('#gate-key-events').innerHTML = (item.recentEvents ?? []).slice(0, 5).map((event) => `<div class="cam-gate-event"><time>${escapeHtml(displayTime(event.at))}</time><span>${escapeHtml(events[event.type] ?? event.type)}</span></div>`).join('') || '<p class="small text-body-secondary mb-0">暂无配对与轮换记录</p>';
   if (!preserveInputs) { $('#gate-rotation-days').value = item.rotationIntervalDays; $('#gate-grace-hours').value = item.gracePeriodHours; }
   $('#gate-rotate-now').disabled = !item.peerTrusted;
 }
@@ -368,10 +374,26 @@ $('#cloud-test').addEventListener('click', async () => { const button = $('#clou
 $('#cloud-config-form').addEventListener('input', () => { renderCloudMappings(); $('#cloud-status').textContent = '参数已修改，需重新测试并保存以更新匹配 ID。'; clearMessage(); });
 $('#gate-config-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); message('网闸映射配置已保存'); await loadGateConfig(); } catch (error) { message(error.message, 'danger'); } });
 $('#gate-test').addEventListener('click', async () => { const button = $('#gate-test'); button.disabled = true; try { const result = await api('/api/v1/gate/config/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData($('#gate-config-form')))) }); $('#gate-config-status').textContent = `控制通道测试成功：${Object.keys(result.checks).map((key) => `${key}=${result.checks[key].service ?? 'ready'}`).join('，')}`; message('网闸映射通道测试成功'); } catch (error) { $('#gate-config-status').textContent = '映射通道测试失败，请检查网闸虚拟地址和策略。'; message(error.message, 'danger'); } finally { button.disabled = false; } });
-$('#gate-peer-edit').addEventListener('click', () => { $('#gate-peer-editor').classList.remove('d-none'); $('#gate-peer-editor').dataset.editing = 'true'; $('#gate-peer-edit').classList.add('d-none'); $('#gate-peer-cancel').classList.remove('d-none'); $('#gate-peer-bundle-input').focus(); $('#gate-peer-state').textContent = '替换身份会撤销当前共享密钥，双方需要重新确认配对'; });
+$('#gate-copy-identity').addEventListener('click', async () => {
+  const input = $('#gate-identity-bundle');
+  if (!input.value) return;
+  try { await navigator.clipboard.writeText(input.value); $('#gate-copy-state').textContent = '身份包已复制，请在 Edge 导入。'; }
+  catch { input.focus(); input.select(); $('#gate-copy-state').textContent = '浏览器未授权自动复制，已选中身份包，请按 Ctrl+C 复制。'; }
+});
+$('#gate-peer-edit').addEventListener('click', () => { $('#gate-pairing-result').classList.add('d-none'); $('#gate-peer-editor').classList.remove('d-none'); $('#gate-peer-editor').dataset.editing = 'true'; $('#gate-peer-edit').classList.add('d-none'); $('#gate-peer-cancel').classList.remove('d-none'); $('#gate-peer-bundle-input').focus(); $('#gate-peer-state').textContent = '替换身份会撤销当前共享密钥，双方需要重新确认配对'; });
 $('#gate-peer-cancel').addEventListener('click', () => { $('#gate-peer-editor').classList.add('d-none'); $('#gate-peer-editor').dataset.editing = ''; $('#gate-peer-cancel').classList.add('d-none'); $('#gate-peer-edit').classList.remove('d-none'); $('#gate-peer-bundle-input').value = ''; $('#gate-peer-state').textContent = '已取消身份替换'; });
 $('#gate-trust-peer').addEventListener('click', async () => { try { if (gatePeerTrusted && !await confirmDialog({ title: '重新配对 Edge 身份', text: '替换对端身份会撤销当前共享密钥，双方需要重新完成身份确认。确定继续吗？', confirmLabel: '确认替换', confirmClass: 'btn-warning' })) return; const identityBundle = JSON.parse($('#gate-peer-bundle-input').value); await api('/api/v1/gate/keys/trusted-peer', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identityBundle }) }); $('#gate-peer-bundle-input').value = ''; $('#gate-peer-editor').dataset.editing = ''; await loadGateKeys(); message('Edge 身份已保存；双方完成互信和密钥确认后才算配对成功'); } catch (error) { message(error.message, 'danger'); } });
-$('#gate-pairing-test').addEventListener('click', async (event) => { const button = event.currentTarget; button.disabled = true; button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>测试中'; try { const result = await api('/api/v1/gate/keys/test', { method: 'POST' }); $('#gate-key-state').textContent = `配对测试通过：本端 Core 与对端 ${result.checks.remote.role} 均已配对，密钥认证成功。`; message('身份配对、共享密钥和 Edge 控制通道均正常'); } catch (error) { $('#gate-key-state').textContent = `配对测试未通过：${error.message}`; message(error.message, 'danger'); } finally { await loadGateKeys({ preserveInputs: true }).catch(() => {}); button.disabled = false; button.innerHTML = '<i class="bi bi-shield-check me-1"></i>测试身份配对'; } });
+$('#gate-pairing-test').addEventListener('click', async (event) => {
+  const button = event.currentTarget; const notice = $('#gate-pairing-result');
+  button.disabled = true; button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>测试中';
+  notice.className = 'alert alert-info mt-3 mb-0'; notice.textContent = '正在测试身份配对与密钥认证…';
+  try {
+    const result = await api('/api/v1/gate/keys/test', { method: 'POST' });
+    notice.className = 'alert alert-success mt-3 mb-0';
+    notice.textContent = `配对测试通过：本端 Core 与对端 ${result.checks.remote.role} 均已配对，密钥认证成功（${displayTime(new Date().toISOString())}）。`;
+  } catch (error) { notice.className = 'alert alert-danger mt-3 mb-0'; notice.textContent = `配对测试未通过：${error.message}`; }
+  finally { await loadGateKeys({ preserveInputs: true }).catch(() => {}); button.disabled = false; button.innerHTML = '<i class="bi bi-shield-check me-1"></i>测试身份配对'; }
+});
 $('#gate-schedule').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/keys/schedule', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rotationIntervalDays: Number($('#gate-rotation-days').value), gracePeriodHours: Number($('#gate-grace-hours').value) }) }); await loadGateKeys(); message('自动轮换策略已保存'); } catch (error) { message(error.message, 'danger'); } });
 $('#gate-rotate-now').addEventListener('click', async () => { const button = $('#gate-rotate-now'); button.disabled = true; try { await api('/api/v1/gate/keys/rotate', { method: 'POST', headers: { 'content-type': 'application/json' } }); await loadGateKeys(); message('共享密钥已完成轮换'); } catch (error) { message(error.message, 'danger'); } finally { button.disabled = false; } });
 try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) await load(); } catch { showLogin(); }
