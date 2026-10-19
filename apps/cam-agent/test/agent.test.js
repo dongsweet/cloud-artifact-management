@@ -60,3 +60,37 @@ test('Agent tests its signed Core pairing and persists a rotated identity', asyn
     assert.equal(core.coreStore.listAgents()[0].fingerprint, saved.fingerprint);
   } finally { await app.close(); await core.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
+
+test('Core-triggered Agent rotation recovers the same pending key after a lost response and restart', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-rotation-recovery-'));
+  const agentDir = join(dataDir, 'agent');
+  const core = await buildCoreApp({ dataDir: join(dataDir, 'core'), enableAuth: false });
+  const initial = generateIdentity();
+  await mkdir(agentDir);
+  await writeFile(join(agentDir, 'identity.json'), JSON.stringify(initial));
+  const registered = core.coreStore.registerAgent({ name: 'recover-agent', centerId: 'TEST', publicKey: initial.publicKeyPem });
+  const coreUrl = await core.listen({ host: '127.0.0.1', port: 0 });
+  core.coreStore.confirmAgentIdentity({ agentId: registered.agentId, currentKey: true, signingKeyId: initial.fingerprint });
+  core.coreStore.requestAgentRotation(registered.agentId);
+  let loseResponse = true;
+  const fetchImpl = async (...args) => {
+    const response = await fetch(...args);
+    if (loseResponse && String(args[0]).endsWith('/api/v1/agent/key-rotation')) { loseResponse = false; throw new Error('simulated response loss'); }
+    return response;
+  };
+  const options = { dataDir: agentDir, agentId: registered.agentId, startWorker: false, coreUrl, fetchImpl };
+  let app = await buildAgentApp(options);
+  try {
+    await app.agentPoll();
+    const switched = core.coreStore.getAgentIdentity(registered.agentId);
+    assert.notEqual(switched.keyId, initial.fingerprint, 'Core accepted the public key before the response was lost');
+    const pending = JSON.parse(await readFile(join(agentDir, 'identity.json.pending'), 'utf8'));
+    await app.close();
+    app = await buildAgentApp({ ...options, fetchImpl: fetch });
+    await app.agentPoll();
+    const saved = JSON.parse(await readFile(join(agentDir, 'identity.json'), 'utf8'));
+    assert.equal(saved.fingerprint, pending.fingerprint, 'restart reuses the durable pending key');
+    assert.equal(core.coreStore.getAgentIdentity(registered.agentId).confirmedAt !== null, true);
+    assert.equal(core.coreStore.getAgentIdentity(registered.agentId).rotationRequestedAt, null);
+  } finally { await app.close(); await core.close(); await rm(dataDir, { recursive: true, force: true }); }
+});

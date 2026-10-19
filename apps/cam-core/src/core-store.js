@@ -146,6 +146,8 @@ export class CoreStore {
       db.exec('DROP INDEX IF EXISTS core_agents_scope_idx; ALTER TABLE core_agents DROP COLUMN security_domain');
     }
     for (const [name, definition] of Object.entries({ public_key: 'TEXT', key_id: 'TEXT', previous_public_key: 'TEXT', previous_key_expires_at: 'TEXT', token_sha256: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
+    for (const [name, definition] of Object.entries({ rotation_days: 'INTEGER NOT NULL DEFAULT 90', grace_hours: 'INTEGER NOT NULL DEFAULT 24', key_rotated_at: 'TEXT', key_confirmed_at: 'TEXT', rotation_requested_at: 'TEXT', rotation_error: 'TEXT', rotation_attempts: 'INTEGER NOT NULL DEFAULT 0', rotation_retry_at: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
+    db.exec('UPDATE core_agents SET key_rotated_at = created_at WHERE key_rotated_at IS NULL');
     db.exec('CREATE TABLE IF NOT EXISTS core_agent_nonces (agent_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (agent_id, nonce))');
     const distributionColumns = new Set(db.prepare('PRAGMA table_info(core_distribution_tasks)').all().map((column) => column.name));
     if (!distributionColumns.has('attempts')) db.exec('ALTER TABLE core_distribution_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
@@ -174,21 +176,65 @@ export class CoreStore {
     if (typeof agentId !== 'string' || typeof timestamp !== 'string' || typeof nonce !== 'string' || typeof signature !== 'string') return null;
     const row = this.db.prepare("SELECT agent_id AS agentId, center_id AS centerId, name, public_key AS publicKey, previous_public_key AS previousPublicKey, previous_key_expires_at AS previousKeyExpiresAt, status FROM core_agents WHERE agent_id = ?").get(agentId);
     if (!row || row.status !== 'ACTIVE' || !Number.isFinite(Date.parse(timestamp)) || Math.abs(Date.now() - Date.parse(timestamp)) > 5 * 60_000) return null;
-    const keyOk = verifyRequest(row.publicKey, signature, method, path, timestamp, nonce, body) || (row.previousPublicKey && row.previousKeyExpiresAt && Date.parse(row.previousKeyExpiresAt) > Date.now() && verifyRequest(row.previousPublicKey, signature, method, path, timestamp, nonce, body));
+    const currentKey = verifyRequest(row.publicKey, signature, method, path, timestamp, nonce, body);
+    const keyOk = currentKey || (row.previousPublicKey && row.previousKeyExpiresAt && Date.parse(row.previousKeyExpiresAt) > Date.now() && verifyRequest(row.previousPublicKey, signature, method, path, timestamp, nonce, body));
     if (!keyOk) return null;
     this.db.prepare('DELETE FROM core_agent_nonces WHERE expires_at <= ?').run(now());
     try { this.db.prepare('INSERT INTO core_agent_nonces (agent_id, nonce, expires_at) VALUES (?, ?, ?)').run(row.agentId, nonce, new Date(Math.max(Date.now(), Date.parse(timestamp)) + 5 * 60_000).toISOString()); } catch { return null; }
     this.db.prepare('UPDATE core_agents SET last_seen_at = ? WHERE agent_id = ?').run(now(), row.agentId);
+    row.signingKeyId = fingerprint(currentKey ? row.publicKey : row.previousPublicKey);
+    row.currentKey = currentKey;
     delete row.publicKey; delete row.previousPublicKey; delete row.previousKeyExpiresAt; return row;
   }
   listAgents() {
-    return this.db.prepare('SELECT agent_id AS agentId, center_id AS centerId, name, key_id AS keyId, key_id AS fingerprint, status, created_at AS createdAt, last_seen_at AS lastSeenAt, previous_key_expires_at AS previousKeyExpiresAt FROM core_agents ORDER BY created_at DESC').all();
+    return this.db.prepare('SELECT agent_id FROM core_agents ORDER BY created_at DESC').all().map((row) => this.getAgentIdentity(row.agent_id));
   }
-  rotateAgentKey(agentId, publicKey, previousKeyExpiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString()) {
+  getAgentIdentity(agentId) {
+    const row = this.db.prepare('SELECT * FROM core_agents WHERE agent_id = ?').get(agentId);
+    if (!row) throw Object.assign(new Error('Agent 不存在'), { code: 'agent_not_found' });
+    const rotatedAt = row.key_rotated_at ?? row.created_at;
+    const nextRotationAt = new Date(Date.parse(rotatedAt) + row.rotation_days * 86400_000).toISOString();
+    const rotationDue = Boolean(row.rotation_requested_at) || Date.parse(nextRotationAt) <= Date.now();
+    return { agentId: row.agent_id, centerId: row.center_id, name: row.name, keyId: row.key_id, fingerprint: row.key_id, status: row.status, createdAt: row.created_at, lastSeenAt: row.last_seen_at,
+      previousKeyExpiresAt: row.previous_key_expires_at, rotationDays: row.rotation_days, graceHours: row.grace_hours, rotatedAt, confirmedAt: row.key_confirmed_at, nextRotationAt, rotationRequestedAt: row.rotation_requested_at, rotationDue,
+      rotationState: row.rotation_error ? 'RETRY_WAIT' : !row.key_confirmed_at ? 'AWAITING_CONFIRMATION' : rotationDue ? 'REQUESTED' : 'CURRENT', rotationError: row.rotation_error, rotationAttempts: row.rotation_attempts, rotationRetryAt: row.rotation_retry_at };
+  }
+  setAgentRotationPolicy(agentId, { rotationDays, graceHours }) {
+    if (!Number.isInteger(rotationDays) || rotationDays < 1 || rotationDays > 365 || !Number.isInteger(graceHours) || graceHours < 1 || graceHours > 168) throw Object.assign(new Error('轮换周期应为 1–365 天，过渡期应为 1–168 小时'), { code: 'agent_policy_invalid' });
+    this.getAgentIdentity(agentId);
+    this.db.prepare('UPDATE core_agents SET rotation_days = ?, grace_hours = ? WHERE agent_id = ?').run(rotationDays, graceHours, agentId);
+    return this.getAgentIdentity(agentId);
+  }
+  requestAgentRotation(agentId) {
+    const agent = this.getAgentIdentity(agentId);
+    if (agent.status !== 'ACTIVE') throw Object.assign(new Error('请先启用 Agent'), { code: 'agent_disabled' });
+    if (!agent.confirmedAt) throw Object.assign(new Error('请等待 Agent 确认当前身份后再轮换'), { code: 'agent_rotation_unconfirmed' });
+    this.db.prepare('UPDATE core_agents SET rotation_requested_at = COALESCE(rotation_requested_at, ?) WHERE agent_id = ?').run(now(), agentId);
+    return this.getAgentIdentity(agentId);
+  }
+  confirmAgentIdentity(principal) {
+    if (!principal.currentKey || principal.signingKeyId !== this.getAgentIdentity(principal.agentId).keyId) throw Object.assign(new Error('必须使用当前身份确认'), { code: 'agent_current_key_required' });
+    this.db.prepare('UPDATE core_agents SET key_confirmed_at = COALESCE(key_confirmed_at, ?), rotation_error = NULL, rotation_attempts = 0, rotation_retry_at = NULL WHERE agent_id = ?').run(now(), principal.agentId);
+    return this.getAgentIdentity(principal.agentId);
+  }
+  reportAgentRotationFailure(agentId, { message, attempts, retryAt }) {
+    if (typeof message !== 'string' || !message || !Number.isSafeInteger(attempts) || attempts < 1 || !Number.isFinite(Date.parse(retryAt))) throw Object.assign(new Error('轮换重试状态无效'), { code: 'agent_rotation_report_invalid' });
+    this.db.prepare('UPDATE core_agents SET rotation_error = ?, rotation_attempts = ?, rotation_retry_at = ? WHERE agent_id = ?').run(message.slice(0, 1000), attempts, new Date(retryAt).toISOString(), agentId);
+    return this.getAgentIdentity(agentId);
+  }
+  rotateAgentKey(agentId, publicKey, previousKeyExpiresAt, { signingKeyId, expectedKeyId } = {}) {
     let keyId; try { keyId = fingerprint(publicKey); } catch { throw Object.assign(new Error('Agent public key is invalid'), { code: 'agent_public_key_invalid' }); }
-    const result = this.db.prepare("UPDATE core_agents SET previous_public_key = public_key, previous_key_expires_at = ?, public_key = ?, key_id = ?, last_seen_at = ? WHERE agent_id = ? AND status = 'ACTIVE'").run(previousKeyExpiresAt, publicKey, keyId, now(), agentId);
+    const agent = this.getAgentIdentity(agentId);
+    if (agent.status !== 'ACTIVE') throw Object.assign(new Error('Agent 已禁用'), { code: 'agent_disabled' });
+    // A retry of the same persisted key must not renew the grace period or
+    // overwrite the previous key. Grace keys may only retry that exact change.
+    if (keyId === agent.keyId) return agent;
+    if (signingKeyId !== undefined && (signingKeyId !== agent.keyId || expectedKeyId !== agent.keyId)) throw Object.assign(new Error('当前身份已变化，拒绝使用旧身份再次换钥'), { code: 'agent_rotation_conflict' });
+    previousKeyExpiresAt ??= new Date(Date.now() + agent.graceHours * 3600_000).toISOString();
+    const timestamp = now();
+    const result = this.db.prepare("UPDATE core_agents SET previous_public_key = public_key, previous_key_expires_at = ?, public_key = ?, key_id = ?, last_seen_at = ?, key_rotated_at = ?, key_confirmed_at = NULL, rotation_requested_at = NULL, rotation_error = NULL, rotation_attempts = 0, rotation_retry_at = NULL WHERE agent_id = ? AND status = 'ACTIVE'").run(previousKeyExpiresAt, publicKey, keyId, timestamp, timestamp, agentId);
     if (!result.changes) throw Object.assign(new Error('active agent not found'), { code: 'agent_not_found' });
-    return { agentId, keyId, fingerprint: keyId, previousKeyExpiresAt };
+    return this.getAgentIdentity(agentId);
   }
   setAgentStatus(agentId, status) {
     if (!['ACTIVE', 'DISABLED'].includes(status)) throw Object.assign(new Error('invalid agent status'), { code: 'agent_invalid' });

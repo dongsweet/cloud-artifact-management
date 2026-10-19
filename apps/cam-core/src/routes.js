@@ -6,6 +6,7 @@ import { once } from 'node:events';
 import { attachmentContentType } from '../../../libs/cam-server/src/attachment-types.js';
 import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
 import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/client.js';
+import { verifyRequest } from '../../../libs/cam-agent-auth/src/protocol.js';
 
 function error(reply, status, code, message) { return reply.code(status).send({ error: { code, message } }); }
 
@@ -234,8 +235,13 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, ena
   });
   app.post('/api/v1/agents/:agentId/rotate', { bodyLimit: 8192 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
-    try { return { item: store.rotateAgentKey(request.params.agentId, request.body?.publicKey) }; }
+    try { return reply.code(202).send({ item: store.requestAgentRotation(request.params.agentId) }); }
     catch (err) { return error(reply, 400, err.code ?? 'agent_rotation_failed', err.message); }
+  });
+  app.put('/api/v1/agents/:agentId/rotation-policy', { bodyLimit: 4096 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    try { return { item: store.setAgentRotationPolicy(request.params.agentId, request.body ?? {}) }; }
+    catch (err) { return error(reply, 400, err.code ?? 'agent_policy_invalid', err.message); }
   });
   app.patch('/api/v1/agents/:agentId', { bodyLimit: 4096 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
@@ -243,8 +249,20 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, ena
     catch (err) { return error(reply, 400, err.code ?? 'agent_invalid', err.message); }
   });
   app.post('/api/v1/agent/key-rotation', { bodyLimit: 8192 }, async (request, reply) => {
-    try { return { item: store.rotateAgentKey(request.agentPrincipal.agentId, request.body?.publicKey) }; }
+    const proof = request.headers['x-cam-agent-new-key-proof'];
+    if (!verifyRequest(request.body?.publicKey, proof, request.method, request.url.split('?')[0], request.headers['x-cam-agent-timestamp'], request.headers['x-cam-agent-nonce'], JSON.stringify(request.body))) return error(reply, 400, 'agent_new_key_proof_invalid', '新身份签名校验失败');
+    if (typeof request.body?.expectedKeyId !== 'string') return error(reply, 400, 'agent_expected_key_required', '缺少原身份指纹');
+    try { return { item: store.rotateAgentKey(request.agentPrincipal.agentId, request.body.publicKey, undefined, { signingKeyId: request.agentPrincipal.signingKeyId, expectedKeyId: request.body.expectedKeyId }) }; }
     catch (err) { return error(reply, 400, err.code ?? 'agent_rotation_failed', err.message); }
+  });
+  app.get('/api/v1/agent/identity', async (request) => ({ item: store.getAgentIdentity(request.agentPrincipal.agentId) }));
+  app.post('/api/v1/agent/identity/confirm', { bodyLimit: 4096 }, async (request, reply) => {
+    try { return { item: store.confirmAgentIdentity(request.agentPrincipal) }; }
+    catch (err) { return error(reply, 409, err.code ?? 'agent_confirmation_failed', err.message); }
+  });
+  app.post('/api/v1/agent/identity/failure', { bodyLimit: 4096 }, async (request, reply) => {
+    try { return { item: store.reportAgentRotationFailure(request.agentPrincipal.agentId, request.body ?? {}) }; }
+    catch (err) { return error(reply, 400, err.code ?? 'agent_rotation_report_invalid', err.message); }
   });
   app.get('/api/v1/distribution-tasks', async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');

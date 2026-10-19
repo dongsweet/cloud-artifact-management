@@ -96,10 +96,34 @@ function renderAgents(items) {
   coreAgents = items ?? [];
   $('#agent-rows').innerHTML = coreAgents.length ? coreAgents.map((agent) => {
     const active = agent.status === 'ACTIVE';
-    const keyState = !agent.keyId ? '待身份配对' : agent.previousKeyExpiresAt && Date.parse(agent.previousKeyExpiresAt) > Date.now() ? `旧身份过渡至 ${displayTime(agent.previousKeyExpiresAt)}` : '当前身份';
-    return `<tr><td><div class="fw-semibold">${escapeHtml(agent.name)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(agent.agentId)}</div></td><td>${escapeHtml(agent.centerId)}</td><td><span class="badge text-bg-${active ? 'success' : 'secondary'}">${active ? '启用' : '已禁用'}</span><div class="small text-body-secondary mt-1">${escapeHtml(keyState)}</div></td><td><code class="small d-inline-block text-break" style="max-width:16rem">${escapeHtml(agent.keyId ?? '-')}</code></td><td>${escapeHtml(agent.lastSeenAt ? displayTime(agent.lastSeenAt) : '尚未连接')}</td><td>${escapeHtml(displayTime(agent.createdAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-${active ? 'warning' : 'success'} btn-sm agent-status-button" data-id="${escapeHtml(agent.agentId)}" data-status="${active ? 'DISABLED' : 'ACTIVE'}">${active ? '禁用' : '启用'}</button></div></td></tr>`;
+    const keyState = agentRotationLabel(agent);
+    return `<tr><td><div class="fw-semibold">${escapeHtml(agent.name)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(agent.agentId)}</div></td><td>${escapeHtml(agent.centerId)}</td><td><span class="badge text-bg-${active ? 'success' : 'secondary'}">${active ? '启用' : '已禁用'}</span><div class="small text-${agent.rotationError ? 'danger' : 'body-secondary'} mt-1">${escapeHtml(keyState)}</div>${agent.rotationError ? `<div class="small text-danger">${escapeHtml(agent.rotationError)}</div><div class="small text-body-secondary">已尝试 ${agent.rotationAttempts} 次 · ${escapeHtml(displayTime(agent.rotationRetryAt))} 重试</div>` : ''}</td><td><code class="small d-inline-block text-break" style="max-width:12rem">${escapeHtml(agent.keyId ?? '-')}</code></td><td>${escapeHtml(agent.lastSeenAt ? displayTime(agent.lastSeenAt) : '尚未连接')}</td><td>${escapeHtml(displayTime(agent.nextRotationAt))}<div class="small text-body-secondary">每 ${escapeHtml(agent.rotationDays)} 天 · 过渡 ${escapeHtml(agent.graceHours)} 小时</div></td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-primary btn-sm agent-rotation-button" data-id="${escapeHtml(agent.agentId)}"><i class="bi bi-arrow-repeat me-1"></i>身份轮换</button><button class="btn btn-outline-${active ? 'warning' : 'success'} btn-sm agent-status-button" data-id="${escapeHtml(agent.agentId)}" data-status="${active ? 'DISABLED' : 'ACTIVE'}">${active ? '禁用' : '启用'}</button></div></td></tr>`;
   }).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">暂无已注册 Agent</td></tr>';
   document.querySelectorAll('.agent-status-button').forEach((button) => { button.onclick = () => updateAgentStatus(button); });
+  document.querySelectorAll('.agent-rotation-button').forEach((button) => { button.onclick = () => openAgentRotation(button.dataset.id); });
+  if ($('#agent-rotation-dialog').open) renderAgentRotationSummary();
+}
+function agentRotationLabel(agent) {
+  if (!agent.keyId) return '待身份配对';
+  if (agent.rotationState === 'RETRY_WAIT') return '轮换失败，等待重试';
+  if (agent.rotationState === 'AWAITING_CONFIRMATION') return '等待 Agent 签名确认';
+  if (agent.rotationState === 'REQUESTED') return '等待 Agent 执行轮换';
+  return agent.previousKeyExpiresAt && Date.parse(agent.previousKeyExpiresAt) > Date.now() ? `配对成功 · 旧身份过渡至 ${displayTime(agent.previousKeyExpiresAt)}` : '配对成功 · 身份有效';
+}
+function renderAgentRotationSummary() {
+  const agent = coreAgents.find((item) => item.agentId === $('#agent-rotation-dialog').dataset.agentId);
+  if (!agent) return;
+  $('#agent-rotation-summary').textContent = `${agent.name} · ${agent.centerId}\n${agentRotationLabel(agent)}\n最近换钥：${displayTime(agent.rotatedAt)}\n签名确认：${agent.confirmedAt ? displayTime(agent.confirmedAt) : '尚未确认'}\n下次轮换：${displayTime(agent.nextRotationAt)}${agent.rotationRequestedAt ? `\n请求时间：${displayTime(agent.rotationRequestedAt)}` : ''}${agent.rotationError ? `\n最近错误：${agent.rotationError}\n已尝试 ${agent.rotationAttempts} 次，下次重试：${displayTime(agent.rotationRetryAt)}` : ''}`;
+  $('#agent-rotate-now').disabled = agent.status !== 'ACTIVE' || !agent.confirmedAt || Boolean(agent.rotationRequestedAt);
+}
+function openAgentRotation(agentId) {
+  const agent = coreAgents.find((item) => item.agentId === agentId);
+  $('#agent-rotation-dialog').dataset.agentId = agentId;
+  $('#agent-rotation-days').value = agent.rotationDays;
+  $('#agent-grace-hours').value = agent.graceHours;
+  $('#agent-rotation-error').classList.add('d-none');
+  renderAgentRotationSummary();
+  $('#agent-rotation-dialog').showModal();
 }
 async function loadAgents() { try { renderAgents((await api('/api/v1/agents')).items); } catch (error) { message(error.message, 'danger'); } }
 async function updateAgentStatus(button) {
@@ -290,6 +314,27 @@ $('#confirm-cancel').addEventListener('click', () => $('#confirm-dialog').close(
 $('#confirm-submit').addEventListener('click', () => $('#confirm-dialog').close('confirm'));
 $('#confirm-dialog').addEventListener('click', (event) => { if (event.target === $('#confirm-dialog')) $('#confirm-dialog').close('cancel'); });
 $('#agents-refresh').addEventListener('click', loadAgents);
+$('#agent-rotation-close').addEventListener('click', () => $('#agent-rotation-dialog').close());
+$('#agent-rotation-dialog').addEventListener('click', (event) => { if (event.target === $('#agent-rotation-dialog')) $('#agent-rotation-dialog').close(); });
+async function changeAgentRotation(action, body) {
+  const agentId = $('#agent-rotation-dialog').dataset.agentId;
+  $('#agent-rotation-error').classList.add('d-none');
+  try {
+    await api(`/api/v1/agents/${encodeURIComponent(agentId)}/${action}`, { method: action === 'rotate' ? 'POST' : 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    message(action === 'rotate' ? '轮换请求已保存，等待 Agent 主动连接并确认新身份' : 'Agent 自动轮换策略已保存');
+    await loadAgents();
+  } catch (error) { $('#agent-rotation-error').textContent = error.message; $('#agent-rotation-error').classList.remove('d-none'); }
+}
+$('#agent-rotation-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = event.submitter; button.disabled = true;
+  try { await changeAgentRotation('rotation-policy', { rotationDays: Number($('#agent-rotation-days').value), graceHours: Number($('#agent-grace-hours').value) }); }
+  finally { button.disabled = false; }
+});
+$('#agent-rotate-now').addEventListener('click', async (event) => {
+  event.currentTarget.disabled = true;
+  try { await changeAgentRotation('rotate', {}); } finally { renderAgentRotationSummary(); }
+});
 document.querySelectorAll('[data-page]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); location.hash = link.dataset.page; showPage(link.dataset.page); }));
 $('#agent-form').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -300,7 +345,7 @@ $('#agent-form').addEventListener('submit', async (event) => {
   try {
     const result = await api('/api/v1/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData(form))) });
     form.reset();
-    message(`Agent 已配对注册，身份指纹：${result.item.fingerprint}`);
+    message(`Agent 已注册，等待本机签名确认；身份指纹：${result.item.fingerprint}`);
     await loadAgents();
   } catch (error) { $('#agent-error').textContent = error.message; $('#agent-error').classList.remove('d-none'); }
   finally { button.disabled = false; }
@@ -320,3 +365,4 @@ $('#gate-rotate-now').addEventListener('click', async () => { const button = $('
 try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) await load(); } catch { showLogin(); }
 
 setInterval(() => { if (!document.hidden && !$('#page-gate-config').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadGateKeys({ preserveInputs: true }).catch(() => {}); }, 5000);
+setInterval(() => { if (!document.hidden && !$('#page-agents').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadAgents(); }, 5000);

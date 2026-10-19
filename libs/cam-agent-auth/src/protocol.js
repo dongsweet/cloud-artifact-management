@@ -6,7 +6,7 @@ export function generateIdentity() {
   const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
   return { publicKeyPem, privateKeyPem, fingerprint: fingerprint(publicKeyPem) };
 }
-export function fingerprint(publicKeyPem) { return createHash('sha256').update(createPublicKey(publicKeyPem).export({ type: 'spki', format: 'der' })).digest('hex'); }
+export function fingerprint(publicKeyPem) { const key = createPublicKey(publicKeyPem); if (key.asymmetricKeyType !== 'ed25519') throw new Error('Agent identity must use Ed25519'); return createHash('sha256').update(key.export({ type: 'spki', format: 'der' })).digest('hex'); }
 export function bodyHash(body = '') { return createHash('sha256').update(body).digest('hex'); }
 export function canonical(method, path, timestamp, nonce, body = '') { return [method.toUpperCase(), path, timestamp, nonce, bodyHash(body)].join('\n'); }
 export function signRequest(privateKeyPem, method, path, timestamp, nonce, body = '') { return sign(null, Buffer.from(canonical(method, path, timestamp, nonce, body)), createPrivateKey(privateKeyPem)).toString('base64url'); }
