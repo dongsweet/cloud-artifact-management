@@ -395,7 +395,17 @@ export class CloudAdapter {
         throw Object.assign(new Error('cloud approved manifest does not match the local approval request'), { code: 'cloud_manifest_mismatch' });
       }
       if (approvalCode && !responseEvidence.includes(approvalCode)) {
-        throw Object.assign(new Error('cloud approved work order does not contain the approval code'), { code: 'cloud_approval_code_missing' });
+        // The cloud workflow only has an approval outcome. Treat an approval
+        // without our one-time confirmation code as a business rejection so
+        // it cannot enter the transfer path or trigger sync retries.
+        return {
+          approvalId,
+          status: 'REJECTED',
+          workflowStep: text(detail.currentStep),
+          manifestSha256,
+          cloudDetail: detail,
+          rejectionReason: '审批回复未包含同意暗号'
+        };
       }
     }
     return {
