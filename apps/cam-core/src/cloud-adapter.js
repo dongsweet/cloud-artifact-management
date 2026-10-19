@@ -311,6 +311,7 @@ export class CloudAdapter {
       `<p>候选轮次标识：${html(envelope.roundId)}</p>`,
       `<p>请求编号：${html(envelope.requestId)}</p>`,
       `<p>验证结论：${html(envelope.conclusion)}</p>`,
+      `<p>审批同意暗号（回复必须包含）：${html(envelope.approvalCode)}</p>`,
       `<p>清单 SHA-256：${html(envelope.manifestSha256)}</p>`,
       `<p>报告 SHA-256：${html(envelope.reportSha256)}</p>`,
       `<p>报告文件：${html(envelope.reportFileName)}</p>`
@@ -383,10 +384,18 @@ export class CloudAdapter {
     const status = approvalStatus(detail);
     const description = text(detail.workOrderDetail);
     const manifestSha256 = description.match(/清单\s*SHA-256：?\s*([a-f0-9]{64})/iu)?.[1]?.toLowerCase();
+    const approvalCode = expectedRequest?.approvalCode;
+    // The request description itself contains the code. Only inspect returned
+    // workflow/confirmation fields so merely echoing the original description
+    // cannot satisfy the temporary approval guard.
+    const responseEvidence = JSON.stringify({ ...detail, workOrderDetail: undefined });
     if (status === 'APPROVED') {
       if (!manifestSha256) throw cloudError('approved cloud work order does not contain a manifest SHA-256');
       if (expectedRequest?.manifestSha256 && manifestSha256 !== text(expectedRequest.manifestSha256).toLowerCase()) {
         throw Object.assign(new Error('cloud approved manifest does not match the local approval request'), { code: 'cloud_manifest_mismatch' });
+      }
+      if (approvalCode && !responseEvidence.includes(approvalCode)) {
+        throw Object.assign(new Error('cloud approved work order does not contain the approval code'), { code: 'cloud_approval_code_missing' });
       }
     }
     return {
@@ -394,6 +403,7 @@ export class CloudAdapter {
       status,
       workflowStep: text(detail.currentStep),
       transferTaskId: status === 'APPROVED' ? `EOMS-${approvalId}` : undefined,
+      approvalCode: status === 'APPROVED' ? approvalCode : undefined,
       manifestSha256,
       cloudDetail: detail
     };

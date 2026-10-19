@@ -20,6 +20,7 @@ function response(row) {
   return {
     requestId: row.request_id, freezeId: row.freeze_id, roundId: row.round_id, releaseId: row.release_id,
     productName: envelope.productName ?? null, version: envelope.version ?? null,
+    approvalCode: envelope.approvalCode ?? null,
     revision: Number.isInteger(envelope.revision) ? envelope.revision : 0,
     displayVersion: envelope.displayVersion ?? (Number.isInteger(envelope.revision) && envelope.revision > 0 ? `${envelope.version}-r${envelope.revision}` : envelope.version),
     roundNo: Number.isInteger(envelope.roundNo) ? envelope.roundNo : null, reportTitle: envelope.reportTitle ?? null,
@@ -575,7 +576,8 @@ export class CoreStore {
       if (digest(JSON.stringify(envelope.manifest)) !== manifestSha256) throw Object.assign(new Error('manifest content does not match manifestSha256'), { code: 'manifest_mismatch' });
     }
     if (envelope.reportSha256 && !/^[a-f0-9]{64}$/i.test(envelope.reportSha256)) throw Object.assign(new Error('reportSha256 must be SHA-256'), { code: 'invalid_message' });
-    const payload = JSON.stringify({ ...envelope, manifestSha256, reportSha256: envelope.reportSha256?.toLowerCase() ?? null });
+    const approvalCode = randomBytes(32).toString('hex');
+    const payload = JSON.stringify({ ...envelope, approvalCode, manifestSha256, reportSha256: envelope.reportSha256?.toLowerCase() ?? null });
     const payloadSha256 = digest(payload);
     const existing = this.get(requestId);
     if (existing) {
