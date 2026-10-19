@@ -7,6 +7,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY apps ./apps
 COPY libs ./libs
+COPY web-shared ./web-shared
 
 RUN useradd --system --uid 10001 --create-home cam && mkdir -p /data && chown -R cam:cam /app /data
 USER cam

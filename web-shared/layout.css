@@ -1,0 +1,26 @@
+/* Shared CAM shell. Core, Edge and Agent keep business styles separate. */
+:root { --cam-sidebar: #17212b; --cam-accent: #087f8c; --cam-border: #d8dee5; }
+body.layout-fixed { min-height: 100vh; background: #f4f6f9; }
+.app-header .navbar-brand { color: var(--cam-accent); }
+.app-sidebar { background-color: var(--cam-sidebar) !important; }
+.sidebar-brand { min-height: 3.5rem; display: flex; align-items: center; padding: 0 1rem; }
+.sidebar-menu .nav-link.active { background: var(--cam-accent); }
+.app-content { min-height: calc(100vh - 7rem); }
+.app-main .card { border: 1px solid var(--cam-border); box-shadow: 0 .1rem .35rem rgb(20 32 44 / 5%); }
+.card-title { font-weight: 600; }
+.cam-card-header, .cam-action-header { display: flex !important; align-items: center; justify-content: space-between; gap: 1rem; width: 100%; }
+.cam-card-header > .card-title, .cam-action-header > .card-title { float: none !important; flex: 0 1 auto !important; width: auto !important; margin: 0 !important; }
+.cam-card-header > :last-child, .cam-action-header > :last-child { margin-left: auto; }
+.cam-actions-cell { text-align: right !important; white-space: nowrap; }
+.cam-action-buttons { display: flex; justify-content: flex-end; gap: .375rem; flex-wrap: wrap; }
+.app-main .card-footer.d-flex { justify-content: flex-end !important; }
+.cam-auth-screen { position: fixed; inset: 0; z-index: 2000; overflow: auto; }
+.cam-auth-card { width: 440px; max-width: 95vw; }
+.cam-brand-subtitle { color: var(--bs-secondary-color); font-size: .875rem; }
+@media (max-width: 767.98px) {
+  .app-sidebar { width: 4.5rem; }
+  .app-sidebar .brand-text, .app-sidebar .nav-link p { display: none; }
+  .app-main { margin-left: 4.5rem; }
+  .cam-card-header, .cam-action-header { align-items: flex-start; flex-wrap: wrap; }
+  .cam-card-header > :last-child, .cam-action-header > :last-child { margin-left: 0; }
+}

@@ -5,13 +5,14 @@ WORKDIR /build
 COPY edge-web/package.json edge-web/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 COPY edge-web/index.html edge-web/app.js edge-web/account-ui.js edge-web/app.css ./
+COPY web-shared/layout.css /build/layout.css
+COPY web-shared/assets /build/shared-assets
 RUN mkdir -p /out/assets/fonts \
-  && cp node_modules/bootstrap/dist/css/bootstrap.min.css /out/assets/ \
-  && cp node_modules/bootstrap/dist/js/bootstrap.bundle.min.js /out/assets/ \
-  && cp node_modules/admin-lte/dist/css/adminlte.min.css /out/assets/ \
-  && cp node_modules/admin-lte/dist/js/adminlte.min.js /out/assets/ \
-  && cp node_modules/bootstrap-icons/font/bootstrap-icons.min.css /out/assets/ \
-  && cp node_modules/bootstrap-icons/font/fonts/* /out/assets/fonts/ \
+  && cp shared-assets/bootstrap.min.css /out/assets/ \
+  && cp shared-assets/adminlte.min.css /out/assets/ \
+  && cp shared-assets/bootstrap-icons.min.css /out/assets/ \
+  && cp shared-assets/fonts/* /out/assets/fonts/ \
+  && cp layout.css /out/assets/ \
   && cp index.html /out/ \
   && cp app.js account-ui.js app.css /out/assets/
 
