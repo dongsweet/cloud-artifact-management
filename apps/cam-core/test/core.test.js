@@ -48,7 +48,7 @@ test('Core pairing probe authenticates the paired Edge without requiring a brows
     const secret = await app.gateKeyring.currentSecret();
     const accepted = await app.inject({ method: 'GET', url: '/api/v1/gate/pairing-probe', headers: { 'x-cam-gate-secret': secret.toString('base64url') } });
     assert.equal(accepted.statusCode, 200, accepted.body);
-    assert.deepEqual(accepted.json(), { role: 'core', peerTrusted: true, keyConfigured: true });
+    assert.deepEqual(accepted.json(), { role: 'core', peerTrusted: true, keyConfigured: true, businessReady: true, activeKeyId: 'TEST', peerFingerprint: (await app.gateKeyring.status()).peerFingerprint });
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 

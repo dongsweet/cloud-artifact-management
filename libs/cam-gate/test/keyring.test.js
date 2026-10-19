@@ -1,9 +1,116 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GateKeyring } from '../src/keyring.js';
+
+async function pairedScenario(run) {
+  const dir = await mkdtemp(join(tmpdir(), 'cam-gate-recovery-'));
+  let time = Date.now();
+  const now = () => time;
+  const core = new GateKeyring({ filePath: join(dir, 'core.json'), role: 'core', now });
+  const edge = new GateKeyring({ filePath: join(dir, 'edge.json'), role: 'edge', now });
+  const rotate = async () => {
+    const pending = await core.prepareProposal();
+    await core.verifyProof(await edge.acceptProposal(pending.proposal));
+    await edge.confirmAtEdge(pending.id);
+    await core.markEdgeConfirmed(pending.id);
+    return pending;
+  };
+  try {
+    await core.trustPeer(await edge.identity());
+    await edge.trustPeer(await core.identity());
+    await run({ core, edge, dir, now, advance: (ms) => { time += ms; }, rotate });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+test('First-key confirmation must finish before Core enables business traffic', async () => {
+  await pairedScenario(async ({ core, edge }) => {
+    assert.equal((await core.status()).pairingState, 'KEY_PENDING');
+    const pending = await core.prepareProposal();
+    await core.verifyProof(await edge.acceptProposal(pending.proposal));
+    assert.equal((await core.status()).keyConfigured, true);
+    assert.equal((await core.status()).businessReady, false);
+    assert.equal((await core.status()).pairingState, 'CONFIRMING');
+    await edge.confirmAtEdge(pending.id);
+    await core.markEdgeConfirmed(pending.id);
+    assert.equal((await core.status()).businessReady, true);
+  });
+});
+
+test('Rotation resumes after proposal expiry and restart, and retires old keys on schedule', async () => {
+  await pairedScenario(async ({ core, edge, advance, rotate, dir, now }) => {
+    const first = await rotate();
+    const old = await core.currentSecret();
+    await core.configure({ rotationIntervalDays: 1, gracePeriodHours: 1 });
+    const pending = await core.prepareProposal();
+    await edge.acceptProposal(pending.proposal);
+    advance(16 * 60_000);
+    const renewed = await core.prepareProposal();
+    assert.equal(renewed.id, pending.id);
+    await core.verifyProof(await edge.acceptProposal(renewed.proposal));
+    assert.equal((await core.status()).businessReady, true, 'existing business key keeps the channel usable');
+    await edge.confirmAtEdge(renewed.id);
+    // Simulate a lost confirmation response and process restart.
+    const restarted = new GateKeyring({ filePath: join(dir, 'core.json'), role: 'core', now });
+    assert.equal((await restarted.prepareProposal()).status, 'CONFIRM_PENDING');
+    await edge.confirmAtEdge(renewed.id);
+    await restarted.markEdgeConfirmed(renewed.id);
+    assert.equal(await edge.verifySecret(old), first.id);
+    assert.equal(await restarted.verifySecret(old), first.id);
+    advance(3600001);
+    assert.equal((await edge.status()).previousKeyExpiresAt, null);
+    assert.equal(await edge.verifySecret(old), false);
+    assert.equal(await restarted.verifySecret(old), false);
+    assert.equal(await edge.verifySecret(await restarted.currentSecret()), renewed.id);
+    await assert.rejects(() => edge.acceptProposal(renewed.proposal), { code: 'gate_rotation_expired' });
+  });
+});
+
+test('Reimporting a peer is idempotent; changing its identity revokes existing keys', async () => {
+  await pairedScenario(async ({ core, edge, rotate, dir }) => {
+    await rotate();
+    const old = await core.currentSecret();
+    const id = (await core.status()).activeKeyId;
+    await core.trustPeer(await edge.identity());
+    assert.equal((await core.status()).activeKeyId, id);
+    const replacement = new GateKeyring({ filePath: join(dir, 'replacement.json'), role: 'edge' });
+    await core.trustPeer(await replacement.identity());
+    assert.equal((await core.status()).businessReady, false);
+    assert.equal((await core.status()).keyConfigured, false);
+    assert.equal(await core.verifySecret(old), false);
+    const invalid = { ...(await edge.identity()), exchangePublicKey: (await edge.identity()).signingPublicKey };
+    await assert.rejects(() => core.trustPeer(invalid), { code: 'gate_peer_invalid' });
+  });
+});
+
+test('Retired signed proposals cannot roll the Edge back to an earlier key', async () => {
+  await pairedScenario(async ({ core, edge, rotate }) => {
+    const first = await rotate();
+    const second = await rotate();
+    await assert.rejects(() => edge.acceptProposal(first.proposal), { code: 'gate_rotation_replayed' });
+    assert.equal((await edge.status()).activeKeyId, second.id);
+    assert.equal(await edge.verifySecret(await core.currentSecret()), second.id);
+  });
+});
+
+test('Legacy interrupted rotations retire old keys using the original activation time', async () => {
+  await pairedScenario(async ({ core, edge, rotate, dir, now, advance }) => {
+    await rotate();
+    const old = await core.currentSecret();
+    await rotate();
+    const filePath = join(dir, 'core.json');
+    const state = JSON.parse(await readFile(filePath, 'utf8'));
+    delete state.previous.expiresAt;
+    await writeFile(filePath, JSON.stringify(state));
+    advance(25 * 3600000);
+    const restarted = new GateKeyring({ filePath, role: 'core', now });
+    assert.equal(await restarted.verifySecret(old), false);
+    assert.equal((await restarted.status()).previousKeyExpiresAt, null);
+    assert.equal(await edge.verifySecret(await restarted.currentSecret()), (await restarted.status()).activeKeyId);
+  });
+});
 
 test('Core establishes the first shared key only after mutual identity trust, then rotates with bounded overlap', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cam-gate-keyring-'));

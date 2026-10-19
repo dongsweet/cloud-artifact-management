@@ -22,8 +22,8 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     db.prepare('INSERT INTO core_artifacts (sha256, size_bytes, file_path, received_at) VALUES (?, ?, ?, ?)').run(sha, payload.length, filePath, '2026-01-01');
     db.prepare(`INSERT INTO core_release_artifacts (request_id, package_key, file_name, size_bytes, sha256) VALUES ('REQ-AGENT', 'pkg', 'artifact.bin', ?, ?)`).run(payload.length, sha);
     const westIdentity = generateIdentity(); const eastIdentity = generateIdentity();
-    const west = app.coreStore.registerAgent({ centerId: 'CENTER-WEST', securityDomain: 'PROD', name: 'west-agent', publicKey: westIdentity.publicKeyPem });
-    const east = app.coreStore.registerAgent({ centerId: 'CENTER-EAST', securityDomain: 'PROD', name: 'east-agent', publicKey: eastIdentity.publicKeyPem });
+    const west = app.coreStore.registerAgent({ centerId: 'CENTER-WEST', name: 'west-agent', publicKey: westIdentity.publicKeyPem });
+    const east = app.coreStore.registerAgent({ centerId: 'CENTER-EAST', name: 'east-agent', publicKey: eastIdentity.publicKeyPem });
     const task = app.coreStore.createDistributionTask({ agentId: west.agentId, artifactId: 'BASELINE-REQ-AGENT' });
 
     const noIdentity = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull' });
@@ -68,9 +68,12 @@ test('Agent public-key registration works with the legacy NOT NULL token column'
     )`);
     const store = new CoreStore(db);
     const identity = generateIdentity();
-    const first = store.registerAgent({ centerId: 'TEST', securityDomain: 'TEST', name: 'first', publicKey: identity.publicKeyPem });
-    const second = store.registerAgent({ centerId: 'TEST', securityDomain: 'TEST', name: 'second', publicKey: generateIdentity().publicKeyPem });
+    const first = store.registerAgent({ centerId: 'TEST', name: 'first', publicKey: identity.publicKeyPem });
+    const second = store.registerAgent({ centerId: 'TEST', name: 'second', publicKey: generateIdentity().publicKeyPem });
     assert.notEqual(first.agentId, second.agentId);
+    assert.equal(Object.hasOwn(first, 'securityDomain'), false);
+    assert.equal(Object.hasOwn(store.listAgents()[0], 'securityDomain'), false);
+    assert.ok(!db.prepare('PRAGMA table_info(core_agents)').all().some((column) => column.name === 'security_domain'));
     const timestamp = new Date().toISOString(); const nonce = randomNonce(); const path = '/api/v1/agent/tasks/pull';
     assert.equal(store.authenticateAgent({ agentId: first.agentId, timestamp, nonce, method: 'POST', path, signature: signRequest(identity.privateKeyPem, 'POST', path, timestamp, nonce) }).agentId, first.agentId);
     assert.equal(store.authenticateAgent({ token: db.prepare('SELECT token_sha256 FROM core_agents WHERE agent_id = ?').get(first.agentId).token_sha256 }), null);

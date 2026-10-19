@@ -32,7 +32,7 @@ test('Agent tests its signed Core pairing and persists a rotated identity', asyn
   const identity = generateIdentity();
   await mkdir(join(dataDir, 'agent'));
   await writeFile(join(dataDir, 'agent', 'identity.json'), JSON.stringify(identity));
-  const registered = core.coreStore.registerAgent({ name: 'paired-agent', centerId: 'TEST', securityDomain: 'TEST', publicKey: identity.publicKeyPem });
+  const registered = core.coreStore.registerAgent({ name: 'paired-agent', centerId: 'TEST', publicKey: identity.publicKeyPem });
   const options = {
     dataDir: join(dataDir, 'agent'), agentId: registered.agentId, startWorker: false,
     coreUrl: await core.listen({ host: '127.0.0.1', port: 0 })

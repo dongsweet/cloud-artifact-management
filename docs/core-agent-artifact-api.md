@@ -73,6 +73,8 @@ GET /api/v1/artifacts/:sha256/content
 
 `cam-agent` 使用首次配对的 Ed25519 设备身份，不使用固定服务令牌。Core 注册 Agent 时保存公钥和指纹；Agent 请求携带 `X-CAM-Agent-Id`、`X-CAM-Agent-Timestamp`、`X-CAM-Agent-Nonce` 和 `X-CAM-Agent-Signature`，签名覆盖 HTTP 方法、路径、时间戳、随机数和请求体摘要。Core 拒绝过期时间戳、重复随机数、禁用 Agent 和无效签名。Agent 可使用旧身份签名提交新公钥，Core 在短暂过渡期接受旧、新公钥后完成轮换。Core 仍根据 Agent 身份、分发任务和目标范围授权版本基线及其文件，不开放匿名目录或摘要下载。
 
+注册接口 `POST /api/v1/agents` 仅要求 `centerId`、`name`、`publicKey`，不再要求或返回 `securityDomain`。已有数据库升级时删除该字段，保留 Agent 编号、公钥、任务和心跳。中心内多个 Agent 依靠各自设备身份及任务目标区分。
+
 管理目录的单文件下载路由用于登录用户受控查询。Agent 使用独立的任务接口 `/api/v1/agent/tasks/:taskId/files/:sha256/parts/:index`，只允许读取分配给该 Agent 的文件分块；目录查询接口不代表 Agent 已获得文件下载授权。下载审计仍需在正式上线前补齐。
 
 Agent 登录后的“Core 身份配对”页面可复制本机公钥、测试签名认证，并手动轮换身份。对应本地接口为 `GET /api/v1/identity`、`POST /api/v1/identity/test`、`POST /api/v1/identity/rotate`；写操作要求本地会话与 CSRF 校验。Core 的 `POST /api/v1/agent/key-rotation` 由 Agent 旧身份签名认证，新旧身份默认重叠 24 小时。目前没有定时自动轮换。

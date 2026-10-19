@@ -125,12 +125,12 @@ export class CoreStore {
       );
       CREATE INDEX IF NOT EXISTS core_transfer_outbox_pending_idx ON core_transfer_outbox(delivered_at, next_attempt_at);
       CREATE TABLE IF NOT EXISTS core_agents (
-        agent_id TEXT PRIMARY KEY, center_id TEXT NOT NULL, security_domain TEXT NOT NULL,
+        agent_id TEXT PRIMARY KEY, center_id TEXT NOT NULL,
         name TEXT NOT NULL, public_key TEXT, key_id TEXT, previous_public_key TEXT, previous_key_expires_at TEXT,
         token_sha256 TEXT, status TEXT NOT NULL DEFAULT 'ACTIVE',
         created_at TEXT NOT NULL, last_seen_at TEXT
       );
-      CREATE INDEX IF NOT EXISTS core_agents_scope_idx ON core_agents(center_id, security_domain, status);
+      CREATE INDEX IF NOT EXISTS core_agents_center_idx ON core_agents(center_id, status);
       CREATE TABLE IF NOT EXISTS core_distribution_tasks (
         task_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES core_agents(agent_id),
         artifact_id TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, files_json TEXT NOT NULL,
@@ -142,6 +142,9 @@ export class CoreStore {
     `);
     const columns = new Set(db.prepare('PRAGMA table_info(core_approval_requests)').all().map((column) => column.name));
     const agentColumns = new Set(db.prepare('PRAGMA table_info(core_agents)').all().map((column) => column.name));
+    if (agentColumns.has('security_domain')) {
+      db.exec('DROP INDEX IF EXISTS core_agents_scope_idx; ALTER TABLE core_agents DROP COLUMN security_domain');
+    }
     for (const [name, definition] of Object.entries({ public_key: 'TEXT', key_id: 'TEXT', previous_public_key: 'TEXT', previous_key_expires_at: 'TEXT', token_sha256: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
     db.exec('CREATE TABLE IF NOT EXISTS core_agent_nonces (agent_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (agent_id, nonce))');
     const distributionColumns = new Set(db.prepare('PRAGMA table_info(core_distribution_tasks)').all().map((column) => column.name));
@@ -154,22 +157,22 @@ export class CoreStore {
     for (const [name, definition] of Object.entries({ cloud_submission_attempts: 'INTEGER NOT NULL DEFAULT 0', cloud_submission_state: "TEXT NOT NULL DEFAULT 'IDLE'", cloud_submission_attempted_at: 'TEXT', cloud_retry_at: 'TEXT', transfer_notification_state: "TEXT NOT NULL DEFAULT 'IDLE'", transfer_notification_attempts: 'INTEGER NOT NULL DEFAULT 0' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
   }
 
-  registerAgent({ centerId, securityDomain, name, publicKey }) {
-    for (const [field, value] of Object.entries({ centerId, securityDomain, name })) if (typeof value !== 'string' || !value.trim() || value.length > 128) throw Object.assign(new Error(`${field} is required and must be at most 128 characters`), { code: 'agent_invalid' });
+  registerAgent({ centerId, name, publicKey }) {
+    for (const [field, value] of Object.entries({ centerId, name })) if (typeof value !== 'string' || !value.trim() || value.length > 128) throw Object.assign(new Error(`${field} is required and must be at most 128 characters`), { code: 'agent_invalid' });
     if (typeof publicKey !== 'string' || !publicKey.includes('PUBLIC KEY')) throw Object.assign(new Error('publicKey is required; paste the Agent identity public key'), { code: 'agent_public_key_required' });
     let keyId; try { keyId = fingerprint(publicKey); } catch { throw Object.assign(new Error('Agent public key is invalid'), { code: 'agent_public_key_invalid' }); }
     const agentId = `AG-${randomUUID()}`;
     const timestamp = now();
     // Old databases require a unique token hash. Keep an inert value for that
     // constraint; authentication accepts signed identities only.
-    this.db.prepare('INSERT INTO core_agents (agent_id, center_id, security_domain, name, public_key, key_id, token_sha256, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, \'ACTIVE\', ?)')
-      .run(agentId, centerId.trim(), securityDomain.trim(), name.trim(), publicKey, keyId, digest(agentId), timestamp);
-    return { agentId, centerId: centerId.trim(), securityDomain: securityDomain.trim(), name: name.trim(), keyId, fingerprint: keyId, status: 'ACTIVE', createdAt: timestamp };
+    this.db.prepare('INSERT INTO core_agents (agent_id, center_id, name, public_key, key_id, token_sha256, status, created_at) VALUES (?, ?, ?, ?, ?, ?, \'ACTIVE\', ?)')
+      .run(agentId, centerId.trim(), name.trim(), publicKey, keyId, digest(agentId), timestamp);
+    return { agentId, centerId: centerId.trim(), name: name.trim(), keyId, fingerprint: keyId, status: 'ACTIVE', createdAt: timestamp };
   }
   authenticateAgent({ agentId, timestamp, nonce, signature, method, path, body = '' } = {}) {
     // Signature verification is intentionally independent of browser sessions.
     if (typeof agentId !== 'string' || typeof timestamp !== 'string' || typeof nonce !== 'string' || typeof signature !== 'string') return null;
-    const row = this.db.prepare("SELECT agent_id AS agentId, center_id AS centerId, security_domain AS securityDomain, name, public_key AS publicKey, previous_public_key AS previousPublicKey, previous_key_expires_at AS previousKeyExpiresAt, status FROM core_agents WHERE agent_id = ?").get(agentId);
+    const row = this.db.prepare("SELECT agent_id AS agentId, center_id AS centerId, name, public_key AS publicKey, previous_public_key AS previousPublicKey, previous_key_expires_at AS previousKeyExpiresAt, status FROM core_agents WHERE agent_id = ?").get(agentId);
     if (!row || row.status !== 'ACTIVE' || !Number.isFinite(Date.parse(timestamp)) || Math.abs(Date.now() - Date.parse(timestamp)) > 5 * 60_000) return null;
     const keyOk = verifyRequest(row.publicKey, signature, method, path, timestamp, nonce, body) || (row.previousPublicKey && row.previousKeyExpiresAt && Date.parse(row.previousKeyExpiresAt) > Date.now() && verifyRequest(row.previousPublicKey, signature, method, path, timestamp, nonce, body));
     if (!keyOk) return null;
@@ -179,7 +182,7 @@ export class CoreStore {
     delete row.publicKey; delete row.previousPublicKey; delete row.previousKeyExpiresAt; return row;
   }
   listAgents() {
-    return this.db.prepare('SELECT agent_id AS agentId, center_id AS centerId, security_domain AS securityDomain, name, key_id AS keyId, key_id AS fingerprint, status, created_at AS createdAt, last_seen_at AS lastSeenAt, previous_key_expires_at AS previousKeyExpiresAt FROM core_agents ORDER BY created_at DESC').all();
+    return this.db.prepare('SELECT agent_id AS agentId, center_id AS centerId, name, key_id AS keyId, key_id AS fingerprint, status, created_at AS createdAt, last_seen_at AS lastSeenAt, previous_key_expires_at AS previousKeyExpiresAt FROM core_agents ORDER BY created_at DESC').all();
   }
   rotateAgentKey(agentId, publicKey, previousKeyExpiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString()) {
     let keyId; try { keyId = fingerprint(publicKey); } catch { throw Object.assign(new Error('Agent public key is invalid'), { code: 'agent_public_key_invalid' }); }

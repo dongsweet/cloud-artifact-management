@@ -38,6 +38,7 @@ export class GateKeyring {
     this.role = role;
     this.now = now;
     this.state = null;
+    this.saves = Promise.resolve();
     this.ready = this.#load();
   }
 
@@ -59,6 +60,13 @@ export class GateKeyring {
     }
     if (this.state.version !== VERSION || this.state.role !== this.role) throw new Error('CAM 网闸密钥环文件版本或安全区不匹配');
     this.state.events ??= [];
+    // Older interrupted rotations did not assign a retirement deadline until
+    // confirmation. Bound it from activation rather than extending it on restart.
+    if (this.state.previous && !Number.isFinite(Date.parse(this.state.previous.expiresAt))) {
+      const activatedAt = Date.parse(this.state.active?.activatedAt);
+      this.state.previous.expiresAt = new Date((Number.isFinite(activatedAt) ? activatedAt : 0) + this.state.gracePeriodHours * 3600000).toISOString();
+      await this.#save();
+    }
     // Retire legacy environment-provisioned keys. Initial keys are established
     // only after both peers trust each other's identity bundles.
     if (this.state.active?.id === 'BOOTSTRAP' || this.state.previous?.id === 'BOOTSTRAP_PREVIOUS') {
@@ -72,8 +80,15 @@ export class GateKeyring {
 
   async #save() {
     this.state.updatedAt = new Date(this.now()).toISOString();
+    const snapshot = `${JSON.stringify(this.state, null, 2)}\n`;
+    const save = this.saves.then(() => this.#write(snapshot));
+    this.saves = save.catch(() => {});
+    return save;
+  }
+
+  async #write(snapshot) {
     const temporary = `${this.filePath}.${process.pid}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(this.state, null, 2)}\n`, { mode: 0o600 });
+    await writeFile(temporary, snapshot, { mode: 0o600 });
     await chmod(temporary, 0o600);
     await rename(temporary, this.filePath);
     await chmod(this.filePath, 0o600);
@@ -100,11 +115,17 @@ export class GateKeyring {
     await this.#ready();
     if (!bundle || !['core', 'edge'].includes(bundle.role) || bundle.role === this.role) throw Object.assign(new Error('对端身份包无效或安全区角色不匹配'), { code: 'gate_peer_invalid' });
     try {
-      createPublicKey(bundle.signingPublicKey);
-      createPublicKey(bundle.exchangePublicKey);
+      if (createPublicKey(bundle.signingPublicKey).asymmetricKeyType !== 'ed25519' || createPublicKey(bundle.exchangePublicKey).asymmetricKeyType !== 'x25519') throw new Error('invalid key types');
     } catch { throw Object.assign(new Error('对端身份包中的公钥格式无效'), { code: 'gate_peer_invalid' }); }
     const actual = fingerprint(bundle.signingPublicKey);
     if (bundle.signingFingerprint && bundle.signingFingerprint !== actual) throw Object.assign(new Error('对端公钥指纹校验失败'), { code: 'gate_peer_invalid' });
+    const previousPeer = this.state.trustedPeer;
+    if (previousPeer?.signingFingerprint === actual && fingerprint(previousPeer.exchangePublicKey) === fingerprint(bundle.exchangePublicKey)) return this.status();
+    if (previousPeer) {
+      this.state.active = this.state.previous = this.state.pending = null;
+      this.state.nextRotationAt = this.state.retryAt = this.state.lastRotationError = this.state.lastRotationAt = null;
+      this.#event('PEER_REPLACED_KEYS_RETIRED', { fingerprint: actual });
+    }
     this.state.trustedPeer = { role: bundle.role, signingPublicKey: bundle.signingPublicKey, exchangePublicKey: bundle.exchangePublicKey, signingFingerprint: actual, trustedAt: new Date(this.now()).toISOString() };
     this.#event('PEER_TRUSTED', { peerRole: bundle.role, fingerprint: actual });
     await this.#save();
@@ -113,18 +134,25 @@ export class GateKeyring {
 
   async status() {
     await this.#ready();
+    const previousKeyExpiresAt = Date.parse(this.state.previous?.expiresAt) > this.now() ? this.state.previous.expiresAt : null;
+    const businessReady = Boolean(this.state.trustedPeer && this.state.active && !(this.state.pending?.status === 'CONFIRM_PENDING' && !this.state.previous));
     return {
       role: this.role,
       identity: await this.identity(),
       peerTrusted: Boolean(this.state.trustedPeer),
       peerFingerprint: this.state.trustedPeer?.signingFingerprint ?? null,
       keyConfigured: Boolean(this.state.active),
+      businessReady,
+      pairingState: !this.state.trustedPeer ? 'UNPAIRED' : businessReady ? 'PAIRED' : this.state.pending?.status === 'CONFIRM_PENDING' ? 'CONFIRMING' : 'KEY_PENDING',
       activeKeyId: this.state.active?.id ?? null,
-      previousKeyExpiresAt: this.state.previous?.expiresAt ?? null,
+      previousKeyExpiresAt,
       rotationIntervalDays: this.state.rotationIntervalDays,
       gracePeriodHours: this.state.gracePeriodHours,
       nextRotationAt: this.state.nextRotationAt,
       rotationState: this.state.pending?.status ?? 'IDLE',
+      lastRotationError: this.state.lastRotationError ?? null,
+      retryAt: this.state.retryAt ?? null,
+      lastRotationAt: this.state.lastRotationAt ?? null,
       recentEvents: this.state.events.slice(0, 20)
     };
   }
@@ -172,17 +200,20 @@ export class GateKeyring {
     const peer = this.state.trustedPeer;
     if (!peer || this.role !== 'edge') throw Object.assign(new Error('未建立 Core 对端信任，不能接收密钥轮换'), { code: 'gate_peer_not_trusted' });
     const { signature, ...signed } = envelope ?? {};
-    if (!signed.keyId || !signed.createdAt || !signed.expiresAt || Date.parse(signed.expiresAt) <= this.now() || Date.parse(signed.createdAt) > this.now() + 5 * 60_000) throw Object.assign(new Error('密钥轮换提案无效或已过期'), { code: 'gate_rotation_expired' });
+    if (!signed.keyId || !signed.nonce || !Number.isFinite(Date.parse(signed.createdAt)) || !Number.isFinite(Date.parse(signed.expiresAt)) || Date.parse(signed.expiresAt) <= this.now() || Date.parse(signed.createdAt) > this.now() + 5 * 60_000) throw Object.assign(new Error('密钥轮换提案无效或已过期'), { code: 'gate_rotation_expired' });
     if (!verify(null, Buffer.from(canonical(signed)), createPublicKey(peer.signingPublicKey), Buffer.from(signature ?? '', 'base64url'))) throw Object.assign(new Error('密钥轮换提案签名验证失败'), { code: 'gate_rotation_signature_invalid' });
-    if (this.state.active?.id === signed.keyId || this.state.pending?.id === signed.keyId) return this.#rotationProof(signed.keyId, this.state.pending?.secret ?? this.state.active.secret, envelope.nonce);
-    if (this.state.active && this.state.pending) throw Object.assign(new Error('已有密钥轮换正在等待确认'), { code: 'gate_rotation_in_progress' });
+    if ((signed.recipientFingerprint && signed.recipientFingerprint !== fingerprint(this.state.exchange.publicKey)) || (signed.gracePeriodHours !== undefined && (!Number.isInteger(signed.gracePeriodHours) || signed.gracePeriodHours < 1 || signed.gracePeriodHours > 168))) throw Object.assign(new Error('密钥提案接收方或过渡策略无效'), { code: 'gate_rotation_invalid' });
+    if (this.state.active?.id === signed.keyId) return this.#rotationProof(signed.keyId, this.state.active.secret, signed.nonce);
+    if (this.state.pending?.id === signed.keyId) return this.#rotationProof(signed.keyId, this.state.pending.secret, signed.nonce);
+    if (this.state.previous?.id === signed.keyId || this.state.events.some((event) => event.keyId === signed.keyId && event.type === 'ROTATION_CONFIRMED_EDGE')) throw Object.assign(new Error('已退役的密钥提案不能再次启用'), { code: 'gate_rotation_replayed' });
+    if (this.state.pending && Date.parse(this.state.pending.expiresAt) > this.now()) throw Object.assign(new Error('已有密钥轮换正在等待确认'), { code: 'gate_rotation_in_progress' });
     const shared = diffieHellman({ privateKey: createPrivateKey(this.state.exchange.privateKey), publicKey: createPublicKey(signed.ephemeralPublicKey) });
     const key = Buffer.from(hkdfSync('sha256', shared, Buffer.from(signed.salt, 'base64url'), INFO, 32));
     const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(signed.iv, 'base64url'));
     decipher.setAuthTag(Buffer.from(signed.tag, 'base64url'));
     const secret = Buffer.concat([decipher.update(Buffer.from(signed.ciphertext, 'base64url')), decipher.final()]);
     if (secret.length !== 32) throw Object.assign(new Error('密钥轮换提案中的密钥长度无效'), { code: 'gate_rotation_invalid' });
-    const pending = { id: signed.keyId, secret: secret.toString('base64url'), expiresAt: signed.expiresAt, status: 'PREPARED', nonce: signed.nonce, previous: this.state.active ? { ...this.state.active } : null };
+    const pending = { id: signed.keyId, secret: secret.toString('base64url'), expiresAt: signed.expiresAt, status: 'PREPARED', nonce: signed.nonce, gracePeriodHours: signed.gracePeriodHours ?? this.state.gracePeriodHours };
     this.state.pending = pending;
     this.#event('ROTATION_PROPOSAL_ACCEPTED', { keyId: pending.id });
     await this.#save();
@@ -207,6 +238,7 @@ export class GateKeyring {
       const expiresAt = new Date(now + 15 * 60_000).toISOString();
       const proposal = {
         schemaVersion: 1, keyId: id, createdAt: new Date(now).toISOString(), expiresAt, nonce,
+        recipientFingerprint: fingerprint(peer.exchangePublicKey), gracePeriodHours: this.state.gracePeriodHours,
         ...encryptedKey(secret, peer.exchangePublicKey)
       };
       const signature = sign(null, Buffer.from(canonical(proposal)), createPrivateKey(this.state.signing.privateKey)).toString('base64url');
@@ -224,7 +256,7 @@ export class GateKeyring {
     const expected = this.#rotationProof(pending.id, pending.secret, pending.nonce).proof;
     if (!timingSafeCompare(Buffer.from(expected), Buffer.from(response.proof ?? ''))) throw Object.assign(new Error('Edge 未证明持有新密钥'), { code: 'gate_rotation_proof_invalid' });
     this.state.active = { id: pending.id, secret: pending.secret, activatedAt: new Date(this.now()).toISOString() };
-    this.state.previous = pending.oldActive ?? null;
+    this.state.previous = pending.oldActive ? { ...pending.oldActive, expiresAt: new Date(this.now() + this.state.gracePeriodHours * 3600000).toISOString() } : null;
     this.state.pending = { ...pending, status: 'CONFIRM_PENDING', proposal: undefined, confirmedAt: new Date(this.now()).toISOString() };
     this.#event('ROTATION_ACTIVATED_CORE', { keyId: pending.id, previousKeyId: this.state.previous?.id ?? null });
     this.state.nextRotationAt = new Date(this.now() + this.state.rotationIntervalDays * 86400000).toISOString();
@@ -243,11 +275,20 @@ export class GateKeyring {
   async markEdgeConfirmed(id) {
     await this.#ready();
     if (!this.state.pending || this.state.pending.id !== id || this.state.pending.status !== 'CONFIRM_PENDING') throw Object.assign(new Error('密钥轮换确认状态不匹配'), { code: 'gate_rotation_state_invalid' });
-    if (this.state.previous) this.state.previous.expiresAt = new Date(this.now() + this.state.gracePeriodHours * 3600000).toISOString();
     this.state.pending = null;
+    this.state.lastRotationAt = new Date(this.now()).toISOString();
+    this.state.lastRotationError = this.state.retryAt = null;
     this.#event('ROTATION_CONFIRMED_CORE', { keyId: id, previousKeyId: this.state.previous?.id ?? null });
     await this.#save();
     return this.status();
+  }
+
+  async recordRotationFailure(error) {
+    await this.#ready();
+    this.state.lastRotationError = String(error.message ?? '密钥协商失败').slice(0, 500);
+    this.state.retryAt = new Date(this.now() + 60_000).toISOString();
+    this.#event('ROTATION_RETRY_WAIT', { code: error.code ?? 'gate_rotation_failed' });
+    await this.#save();
   }
 
   async confirmAtEdge(id) {
@@ -255,9 +296,11 @@ export class GateKeyring {
     if (this.role !== 'edge') throw Object.assign(new Error('只有 Edge 可以确认轮换密钥'), { code: 'gate_rotation_state_invalid' });
     if (!this.state.pending && this.state.active?.id === id) return this.status();
     if (!this.state.pending || this.state.pending.id !== id) throw Object.assign(new Error('待确认密钥不存在'), { code: 'gate_rotation_state_invalid' });
+    this.state.gracePeriodHours = this.state.pending.gracePeriodHours ?? this.state.gracePeriodHours;
     if (this.state.active) this.state.previous = { ...this.state.active, expiresAt: new Date(this.now() + this.state.gracePeriodHours * 3600000).toISOString() };
     this.state.active = { id: this.state.pending.id, secret: this.state.pending.secret, activatedAt: new Date(this.now()).toISOString() };
     this.state.pending = null;
+    this.state.lastRotationAt = new Date(this.now()).toISOString();
     this.#event('ROTATION_CONFIRMED_EDGE', { keyId: id, previousKeyId: this.state.previous?.id ?? null });
     await this.#save();
     return this.status();
@@ -266,6 +309,7 @@ export class GateKeyring {
   async needsRotation() {
     await this.#ready();
     if (this.role !== 'core' || !this.state.trustedPeer) return false;
+    if (Date.parse(this.state.retryAt) > this.now()) return false;
     if (this.state.pending) return true;
     return !this.state.active || !this.state.nextRotationAt || Date.parse(this.state.nextRotationAt) <= this.now();
   }
