@@ -273,12 +273,13 @@ async function loadGateKeys({ preserveInputs = false } = {}) {
   $('#gate-pairing-badge').className = `badge text-bg-${paired ? 'success' : 'warning'}`;
   $('#gate-pairing-badge').textContent = paired ? '已配对' : item.pairingState === 'UNPAIRED' ? '未配对' : '配对中';
   const rotationStates = { IDLE: '当前无协商任务', PROPOSAL_PENDING: '等待对端接收密钥提案', PREPARED: '提案已接收，等待 Core 确认', CONFIRM_PENDING: '等待对端确认生效' };
+  const rotationSummary = rotationStates[item.rotationState] ?? item.rotationState ?? '等待配对';
+  const transitionSummary = item.previousKeyExpiresAt ? `${rotationSummary}；旧密钥过渡至 ${displayTime(item.previousKeyExpiresAt)}` : rotationSummary;
   const fields = [
-    ['当前密钥', item.activeKeyId ?? '尚未生成'],
-    ['协商进度', rotationStates[item.rotationState] ?? item.rotationState ?? '等待配对'],
+    ['当前密钥标识', item.activeKeyId ?? '尚未生成'],
+    ['协商进度', transitionSummary],
     ['最近完成轮换', item.lastRotationAt ? displayTime(item.lastRotationAt) : '暂无记录'],
     ['下次自动轮换', item.nextRotationAt ? displayTime(item.nextRotationAt) : '配对完成后安排'],
-    ['旧密钥过渡至', item.previousKeyExpiresAt ? displayTime(item.previousKeyExpiresAt) : '无过渡中的旧密钥'],
   ];
   $('#gate-key-summary').innerHTML = fields.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('');
   const retry = $('#gate-key-retry');

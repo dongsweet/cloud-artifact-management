@@ -126,9 +126,10 @@
 .cam-gate-identity { min-width: 0; padding: 1rem; border: 1px solid var(--cam-border); border-radius: .4rem; }
 .cam-gate-identity-header { min-height: 2rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; margin-bottom: .8rem; }
 .cam-gate-identity-header .btn { white-space: nowrap; }
-.cam-gate-bundle { min-height: 11rem; resize: vertical; line-height: 1.55; }
-.cam-gate-fingerprint { padding: .75rem; border: 1px solid var(--cam-border); border-radius: .4rem; overflow-wrap: anywhere; line-height: 1.7; }
-.cam-gate-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; padding: 1rem; border-radius: .4rem; background: var(--bs-tertiary-bg); }
+.cam-gate-bundle, .cam-gate-fingerprint { height: 8.75rem; min-height: 8.75rem; }
+.cam-gate-bundle { resize: none; line-height: 1.55; }
+.cam-gate-fingerprint { display: flex; align-items: flex-start; overflow: auto; padding: .75rem; border: 1px solid var(--cam-border); border-radius: .4rem; overflow-wrap: anywhere; line-height: 1.7; }
+.cam-gate-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; padding: 1rem; border-radius: .4rem; background: var(--bs-tertiary-bg); }
 .cam-gate-summary > div { min-width: 0; }
 .cam-gate-summary dt { font-size: .78rem; color: var(--bs-secondary-color); font-weight: 400; margin-bottom: .25rem; }
 .cam-gate-summary dd { margin: 0; font-size: .9rem; overflow-wrap: anywhere; }
