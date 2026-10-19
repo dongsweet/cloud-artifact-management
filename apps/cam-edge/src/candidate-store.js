@@ -327,6 +327,39 @@ export class CandidateStore {
     return { ...this.getRelease(releaseId), inheritedPackageCount: baseRoundId ? this.db.prepare('SELECT COUNT(*) AS count FROM round_candidates WHERE round_id = ?').get(roundId).count : 0, initialRound: this.getRound(roundId) };
   }
 
+  createRevisionWithFirstRound(baseReleaseId, { version, createdBy = null } = {}) {
+    const base = this.getRelease(baseReleaseId);
+    if (!base) throw Object.assign(new Error('release not found'), { code: 'release_not_found' });
+    if (version !== undefined && String(version) !== base.version) throw Object.assign(new Error('内部修订版必须沿用原研发版本号，不能修改版本号'), { code: 'revision_version_forbidden' });
+
+    const timestamp = now();
+    const releaseId = id('REL');
+    const roundId = id('ROUND');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const currentBase = this.db.prepare('SELECT release_id, product_id, version, revision, status FROM releases WHERE release_id = ?').get(baseReleaseId);
+      if (!currentBase) throw Object.assign(new Error('release not found'), { code: 'release_not_found' });
+      if (currentBase.status !== 'SEALED') throw Object.assign(new Error('只有审批通过并封存的版本才能创建内部修订版'), { code: 'release_not_sealed' });
+      const latest = this.db.prepare('SELECT release_id, status FROM releases WHERE product_id = ? AND version = ? ORDER BY revision DESC LIMIT 1').get(currentBase.product_id, currentBase.version);
+      if (latest?.release_id !== currentBase.release_id) throw Object.assign(new Error('只能从该研发版本最新的内部修订版创建下一修订版'), { code: 'revision_source_not_latest' });
+      const approvedRound = this.db.prepare(`SELECT rr.round_id FROM release_rounds rr JOIN round_freezes rf ON rf.round_id = rr.round_id
+        WHERE rr.release_id = ? AND rf.status = 'APPROVED' ORDER BY rr.round_no DESC, rf.decided_at DESC LIMIT 1`).get(baseReleaseId);
+      if (!approvedRound) throw Object.assign(new Error('未找到审批通过的固化轮次，不能创建内部修订版'), { code: 'release_baseline_missing' });
+
+      this.db.prepare('INSERT INTO releases (release_id, product_id, version, revision, base_release_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(releaseId, currentBase.product_id, currentBase.version, currentBase.revision + 1, baseReleaseId, 'OPEN', timestamp, timestamp);
+      this.db.prepare('INSERT INTO release_rounds (round_id, release_id, round_no, base_round_id, change_note, created_by, status, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)')
+        .run(roundId, releaseId, approvedRound.round_id, `内部修订版创建，继承 ${this.displayVersion(baseReleaseId)} 已审批基线`, createdBy, 'OPEN', timestamp, timestamp);
+      this.db.prepare(`INSERT INTO round_candidates (round_id, package_key, candidate_id, source, inherited_from_round_id, created_at)
+        SELECT ?, package_key, candidate_id, 'INHERITED', ?, ? FROM round_candidates WHERE round_id = ?`).run(roundId, approvedRound.round_id, timestamp, approvedRound.round_id);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return { ...this.getRelease(releaseId), inheritedPackageCount: this.db.prepare('SELECT COUNT(*) AS count FROM round_candidates WHERE round_id = ?').get(roundId).count, initialRound: this.getRound(roundId) };
+  }
+
   displayVersion(releaseId) {
     const release = this.db.prepare('SELECT version, revision FROM releases WHERE release_id = ?').get(releaseId);
     return release ? (release.revision > 0 ? `${release.version}-r${release.revision}` : release.version) : '';

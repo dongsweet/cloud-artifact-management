@@ -119,7 +119,10 @@ test('Edge accepts only authenticated, idempotent Core approval-result callbacks
     assert.equal(nextRound.json().error.message.includes('已封存'), true);
     const newPackage = await app.inject({ method: 'POST', url: `/api/v1/rounds/${release.initialRound.roundId}/candidates`, payload: { packageKey: 'other', sourceUrl: 'https://example.invalid/other.tar', size: 0 } });
     assert.equal(newPackage.statusCode, 409);
-    const revision = await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } });
+    const alteredRevision = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/revisions`, payload: { version: '1.0.999' } });
+    assert.equal(alteredRevision.statusCode, 400);
+    assert.equal(alteredRevision.json().error.code, 'revision_version_forbidden');
+    const revision = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/revisions`, payload: {} });
     assert.equal(revision.statusCode, 201, revision.body);
     assert.equal(revision.json().revision, 1);
     assert.equal(revision.json().displayVersion, '1.0-r1');

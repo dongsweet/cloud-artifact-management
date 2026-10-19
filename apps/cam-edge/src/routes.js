@@ -544,6 +544,14 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     catch (err) { return error(reply, ['release_version_open', 'release_baseline_missing'].includes(err.code) ? 409 : 400, err.code ?? 'invalid_release', err.message); }
   });
 
+  app.post('/api/v1/releases/:releaseId/revisions', async (request, reply) => {
+    try { return reply.code(201).send(store.createRevisionWithFirstRound(request.params.releaseId, { ...(request.body ?? {}), createdBy: principal(request).principalId })); }
+    catch (err) {
+      const status = err.code === 'release_not_found' ? 404 : ['release_not_sealed', 'revision_source_not_latest', 'release_baseline_missing'].includes(err.code) ? 409 : 400;
+      return error(reply, status, err.code ?? 'invalid_release_revision', err.message);
+    }
+  });
+
   app.get('/api/v1/releases', async (request, reply) => {
     try { return reply.send({ items: store.listReleases(request.query?.productId ?? null) }); }
     catch (err) { return error(reply, 400, 'invalid_release_query', err.message); }

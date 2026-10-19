@@ -1,6 +1,7 @@
 import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js?v=20261011-grant-round-scope';
 const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, currentRoundCandidates: [], currentRoundQueue: [], batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null, nextRoundPreview: null };
 let importPreviewRequestId = 0;
+let revisionBaseReleaseId = null;
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
 
@@ -281,7 +282,17 @@ async function loadReleaseDetail(generation = state.routeGeneration) {
   $('#new-round-button').title = roundsResponse.nextRound?.blockedReason ?? '基于当前最新轮次创建下一轮';
   $('#new-round-button').disabled = release.approvalPending || !roundsResponse.nextRound?.canCreate;
   $('#create-revision-button').hidden = release.status !== 'SEALED';
-  $('#create-revision-button').onclick = () => { $('#release-product').innerHTML = `<option value="${escapeHtml(release.productId)}">${escapeHtml(release.productName)}</option>`; $('#release-product').value = release.productId; $('#release-version').value = release.version; modal('release').show(); };
+  $('#create-revision-button').onclick = () => {
+    revisionBaseReleaseId = release.releaseId;
+    $('#release-modal-title').textContent = '创建内部修订版';
+    $('#release-product').innerHTML = `<option value="${escapeHtml(release.productId)}">${escapeHtml(release.productName)}</option>`;
+    $('#release-product').value = release.productId;
+    $('#release-product').disabled = true;
+    $('#release-version').value = release.version;
+    $('#release-version').readOnly = true;
+    $('#release-version-help').textContent = '内部修订版固定沿用该研发版本号，并继承上一已固化版本的清单。';
+    modal('release').show();
+  };
   if (!rounds.some((round) => round.roundId === state.roundId)) state.roundId = rounds[0]?.roundId ?? null;
   $('#round-select').value = state.roundId ?? '';
   if (state.roundId) await loadRound(generation); else renderRound(null, []);
@@ -817,6 +828,11 @@ window.addEventListener('hashchange', renderRoute);
 
 document.querySelectorAll('[data-modal]').forEach((button) => button.addEventListener('click', async () => {
   if (button.dataset.modal === 'release') {
+    revisionBaseReleaseId = null;
+    $('#release-modal-title').textContent = '创建发布版本';
+    $('#release-product').disabled = false;
+    $('#release-version').readOnly = false;
+    $('#release-version-help').textContent = '同一研发版本已有审批通过的固化基线时，系统自动创建下一个内部修订号（例如 8.0.6.2-r1），并继承上一版清单。';
     const products = await getProducts();
     $('#release-product').innerHTML = products.map((item) => `<option value="${escapeHtml(item.productId)}">${escapeHtml(item.name)}</option>`).join('');
     if (state.productId) $('#release-product').value = state.productId;
@@ -836,12 +852,24 @@ $('#release-form').addEventListener('submit', async (event) => {
   const form = event.currentTarget;
   const productId = $('#release-product').value;
   try {
-    const release = await api(`/api/v1/products/${encodeURIComponent(productId)}/releases`, { method: 'POST', body: JSON.stringify({ version: $('#release-version').value.trim() }) });
+    const release = revisionBaseReleaseId
+      ? await api(`/api/v1/releases/${encodeURIComponent(revisionBaseReleaseId)}/revisions`, { method: 'POST', body: '{}' })
+      : await api(`/api/v1/products/${encodeURIComponent(productId)}/releases`, { method: 'POST', body: JSON.stringify({ version: $('#release-version').value.trim() }) });
     // Every release starts with an auditable first collection round. The
     // release API remains backward compatible for non-UI callers; the UI
     // creates the initial round immediately and opens it for package entry.
-    modal('release').hide(); form.reset(); showAlert(release.revision > 0 ? `内部修订版 ${release.displayVersion} 已创建，继承 ${release.inheritedPackageCount} 个包` : '发布版本及第一轮候选轮次已创建'); navigate('release-detail', { releaseId: release.releaseId, roundId: release.initialRound.roundId });
+    modal('release').hide(); form.reset(); revisionBaseReleaseId = null; $('#release-product').disabled = false; $('#release-version').readOnly = false; showAlert(release.revision > 0 ? `内部修订版 ${release.displayVersion} 已创建，继承 ${release.inheritedPackageCount} 个包` : '发布版本及第一轮候选轮次已创建'); navigate('release-detail', { releaseId: release.releaseId, roundId: release.initialRound.roundId });
   } catch (error) { showAlert(error.message, 'danger'); }
+});
+
+$('#release-modal').addEventListener('hidden.bs.modal', () => {
+  if (!revisionBaseReleaseId) return;
+  revisionBaseReleaseId = null;
+  $('#release-form').reset();
+  $('#release-modal-title').textContent = '创建发布版本';
+  $('#release-product').disabled = false;
+  $('#release-version').readOnly = false;
+  $('#release-version-help').textContent = '同一研发版本已有审批通过的固化基线时，系统自动创建下一个内部修订号（例如 8.0.6.2-r1），并继承上一版清单。';
 });
 
 $('#new-round-button').addEventListener('click', async () => {
