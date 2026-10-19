@@ -61,7 +61,10 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     if (!agentId) throw Object.assign(new Error('Agent 尚未完成 Core 注册'), { code: 'agent_not_registered' });
     const method = options.method ?? 'GET'; const body = options.body ?? ''; const timestamp = new Date().toISOString(); const nonce = randomNonce();
     const headers = { accept: 'application/json', 'x-cam-agent-id': agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(identity.privateKeyPem, method, path.split('?')[0], timestamp, nonce, body), ...(options.headers ?? {}) };
-    const response = await fetchImpl(`${coreUrl}${path}`, { signal: AbortSignal.timeout(Number(process.env.CAM_AGENT_REQUEST_TIMEOUT_MS ?? 60_000)), ...options, headers }); if (!response.ok) { const body = await response.json().catch(() => ({})); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
+    // An empty string would make fetch send text/plain; Fastify then parses it as
+    // a string, changing the signed payload. Send no body for empty requests.
+    const requestOptions = { ...options }; if (body === '') delete requestOptions.body;
+    const response = await fetchImpl(`${coreUrl}${path}`, { signal: AbortSignal.timeout(Number(process.env.CAM_AGENT_REQUEST_TIMEOUT_MS ?? 60_000)), ...requestOptions, headers }); if (!response.ok) { const body = await response.json().catch(() => ({})); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
   };
   app.post('/api/v1/identity/test', { bodyLimit: 4096 }, async (_request, reply) => {
     try {

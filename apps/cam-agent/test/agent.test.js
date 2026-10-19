@@ -35,10 +35,7 @@ test('Agent tests its signed Core pairing and persists a rotated identity', asyn
   const registered = core.coreStore.registerAgent({ name: 'paired-agent', centerId: 'TEST', securityDomain: 'TEST', publicKey: identity.publicKeyPem });
   const options = {
     dataDir: join(dataDir, 'agent'), agentId: registered.agentId, startWorker: false,
-    fetchImpl: async (url, init) => {
-      const result = await core.inject({ method: init.method ?? 'GET', url: new URL(url).pathname, headers: init.headers, payload: init.body || undefined });
-      return new Response(result.body, { status: result.statusCode, headers: { 'content-type': 'application/json' } });
-    }
+    coreUrl: await core.listen({ host: '127.0.0.1', port: 0 })
   };
   let app = await buildAgentApp(options);
   try {
