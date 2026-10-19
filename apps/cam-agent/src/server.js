@@ -7,9 +7,10 @@ import { createHash } from 'node:crypto';
 import { buildServer } from '../../../libs/cam-server/src/server.js';
 import { openDatabase } from '../../../libs/cam-sqlite/src/database.js';
 import { AuthStore } from '../../cam-core/src/core-auth-store.js';
-import { fingerprint, randomNonce, signRequest, verifyResponse } from '../../../libs/cam-agent-auth/src/protocol.js';
+import { randomNonce, signRequest, verifyResponse } from '../../../libs/cam-agent-auth/src/protocol.js';
 import { createIdentityRotation, loadAgentIdentity } from './identity-rotation.js';
 import { agentPage } from './web.js';
+import { CoreConnectionStore } from './core-connection.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/agent' : join(process.cwd(), 'data', 'agent'));
 const CORE_URL = (process.env.CAM_CORE_URL ?? 'http://127.0.0.1:3102').replace(/\/$/u, '');
@@ -44,11 +45,14 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   let identity = await loadAgentIdentity(identityPath);
   const db = await openDatabase(join(dataDir, 'agent.sqlite'));
   const auth = new AuthStore(db);
+  const coreConnection = new CoreConnectionStore(db, { coreUrl, corePublicKey, previousPublicKey: corePreviousPublicKey, previousPublicKeyExpiresAt: corePreviousPublicKeyExpiresAt });
+  let running = false;
+  let configuring = false;
+  let testing = false;
   db.exec(`CREATE TABLE IF NOT EXISTS agent_tasks (task_id TEXT PRIMARY KEY, artifact_id TEXT NOT NULL, status TEXT NOT NULL, progress_json TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT, last_error TEXT, updated_at TEXT NOT NULL);`);
   const taskColumns = new Set(db.prepare('PRAGMA table_info(agent_tasks)').all().map((column) => column.name));
   if (!taskColumns.has('attempts')) db.exec('ALTER TABLE agent_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
   if (!taskColumns.has('retry_at')) db.exec('ALTER TABLE agent_tasks ADD COLUMN retry_at TEXT');
-  const trustedCoreKeys = [corePublicKey, corePreviousPublicKey].filter((value, index, values) => typeof value === 'string' && value.includes('PUBLIC KEY') && values.indexOf(value) === index).map((publicKeyPem) => ({ publicKeyPem, keyId: fingerprint(publicKeyPem) }));
   const app = await buildServer({ service: 'cam-agent', configure: async (server) => { registerAuth(server, auth); server.addHook('onClose', async () => db.close()); } });
   const sharedAssetRoot = resolve(process.cwd(), 'web-shared', 'assets');
   app.get('/assets/:file', async (request, reply) => {
@@ -61,33 +65,64 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     return reply.type('font/woff2').send(await readFile(join(sharedAssetRoot, 'fonts', request.params.file)));
   });
   app.get('/assets/layout.css', async (_request, reply) => reply.type('text/css; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'layout.css'))));
-  app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(agentPage()));  const core = async (path, options = {}, signer = identity) => {
+  app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(agentPage()));
+  const core = async (path, options = {}, signer = identity) => {
     if (!agentId) throw Object.assign(new Error('Agent 尚未完成 Core 注册'), { code: 'agent_not_registered' });
+    const config = coreConnection.get();
+    if (!config.corePublicKey) throw Object.assign(new Error('请先在 Core 身份配对页面配置 Core 公钥'), { code: 'core_public_key_missing', status: 503 });
+    const trustedCoreKeys = [{ publicKeyPem: config.corePublicKey, keyId: config.fingerprint }, ...(config.previousPublicKey && Date.parse(config.previousPublicKeyExpiresAt) > Date.now() ? [{ publicKeyPem: config.previousPublicKey, keyId: config.previousFingerprint }] : [])];
     const method = options.method ?? 'GET'; const body = options.body ?? ''; const timestamp = new Date().toISOString(); const nonce = randomNonce();
     const headers = { accept: 'application/json', 'x-cam-agent-id': agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(signer.privateKeyPem, method, path.split('?')[0], timestamp, nonce, body), ...(options.headers ?? {}) };
     if (options.proofKey) headers['x-cam-agent-new-key-proof'] = signRequest(options.proofKey.privateKeyPem, method, path.split('?')[0], timestamp, nonce, body);
     // An empty string would make fetch send text/plain; Fastify then parses it as
     // a string, changing the signed payload. Send no body for empty requests.
     const requestOptions = { ...options }; delete requestOptions.proofKey; if (body === '') delete requestOptions.body;
-    const response = await fetchImpl(`${coreUrl}${path}`, { signal: AbortSignal.timeout(Number(process.env.CAM_AGENT_REQUEST_TIMEOUT_MS ?? 60_000)), ...requestOptions, headers });
-    if (!trustedCoreKeys.length) throw Object.assign(new Error('Core 公钥未配置，拒绝处理 Core 响应'), { code: 'core_public_key_missing', status: 503 });
+    const response = await fetchImpl(`${config.coreUrl}${path}`, { signal: AbortSignal.timeout(Number(process.env.CAM_AGENT_REQUEST_TIMEOUT_MS ?? 60_000)), ...requestOptions, headers });
     const responseTimestamp = response.headers.get('x-cam-core-timestamp');
     const responseSignature = response.headers.get('x-cam-core-signature');
     const responseKeyId = response.headers.get('x-cam-core-key-id');
     const responseBody = Buffer.from(await response.clone().arrayBuffer());
-    const key = trustedCoreKeys.find((item) => item.keyId === responseKeyId && (item.publicKeyPem !== corePreviousPublicKey || (Date.parse(corePreviousPublicKeyExpiresAt) > Date.now())));
+    const key = trustedCoreKeys.find((item) => item.keyId === responseKeyId && (item.keyId === config.fingerprint || Date.parse(config.previousPublicKeyExpiresAt) > Date.now()));
     const validTimestamp = typeof responseTimestamp === 'string' && Number.isFinite(Date.parse(responseTimestamp)) && Math.abs(Date.now() - Date.parse(responseTimestamp)) <= 5 * 60_000;
     if (!key || !validTimestamp || !verifyResponse(key.publicKeyPem, responseSignature, response.status, method, path.split('?')[0], nonce, responseTimestamp, responseBody)) throw Object.assign(new Error('Core 响应签名校验失败'), { code: 'core_response_signature_invalid', status: 502 });
     if (!response.ok) { const body = JSON.parse(responseBody.toString('utf8') || '{}'); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
   };
   const rotation = await createIdentityRotation({ identityPath, identity, request: core, onIdentity: (next) => { identity = next; } });
+  const admin = async (request, reply) => {
+    if (!request.principal?.user?.roles?.includes('CORE_ADMIN')) return fail(reply, 403, 'admin_required', '仅管理员可管理 Core 对接配置');
+  };
+  app.get('/api/v1/core-config', { preHandler: admin }, async () => ({ item: coreConnection.get() }));
+  app.put('/api/v1/core-config', { bodyLimit: 16 * 1024, preHandler: admin }, async (request, reply) => {
+    if (running || configuring || testing || rotation.status().rotating) return fail(reply, 409, 'core_connection_busy', '正在传输或同步身份，请稍后保存配置');
+    configuring = true;
+    try {
+      const item = coreConnection.save(request.body);
+      await rotation.resetConnection();
+      auth.event('CORE_CONNECTION_UPDATED', request.principal.id, { coreUrl: item.coreUrl, fingerprint: item.fingerprint, previousFingerprint: item.previousFingerprint }, request.ip);
+      return { item };
+    } catch (err) { return fail(reply, 400, err.code ?? 'core_config_invalid', err.message); }
+    finally { configuring = false; }
+  });
+  app.post('/api/v1/core-config/test', { bodyLimit: 4096, preHandler: admin }, async (_request, reply) => {
+    if (configuring || testing) return fail(reply, 409, 'core_connection_busy', '正在保存或测试，请稍后重试');
+    testing = true;
+    try {
+      await rotation.sync({ ignoreBackoff: true });
+      return { ok: true, item: coreConnection.markTest('PASSED') };
+    } catch (err) {
+      coreConnection.markTest('FAILED');
+      return fail(reply, err.status ?? 502, err.code ?? 'core_connection_test_failed', err.message);
+    } finally { testing = false; }
+  });
   app.post('/api/v1/identity/test', { bodyLimit: 4096 }, async (_request, reply) => {
+    if (configuring) return fail(reply, 409, 'core_connection_busy', '正在保存 Core 对接配置');
     try {
       await rotation.sync({ ignoreBackoff: true });
       return { ok: true, agentId, fingerprint: identity.fingerprint, rotation: rotation.status() };
     } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'agent_pairing_failed', err.message); }
   });
   app.post('/api/v1/identity/rotate', { bodyLimit: 4096 }, async (_request, reply) => {
+    if (configuring) return fail(reply, 409, 'core_connection_busy', '正在保存 Core 对接配置');
     try {
       await rotation.sync({ force: true });
       return { ok: true, fingerprint: identity.fingerprint, rotation: rotation.status() };
@@ -116,8 +151,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
       db.prepare('UPDATE agent_tasks SET status = ?, progress_json = ?, updated_at = ?, last_error = NULL WHERE task_id = ?').run('COMPLETED', JSON.stringify({ state: 'ready' }), new Date().toISOString(), task.taskId); await update(task.taskId, { status: 'COMPLETED', progress: { state: 'ready' } });
     } catch (err) { db.prepare('UPDATE agent_tasks SET status = ?, last_error = ?, updated_at = ? WHERE task_id = ?').run('QUEUED', String(err.message).slice(0, 1000), new Date().toISOString(), task.taskId); await update(task.taskId, { status: 'FAILED', error: err.message }).catch(() => {}); }
   }
-  let running = false;
-  const poll = async () => { if (running || !agentId) return; running = true; try { await rotation.sync(); const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST', body: '' })).json()).items ?? []; for (const task of tasks) if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
+  const poll = async () => { if (running || configuring || testing || !agentId) return; running = true; try { await rotation.sync(); const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST', body: '' })).json()).items ?? []; for (const task of tasks) if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
   app.get('/api/v1/identity', async () => ({ agentId: agentId || null, publicKey: identity.publicKeyPem, fingerprint: identity.fingerprint, registered: Boolean(agentId), rotation: rotation.status() }));
   app.get('/api/v1/tasks', async () => ({ items: db.prepare('SELECT * FROM agent_tasks ORDER BY updated_at DESC').all().map((row) => ({ taskId: row.task_id, artifactId: row.artifact_id, status: row.status, progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, lastError: row.last_error, updatedAt: row.updated_at })) }));
   app.get('/api/v1/cache/:artifactId', async (request, reply) => { if (typeof request.params.artifactId !== 'string' || !/^[A-Za-z0-9._-]{1,255}$/.test(request.params.artifactId)) return reply.code(400).send({ ready: false }); const path = join(dataDir, 'cache', request.params.artifactId); try { const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch { return reply.code(404).send({ ready: false }); } });

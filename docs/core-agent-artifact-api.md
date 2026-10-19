@@ -6,9 +6,21 @@ Agent 请求继续使用本机独立 Ed25519 私钥签名。规范化内容为 `
 
 Core 为 Agent API 生成并持久化独立服务身份，私钥位于 Core 数据目录的 `core-agent-identity.json`（权限 `0600`），不会离开 Core。每个 `/api/v1/agent/*` 响应（包括业务错误）都签名，签名覆盖 `HTTP_STATUS`、`HTTP_METHOD`、不含 query 的 `PATH`、对应请求 nonce、响应时间戳和原始响应体 SHA-256。响应头为 `x-cam-core-key-id`、`x-cam-core-timestamp`、`x-cam-core-signature`。Agent 必须先验证时间戳、key ID 和签名，再解析响应或执行任务；缺少可信 Core 公钥或签名不匹配时拒绝响应。
 
-部署时将 Core 管理界面 Agent 管理页显示的 Core 服务公钥以 Base64 写入所有 Agent 的 `CAM_CORE_PUBLIC_KEY_B64`。Core 服务私钥不用于 Agent 身份，也不替代每台 Agent 自己的私钥。
+首次配对时，将 Core 管理界面 Agent 管理页显示的 Core 服务公钥直接粘贴到 Agent“Core 身份配对”页顶部的“Core 对接配置”，填写 Core 地址，保存并测试配对。配置在 Agent 本地 SQLite 持久化，立即生效，重启后优先于部署默认值 `CAM_CORE_URL`、`CAM_CORE_PUBLIC_KEY` / `CAM_CORE_PUBLIC_KEY_B64`。Core 服务私钥不用于 Agent 身份，也不替代每台 Agent 自己的私钥。缺少 Core 公钥时拒绝发起业务请求。
 
-Core 密钥轮换采用显式双钥过渡：把新 Core 公钥配置到所有 Agent 的 `CAM_CORE_PREVIOUS_PUBLIC_KEY_B64`（Agent 暂时同时信任当前和过渡公钥），确认配置生效后切换 Core 当前身份，并把新公钥提升为 `CAM_CORE_PUBLIC_KEY_B64`。离线 Agent 在过渡期内凭已预置的两把公钥继续验证；过渡期结束后移除旧公钥。未预置新公钥的离线 Agent 不会自动信任未知签名密钥，必须经受控配置更新后恢复。Core 服务身份文件丢失意味着身份重置，应按新密钥交接流程处理，不能静默生成后继续服务。
+Core 密钥轮换采用显式双钥过渡。Core 管理页面的轮换操作立即生成并切换新密钥，管理员随后在各 Agent 页面点击“更换 Core 身份”，粘贴新公钥、核对指纹并明确确认；保存时保留当前已信任公钥作为旧公钥，必须指定未来 30 天以内的过渡期，到期后旧签名失效。尚未更新的离线 Agent 不会自动信任未知签名密钥，需管理员更新其信任配置后恢复。当前没有自动 Core 换钥分发协议。Core 服务身份文件应持久保存；丢失后重新生成身份须按身份重置流程重新分发公钥。
+
+### Agent 本地 Core 配置接口
+
+这些接口要求 Agent 本地管理员登录；写请求同时要求 `x-cam-agent-csrf`。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/v1/core-config` | 返回 `{ item }`，含 Core 地址、当前/旧公钥及指纹、旧公钥过期时间、配置来源和最近测试状态，不返回私钥 |
+| `PUT /api/v1/core-config` | 保存 `coreUrl`、`corePublicKey`；替换已有公钥须 `confirmTrustChange: true`，旧公钥须为当前已信任公钥，并指定 `previousPublicKeyExpiresAt`；传输或身份同步中返回 409 |
+| `POST /api/v1/core-config/test` | 测试已保存配置，通过 Agent 签名认证并验证 Core 响应签名，完成身份确认；记录 `PASSED` / `FAILED` 和时间 |
+
+保存配置会清除之前的配对确认及重试退避状态，下次签名同步后才能重新显示配对成功。测试失败信息显示在配置卡片内，定时刷新不覆盖未保存编辑。
 
 本文定义 Core 正式制品目录的稳定查询模型，供管理页面和后续 `cam-agent` 分发流程共用。
 

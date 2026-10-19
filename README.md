@@ -71,9 +71,11 @@ Docker volume 中。升级镜像或重建容器前先执行 `sudo -E sh deploy/i
 
 `cam-core` 对接统一云管时，先将 `deploy/.env.example` 复制为目标主机的 `deploy/.env`，再使用同一个环境文件启动 Compose：
 
-Core 与 Agent 的应用接口采用双向 Ed25519 签名。首次配对时，在 Core 的“Agent 管理”页面复制“Core 服务公钥”，转为单行 Base64 后写入目标机 `deploy/.env` 的 `CAM_CORE_PUBLIC_KEY_B64`，两个 Agent 共用这份 Core 公钥；每个 Agent 的私钥仍各自保存在本机独立数据目录。Core 不会在缺少 Agent 预置信任公钥时退回未签名通信。
+Core 与 Agent 的应用接口采用双向 Ed25519 签名。首次配对时，在 Core 的“Agent 管理”页面复制“Core 服务公钥”，登录各 Agent 的“Core 身份配对”页面，在顶部“Core 对接配置”填写 Core 地址并粘贴完整 PEM 公钥，点击“保存配置”和“测试配对”。两个 Agent 共用这份 Core 公钥；每个 Agent 的私钥仍各自保存在本机独立数据目录。Agent 编号仍由部署变量 `CAM_AGENT_ID` 配置（双节点 Compose 分别对应 `CAM_AGENT_1_ID` / `CAM_AGENT_2_ID`）。缺少 Core 公钥时不会发起业务请求，签名验证失败时拒绝处理响应。
 
-Core 服务密钥轮换由已登录的 Core 管理员调用 `POST /api/v1/agent-service-identity/rotate` 完成。接口立即切换到新密钥，并返回新旧公钥和旧公钥过期时间。将新公钥配置为 `CAM_CORE_PUBLIC_KEY_B64`，旧公钥配置为 `CAM_CORE_PREVIOUS_PUBLIC_KEY_B64`，过期时间配置为 `CAM_CORE_PREVIOUS_PUBLIC_KEY_EXPIRES_AT`，随后重建 Agent 容器；这也会更新暂时离线 Agent 下次启动时的信任配置。过渡期结束后清空旧公钥变量并再次重建。密钥文件必须和 Core 数据一起持久保存；丢失时按身份重置流程重新分发公钥。
+Agent 页面保存的 Core 地址和信任公钥持久化到本机 `agent.sqlite`，立即生效，重启后优先于环境变量。`CAM_CORE_URL`、`CAM_CORE_PUBLIC_KEY` / `CAM_CORE_PUBLIC_KEY_B64` 及旧公钥过渡变量保留为部署默认值；页面保存之后仅改环境变量不会覆盖已保存配置。定时刷新不会覆盖正在编辑的内容。
+
+Core 服务密钥轮换可在 Core 的 Agent 管理页面执行（接口 `POST /api/v1/agent-service-identity/rotate`），会立即切换新身份。随后到各 Agent 的“Core 对接配置”点击“更换 Core 身份”，粘贴新公钥、核对指纹并明确确认，设置旧公钥过渡期（默认 24 小时，最长 30 天），保存后再次测试。原公钥默认只读；替换时自动保留已信任旧公钥，到期后不再接受旧签名。尚未更新的离线 Agent 恢复连接时会拒绝未知 Core 身份，需要管理员更新其信任配置；当前不支持自动分发 Core 新公钥。密钥文件必须和 Core 数据一起持久保存，丢失时按身份重置流程重新分发公钥。
 
 ```bash
 cp deploy/.env.example deploy/.env

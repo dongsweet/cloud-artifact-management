@@ -90,5 +90,10 @@ export async function createIdentityRotation({ identityPath, identity: initial, 
     })();
     try { await inFlight; } finally { inFlight = null; }
   }
-  return { sync, status: () => ({ ...state, pending: Boolean(pending), rotating: Boolean(inFlight), paired: Boolean(state.policy?.confirmedAt) && !state.lastError }) };
+  const resetConnection = async () => {
+    if (inFlight) throw Object.assign(new Error('身份正在同步，请稍后重试'), { status: 409, code: 'agent_rotation_busy' });
+    state = { ...state, attempts: 0, retryAt: null, lastError: null, policy: null, checkedAt: null };
+    await saveJson(statePath, state);
+  };
+  return { sync, resetConnection, status: () => ({ ...state, pending: Boolean(pending), rotating: Boolean(inFlight), paired: Boolean(state.policy?.confirmedAt) && !state.lastError }) };
 }
