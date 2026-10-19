@@ -164,7 +164,10 @@ export class GateKeyring {
     this.state.rotationIntervalDays = rotationIntervalDays;
     this.state.gracePeriodHours = gracePeriodHours;
     this.#event('SCHEDULE_UPDATED', { rotationIntervalDays, gracePeriodHours });
-    if (this.state.active) this.state.nextRotationAt = new Date(this.now() + rotationIntervalDays * 86400000).toISOString();
+    if (this.state.active) {
+      const rotationAnchor = Date.parse(this.state.lastRotationAt ?? this.state.active.activatedAt);
+      this.state.nextRotationAt = new Date((Number.isFinite(rotationAnchor) ? rotationAnchor : this.now()) + rotationIntervalDays * 86400000).toISOString();
+    }
     await this.#save();
     return this.status();
   }

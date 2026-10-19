@@ -39,6 +39,19 @@ test('First-key confirmation must finish before Core enables business traffic', 
   });
 });
 
+test('Changing the rotation schedule keeps its due date anchored to the last successful rotation', async () => {
+  await pairedScenario(async ({ core, advance, rotate, now }) => {
+    await rotate();
+    const lastRotationAt = (await core.status()).lastRotationAt;
+    advance(10 * 86400000);
+    await core.configure({ rotationIntervalDays: 90, gracePeriodHours: 24 });
+    assert.equal((await core.status()).nextRotationAt, new Date(Date.parse(lastRotationAt) + 90 * 86400000).toISOString());
+    await core.configure({ rotationIntervalDays: 5, gracePeriodHours: 24 });
+    assert.equal((await core.status()).nextRotationAt, new Date(Date.parse(lastRotationAt) + 5 * 86400000).toISOString());
+    assert.ok(Date.parse((await core.status()).nextRotationAt) < now(), 'shortened schedule may already be due');
+  });
+});
+
 test('Rotation resumes after proposal expiry and restart, and retires old keys on schedule', async () => {
   await pairedScenario(async ({ core, edge, advance, rotate, dir, now }) => {
     const first = await rotate();
