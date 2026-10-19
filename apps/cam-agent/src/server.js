@@ -1,16 +1,17 @@
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { mkdir, rename, rm, stat, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, stat, readFile, writeFile, chmod } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { buildServer } from '../../../libs/cam-server/src/server.js';
 import { openDatabase } from '../../../libs/cam-sqlite/src/database.js';
 import { AuthStore } from '../../cam-core/src/core-auth-store.js';
+import { generateIdentity, randomNonce, signRequest } from '../../../libs/cam-agent-auth/src/protocol.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/agent' : join(process.cwd(), 'data', 'agent'));
 const CORE_URL = (process.env.CAM_CORE_URL ?? 'http://127.0.0.1:3102').replace(/\/$/u, '');
-const AGENT_TOKEN = process.env.CAM_AGENT_TOKEN ?? '';
+const AGENT_ID = process.env.CAM_AGENT_ID ?? '';
 const CHUNK_SIZE = Math.max(64 * 1024, Math.min(64 * 1024 * 1024, Number(process.env.CAM_AGENT_CHUNK_SIZE ?? 4 * 1024 * 1024)));
 const CONCURRENCY = Math.max(1, Math.min(16, Number(process.env.CAM_AGENT_CONCURRENCY ?? 4)));
 
@@ -35,8 +36,11 @@ function registerAuth(app, auth) {
   app.post('/api/v1/auth/password', { bodyLimit: 4096 }, async (request, reply) => { if (request.principal?.type !== 'LOCAL_USER') return fail(reply, 403, 'local_account_required', '本地账号密码由 Agent 管理'); if (!auth.csrf(request.principal, request.headers['x-cam-agent-csrf'])) return fail(reply, 403, 'csrf_invalid', '会话校验失败，请刷新页面后重试'); try { await auth.changePassword(request.principal.id, request.body?.password, request.principal.id, request.body?.oldPassword); reply.header('Set-Cookie', [cookie('cam_agent_session', '', true, true), cookie('cam_agent_csrf', '', false, true)]); return { ok: true, loginRequired: true }; } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'password_failed', err.message); } });
 }
 
-export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE_URL, agentToken = AGENT_TOKEN, fetchImpl = fetch, startWorker = true } = {}) {
+export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE_URL, agentId = AGENT_ID, fetchImpl = fetch, startWorker = true } = {}) {
   await mkdir(join(dataDir, 'cache'), { recursive: true });
+  const identityPath = join(dataDir, 'identity.json');
+  let identity;
+  try { identity = JSON.parse(await readFile(identityPath, 'utf8')); if (!identity?.privateKeyPem || !identity?.publicKeyPem) throw new Error('invalid identity'); } catch { identity = generateIdentity(); await writeFile(identityPath, JSON.stringify(identity), { mode: 0o600 }); await chmod(identityPath, 0o600); }
   const db = await openDatabase(join(dataDir, 'agent.sqlite'));
   const auth = new AuthStore(db);
   db.exec(`CREATE TABLE IF NOT EXISTS agent_tasks (task_id TEXT PRIMARY KEY, artifact_id TEXT NOT NULL, status TEXT NOT NULL, progress_json TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT, last_error TEXT, updated_at TEXT NOT NULL);`);
@@ -49,7 +53,21 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   </style></head><body><main class="wrap"><header><h1>云平台制品 Agent</h1><div class="muted">中心制品缓存与分发状态</div></header><section id="login" class="card" style="max-width:440px"><h2>运维登录</h2><div id="error" class="alert hidden"></div><form id="login-form"><label>用户名</label><input name="username" autocomplete="username" required><label>密码</label><input name="password" type="password" autocomplete="current-password" required><p><button>登录</button></p></form></section><section id="change" class="card hidden" style="max-width:520px"><h2>请先修改初始密码</h2><div id="change-error" class="alert hidden"></div><form id="change-form"><label>初始密码</label><input name="oldPassword" type="password" autocomplete="current-password" required><label>新密码（至少 12 个字符）</label><input name="password" type="password" autocomplete="new-password" minlength="12" required><p><button>修改并重新登录</button></p></form></section><section id="dashboard" class="hidden"><div class="card"><div class="row"><div><h2>分发任务</h2><span class="muted">Core 下发任务后，Agent 会自动排队并拉取制品</span></div><button id="refresh" class="secondary">刷新</button><button id="logout" class="secondary">退出</button></div><div id="task-content" class="muted" style="margin-top:18px">正在读取任务…</div></div><div class="card"><h2>缓存状态</h2><div id="cache-content" class="muted">校验完成的文件按 SHA-256 保存在本中心缓存目录。</div></div></section></main><script>
   const prefix=location.pathname.replace(/\\/$/,'');const api=(path,options={})=>fetch(prefix+'/api/v1'+path,{credentials:'same-origin',...options,headers:{'content-type':'application/json',...(options.headers||{})}});const $=id=>document.getElementById(id);let csrf='';function message(id,text){$(id).textContent=text;$(id).classList.toggle('hidden',!text)}function show(view){for(const id of ['login','change','dashboard'])$(id).classList.toggle('hidden',id!==view)}function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function fmt(bytes){if(bytes<1024)return bytes+' B';let n=bytes/1024,u='KB';if(n>1024){n/=1024;u='MB'}if(n>1024){n/=1024;u='GB'}return n.toFixed(1)+' '+u}async function load(){const r=await api('/tasks');const b=await r.json();if(!r.ok)throw new Error(b.error?.message||'任务读取失败');const items=b.items||[];if(!items.length){$('task-content').textContent='暂无分发任务';$('cache-content').textContent='暂无已缓存版本';return}const label={QUEUED:'排队中',RUNNING:'传输中',COMPLETED:'已就绪',FAILED:'等待重试'};$('task-content').innerHTML='<table class="table"><thead><tr><th>任务 / 正式版本</th><th>状态</th><th>进度</th><th>重试</th><th>更新时间</th></tr></thead><tbody>'+items.map(t=>{const p=t.progress||{};const pct=p.totalParts?Math.floor(p.completedParts*100/p.totalParts):t.status==='COMPLETED'?100:0;return '<tr><td><strong>'+escapeHtml(t.taskId)+'</strong><br><span class="muted">'+escapeHtml(t.artifactId)+'</span>'+(t.lastError?'<br><span style="color:#a12424">'+escapeHtml(t.lastError)+'</span>':'')+'</td><td><span class="pill">'+escapeHtml(label[t.status]||t.status)+'</span></td><td>'+escapeHtml(p.fileName||p.state||'等待 Agent 拉取')+(p.totalParts?'<div class="bar"><i style="width:'+pct+'%"></i></div><small>'+pct+'%</small>':'')+'</td><td>'+escapeHtml(t.attempts||0)+'</td><td>'+escapeHtml(new Date(t.updatedAt).toLocaleString())+'</td></tr>'}).join('')+'</tbody></table>';$('cache-content').textContent=items.filter(t=>t.status==='COMPLETED').map(t=>t.artifactId).join('、')||'暂无已缓存版本'}$('login-form').onsubmit=async e=>{e.preventDefault();message('error','');const f=new FormData(e.target);const r=await api('/auth/login',{method:'POST',body:JSON.stringify(Object.fromEntries(f))});const b=await r.json();if(!r.ok){message('error',b.error?.message||'登录失败');return}csrf=b.csrfToken;if(b.user.mustChangePassword)show('change');else{show('dashboard');load()}};$('change-form').onsubmit=async e=>{e.preventDefault();message('change-error','');const f=Object.fromEntries(new FormData(e.target));const r=await api('/auth/password',{method:'POST',headers:{'x-cam-agent-csrf':csrf},body:JSON.stringify(f)});const b=await r.json();if(!r.ok){message('change-error',b.error?.message||'修改失败');return}show('login')};$('logout').onclick=async()=>{await api('/auth/logout',{method:'POST',headers:{'x-cam-agent-csrf':csrf},body:'{}'});show('login')};$('refresh').onclick=()=>load();api('/auth/me').then(r=>r.json()).then(b=>{csrf=b.csrfToken||'';if(b.user){if(b.user.mustChangePassword)show('change');else{show('dashboard');load()}}});setInterval(()=>{if(!$('dashboard').classList.contains('hidden'))load().catch(()=>{})},10000);
   </script></body></html>`));
-  const core = async (path, options = {}) => { const headers = { accept: 'application/json', 'x-cam-agent-token': agentToken, ...(options.headers ?? {}) }; const response = await fetchImpl(`${coreUrl}${path}`, { signal: AbortSignal.timeout(Number(process.env.CAM_AGENT_REQUEST_TIMEOUT_MS ?? 60_000)), ...options, headers }); if (!response.ok) { const body = await response.json().catch(() => ({})); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response; };
+  const core = async (path, options = {}) => {
+    if (!agentId) throw Object.assign(new Error('Agent 尚未完成 Core 注册'), { code: 'agent_not_registered' });
+    const method = options.method ?? 'GET'; const body = options.body ?? ''; const timestamp = new Date().toISOString(); const nonce = randomNonce();
+    const headers = { accept: 'application/json', 'x-cam-agent-id': agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(identity.privateKeyPem, method, path.split('?')[0], timestamp, nonce, body), ...(options.headers ?? {}) };
+    const response = await fetchImpl(`${coreUrl}${path}`, { signal: AbortSignal.timeout(Number(process.env.CAM_AGENT_REQUEST_TIMEOUT_MS ?? 60_000)), ...options, headers }); if (!response.ok) { const body = await response.json().catch(() => ({})); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
+  };
+  app.post('/api/v1/identity/rotate', { bodyLimit: 4096 }, async (_request, reply) => {
+    try {
+      const next = generateIdentity();
+      const body = JSON.stringify({ publicKey: next.publicKeyPem });
+      await core('/api/v1/agent/key-rotation', { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+      identity = next; await writeFile(identityPath, JSON.stringify(identity), { mode: 0o600 }); await chmod(identityPath, 0o600);
+      return { ok: true, fingerprint: identity.fingerprint };
+    } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'agent_rotation_failed', err.message); }
+  });
   const localTask = (task) => { db.prepare(`INSERT INTO agent_tasks (task_id, artifact_id, status, progress_json, attempts, retry_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET artifact_id=excluded.artifact_id, status=excluded.status, attempts=excluded.attempts, retry_at=excluded.retry_at, updated_at=excluded.updated_at`).run(task.taskId, task.artifactId, task.status, JSON.stringify(task.progress ?? {}), task.attempts ?? 0, task.retryAt ?? null, new Date().toISOString()); };
   const update = async (taskId, body) => { const response = await core(`/api/v1/agent/tasks/${encodeURIComponent(taskId)}/progress`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return response.json(); };
   async function downloadTask(task) {
@@ -74,11 +92,12 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     } catch (err) { db.prepare('UPDATE agent_tasks SET status = ?, last_error = ?, updated_at = ? WHERE task_id = ?').run('QUEUED', String(err.message).slice(0, 1000), new Date().toISOString(), task.taskId); await update(task.taskId, { status: 'FAILED', error: err.message }).catch(() => {}); }
   }
   let running = false;
-  const poll = async () => { if (running || !agentToken) return; running = true; try { const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST' })).json()).items ?? []; for (const task of tasks) if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
+  const poll = async () => { if (running || !agentId) return; running = true; try { const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST', body: '' })).json()).items ?? []; for (const task of tasks) if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
+  app.get('/api/v1/identity', async () => ({ agentId: agentId || null, publicKey: identity.publicKeyPem, fingerprint: identity.fingerprint, registered: Boolean(agentId) }));
   app.get('/api/v1/tasks', async () => ({ items: db.prepare('SELECT * FROM agent_tasks ORDER BY updated_at DESC').all().map((row) => ({ taskId: row.task_id, artifactId: row.artifact_id, status: row.status, progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, lastError: row.last_error, updatedAt: row.updated_at })) }));
   app.get('/api/v1/cache/:artifactId', async (request, reply) => { if (typeof request.params.artifactId !== 'string' || !/^[A-Za-z0-9._-]{1,255}$/.test(request.params.artifactId)) return reply.code(400).send({ ready: false }); const path = join(dataDir, 'cache', request.params.artifactId); try { const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch { return reply.code(404).send({ ready: false }); } });
   if (startWorker) { const timer = setInterval(() => { void poll(); }, Number(process.env.CAM_AGENT_POLL_MS ?? 5000)); timer.unref?.(); app.addHook('onClose', async () => clearInterval(timer)); queueMicrotask(() => { void poll(); }); }
-  app.decorate('agentAuthStore', auth); app.decorate('agentPoll', poll); return app;
+  app.decorate('agentAuthStore', auth); app.decorate('agentPoll', poll); app.decorate('agentIdentity', identity); return app;
 }
 
 export async function createAgentServer({ port = Number(process.env.PORT ?? 3103), host = process.env.HOST ?? '127.0.0.1', ...options } = {}) { const app = await buildAgentApp(options); await app.listen({ port, host }); return app; }

@@ -82,6 +82,12 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     const created = app.coreStore.get('FREEZE-1');
     assert.equal(created.status, 'CLOUD_SUBMITTED');
     assert.equal(created.cloudApprovalId, 'APR-1');
+    assert.equal(created.approvalCode, undefined, 'approval code must not be exposed by the Core response object');
+    assert.equal(created.approvalCodeConfigured, true);
+    const publicRequest = await app.inject({ method: 'GET', url: '/api/v1/approval-requests/FREEZE-1' });
+    assert.equal(publicRequest.statusCode, 200);
+    assert.equal(publicRequest.json().item.approvalCode, undefined, 'approval code must not be returned to the browser');
+    assert.equal(publicRequest.json().item.approvalCodeConfigured, true);
     assert.deepEqual(calls[0][0], 'create');
     assert.deepEqual(created.cloudMappingSnapshot, { priority: { id: '394' } });
     assert.deepEqual(created.cloudRequestSnapshot, { priority: '394' });

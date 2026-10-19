@@ -114,6 +114,23 @@ function html(value) {
   return text(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
+function approvalResponseSummary(detail, approvalCode) {
+  const values = [];
+  const visit = (node, key = '') => {
+    if (node === null || node === undefined) return;
+    if (typeof node === 'string') {
+      if (/(editor|content|opinion|comment|remark|reply|message|处理意见|审批意见)/iu.test(key)) values.push(node);
+      return;
+    }
+    if (Array.isArray(node)) { for (const item of node) visit(item, key); return; }
+    if (typeof node === 'object') for (const [name, value] of Object.entries(node)) if (name !== 'workOrderDetail') visit(value, name);
+  };
+  visit(detail);
+  const unique = [...new Set(values.map((value) => text(value).replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim()).filter(Boolean))];
+  const summary = unique.join('；').slice(0, 2000);
+  return approvalCode ? summary.split(approvalCode).join('[已隐藏]').split(approvalCode.toUpperCase()).join('[已隐藏]') : summary;
+}
+
 function parseProcessorNames(value) {
   const names = text(value).split(',').map((item) => item.trim()).filter(Boolean);
   if (names.some((name) => /\s/u.test(name) || /^\d+$/u.test(name))) throw configurationError('请填写有效的云管审批处理人用户名');
@@ -302,19 +319,16 @@ export class CloudAdapter {
     const versionLabel = displayVersion ? ` ${displayVersion}` : '';
     const title = `${config.titlePrefix} ${productLabel}${versionLabel} ${roundLabel}固化申请`.trim().slice(0, 64);
     const detail = [
+      `<p><strong>审批同意暗号（回复必须包含）：${html(envelope.approvalCode)}</strong></p>`,
       `<p>审批事项：${html(productLabel)}${versionLabel ? ` ${html(displayVersion)}` : ''} ${html(roundLabel)}固化申请</p>`,
       `<p>软件产品：${html(envelope.productName ?? '旧版请求未提供')}</p>`,
       `<p>软件版本：${html(displayVersion ?? '旧版请求未提供')}</p>`,
       `<p>候选轮次：${Number.isInteger(envelope.roundNo) ? `第 ${envelope.roundNo} 轮` : html(envelope.roundId ?? '旧版请求未提供')}</p>`,
       ...(envelope.reportTitle ? [`<p>验证报告标题：${html(envelope.reportTitle)}</p>`] : []),
-      `<p>发布版本标识：${html(envelope.releaseId)}</p>`,
-      `<p>候选轮次标识：${html(envelope.roundId)}</p>`,
-      `<p>请求编号：${html(envelope.requestId)}</p>`,
+      `<p>发布申请编号：${html(envelope.requestId)}</p>`,
       `<p>验证结论：${html(envelope.conclusion)}</p>`,
-      `<p>审批同意暗号（回复必须包含）：${html(envelope.approvalCode)}</p>`,
-      `<p>清单 SHA-256：${html(envelope.manifestSha256)}</p>`,
-      `<p>报告 SHA-256：${html(envelope.reportSha256)}</p>`,
-      `<p>报告文件：${html(envelope.reportFileName)}</p>`
+      `<p>报告文件：${html(envelope.reportFileName)}</p>`,
+      `<!-- CAM-METADATA requestId=${html(envelope.requestId)} releaseId=${html(envelope.releaseId)} roundId=${html(envelope.roundId)} manifestSha256=${html(envelope.manifestSha256)} reportSha256=${html(envelope.reportSha256)} -->`
     ].join('');
     return {
       workOrderType: 'demand_ticket',
@@ -383,12 +397,13 @@ export class CloudAdapter {
     if (actualWorkNumber && actualWorkNumber !== approvalId) throw cloudError(`cloud work order identity does not match ${approvalId}`);
     const status = approvalStatus(detail);
     const description = text(detail.workOrderDetail);
-    const manifestSha256 = description.match(/清单\s*SHA-256：?\s*([a-f0-9]{64})/iu)?.[1]?.toLowerCase();
+    const manifestSha256 = description.match(/(?:清单\s*SHA-256：?\s*|manifestSha256=)([a-f0-9]{64})/iu)?.[1]?.toLowerCase();
     const approvalCode = expectedRequest?.approvalCode;
     // The request description itself contains the code. Only inspect returned
     // workflow/confirmation fields so merely echoing the original description
     // cannot satisfy the temporary approval guard.
     const responseEvidence = JSON.stringify({ ...detail, workOrderDetail: undefined });
+    const cloudResponseSummary = approvalResponseSummary(detail, approvalCode);
     if (status === 'APPROVED') {
       if (!manifestSha256) throw cloudError('approved cloud work order does not contain a manifest SHA-256');
       if (expectedRequest?.manifestSha256 && manifestSha256 !== text(expectedRequest.manifestSha256).toLowerCase()) {
@@ -404,7 +419,8 @@ export class CloudAdapter {
           workflowStep: text(detail.currentStep),
           manifestSha256,
           cloudDetail: detail,
-          rejectionReason: '审批回复未包含同意暗号'
+          rejectionReason: '审批回复未包含同意暗号',
+          cloudResponseSummary: cloudResponseSummary || '云管确认通过，但回复未包含同意暗号'
         };
       }
     }
@@ -415,7 +431,8 @@ export class CloudAdapter {
       transferTaskId: status === 'APPROVED' ? `EOMS-${approvalId}` : undefined,
       approvalCode: status === 'APPROVED' ? approvalCode : undefined,
       manifestSha256,
-      cloudDetail: detail
+      cloudDetail: detail,
+      cloudResponseSummary
     };
   }
 

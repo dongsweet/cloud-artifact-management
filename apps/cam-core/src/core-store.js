@@ -4,6 +4,7 @@ import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 import { attachmentExtension, validAttachmentFileName } from '../../../libs/cam-server/src/attachment-types.js';
+import { fingerprint, verifyRequest } from '../../../libs/cam-agent-auth/src/protocol.js';
 
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}-${Date.now()}-${randomUUID()}`;
@@ -20,7 +21,7 @@ function response(row) {
   return {
     requestId: row.request_id, freezeId: row.freeze_id, roundId: row.round_id, releaseId: row.release_id,
     productName: envelope.productName ?? null, version: envelope.version ?? null,
-    approvalCode: envelope.approvalCode ?? null,
+    approvalCodeConfigured: typeof envelope.approvalCode === 'string' && envelope.approvalCode.length > 0,
     revision: Number.isInteger(envelope.revision) ? envelope.revision : 0,
     displayVersion: envelope.displayVersion ?? (Number.isInteger(envelope.revision) && envelope.revision > 0 ? `${envelope.version}-r${envelope.revision}` : envelope.version),
     roundNo: Number.isInteger(envelope.roundNo) ? envelope.roundNo : null, reportTitle: envelope.reportTitle ?? null,
@@ -29,7 +30,7 @@ function response(row) {
     reportReceived: Boolean(row.report_received_at), reportReceivedSha256: row.report_received_sha256,
     cloudAttachmentId: row.cloud_attachment_id, cloudApprovalId: row.cloud_approval_id,
     cloudTransferTaskId: row.cloud_transfer_task_id, cloudStatus: row.cloud_status,
-    cloudWorkflowStep: row.cloud_workflow_step, cloudCheckedAt: row.cloud_checked_at,
+    cloudWorkflowStep: row.cloud_workflow_step, cloudCheckedAt: row.cloud_checked_at, cloudResponseSummary: row.cloud_response_summary,
     cloudMappingSnapshot: row.cloud_mapping_json ? JSON.parse(row.cloud_mapping_json) : null,
     cloudRequestSnapshot: row.cloud_request_json ? JSON.parse(row.cloud_request_json) : null,
     approvedAt: row.approved_at, expiresAt: row.expires_at, closeStatus: row.close_status,
@@ -124,7 +125,8 @@ export class CoreStore {
       CREATE INDEX IF NOT EXISTS core_transfer_outbox_pending_idx ON core_transfer_outbox(delivered_at, next_attempt_at);
       CREATE TABLE IF NOT EXISTS core_agents (
         agent_id TEXT PRIMARY KEY, center_id TEXT NOT NULL, security_domain TEXT NOT NULL,
-        name TEXT NOT NULL, token_sha256 TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'ACTIVE',
+        name TEXT NOT NULL, public_key TEXT, key_id TEXT, previous_public_key TEXT, previous_key_expires_at TEXT,
+        token_sha256 TEXT, status TEXT NOT NULL DEFAULT 'ACTIVE',
         created_at TEXT NOT NULL, last_seen_at TEXT
       );
       CREATE INDEX IF NOT EXISTS core_agents_scope_idx ON core_agents(center_id, security_domain, status);
@@ -138,34 +140,49 @@ export class CoreStore {
       CREATE INDEX IF NOT EXISTS core_distribution_queue_idx ON core_distribution_tasks(agent_id, status, created_at);
     `);
     const columns = new Set(db.prepare('PRAGMA table_info(core_approval_requests)').all().map((column) => column.name));
+    const agentColumns = new Set(db.prepare('PRAGMA table_info(core_agents)').all().map((column) => column.name));
+    for (const [name, definition] of Object.entries({ public_key: 'TEXT', key_id: 'TEXT', previous_public_key: 'TEXT', previous_key_expires_at: 'TEXT', token_sha256: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
+    db.exec('CREATE TABLE IF NOT EXISTS core_agent_nonces (agent_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (agent_id, nonce))');
     const distributionColumns = new Set(db.prepare('PRAGMA table_info(core_distribution_tasks)').all().map((column) => column.name));
     if (!distributionColumns.has('attempts')) db.exec('ALTER TABLE core_distribution_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
     if (!distributionColumns.has('retry_at')) db.exec(`ALTER TABLE core_distribution_tasks ADD COLUMN retry_at TEXT NOT NULL DEFAULT '${now()}'`);
     if (!columns.has('cloud_mapping_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_mapping_json TEXT');
     if (!columns.has('cloud_request_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_request_json TEXT');
     if (!columns.has('cloud_workflow_step')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_workflow_step TEXT');
-    for (const [name, definition] of Object.entries({ report_file_name: 'TEXT', report_size: 'INTEGER', report_received_sha256: 'TEXT', report_path: 'TEXT', report_received_at: 'TEXT', cloud_attachment_id: 'TEXT' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
+    for (const [name, definition] of Object.entries({ report_file_name: 'TEXT', report_size: 'INTEGER', report_received_sha256: 'TEXT', report_path: 'TEXT', report_received_at: 'TEXT', cloud_attachment_id: 'TEXT', cloud_response_summary: 'TEXT' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
     for (const [name, definition] of Object.entries({ cloud_submission_attempts: 'INTEGER NOT NULL DEFAULT 0', cloud_submission_state: "TEXT NOT NULL DEFAULT 'IDLE'", cloud_submission_attempted_at: 'TEXT', cloud_retry_at: 'TEXT', transfer_notification_state: "TEXT NOT NULL DEFAULT 'IDLE'", transfer_notification_attempts: 'INTEGER NOT NULL DEFAULT 0' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
   }
 
-  registerAgent({ centerId, securityDomain, name }) {
+  registerAgent({ centerId, securityDomain, name, publicKey }) {
     for (const [field, value] of Object.entries({ centerId, securityDomain, name })) if (typeof value !== 'string' || !value.trim() || value.length > 128) throw Object.assign(new Error(`${field} is required and must be at most 128 characters`), { code: 'agent_invalid' });
+    if (typeof publicKey !== 'string' || !publicKey.includes('PUBLIC KEY')) throw Object.assign(new Error('publicKey is required; paste the Agent identity public key'), { code: 'agent_public_key_required' });
+    let keyId; try { keyId = fingerprint(publicKey); } catch { throw Object.assign(new Error('Agent public key is invalid'), { code: 'agent_public_key_invalid' }); }
     const agentId = `AG-${randomUUID()}`;
-    const token = randomBytes(32).toString('base64url');
     const timestamp = now();
-    this.db.prepare('INSERT INTO core_agents (agent_id, center_id, security_domain, name, token_sha256, status, created_at) VALUES (?, ?, ?, ?, ?, \'ACTIVE\', ?)')
-      .run(agentId, centerId.trim(), securityDomain.trim(), name.trim(), digest(token), timestamp);
-    return { agentId, centerId: centerId.trim(), securityDomain: securityDomain.trim(), name: name.trim(), token, status: 'ACTIVE', createdAt: timestamp };
+    this.db.prepare('INSERT INTO core_agents (agent_id, center_id, security_domain, name, public_key, key_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, \'ACTIVE\', ?)')
+      .run(agentId, centerId.trim(), securityDomain.trim(), name.trim(), publicKey, keyId, timestamp);
+    return { agentId, centerId: centerId.trim(), securityDomain: securityDomain.trim(), name: name.trim(), keyId, fingerprint: keyId, status: 'ACTIVE', createdAt: timestamp };
   }
-  authenticateAgent(token) {
-    if (typeof token !== 'string' || token.length < 32 || token.length > 256) return null;
-    const row = this.db.prepare("SELECT agent_id AS agentId, center_id AS centerId, security_domain AS securityDomain, name, status FROM core_agents WHERE token_sha256 = ?").get(digest(token));
-    if (!row || row.status !== 'ACTIVE') return null;
+  authenticateAgent({ agentId, timestamp, nonce, signature, method, path, body = '' } = {}) {
+    // Signature verification is intentionally independent of browser sessions.
+    if (typeof agentId !== 'string' || typeof timestamp !== 'string' || typeof nonce !== 'string' || typeof signature !== 'string') return null;
+    const row = this.db.prepare("SELECT agent_id AS agentId, center_id AS centerId, security_domain AS securityDomain, name, public_key AS publicKey, previous_public_key AS previousPublicKey, previous_key_expires_at AS previousKeyExpiresAt, status FROM core_agents WHERE agent_id = ?").get(agentId);
+    if (!row || row.status !== 'ACTIVE' || !Number.isFinite(Date.parse(timestamp)) || Math.abs(Date.now() - Date.parse(timestamp)) > 5 * 60_000) return null;
+    const keyOk = verifyRequest(row.publicKey, signature, method, path, timestamp, nonce, body) || (row.previousPublicKey && row.previousKeyExpiresAt && Date.parse(row.previousKeyExpiresAt) > Date.now() && verifyRequest(row.previousPublicKey, signature, method, path, timestamp, nonce, body));
+    if (!keyOk) return null;
+    this.db.prepare('DELETE FROM core_agent_nonces WHERE expires_at <= ?').run(now());
+    try { this.db.prepare('INSERT INTO core_agent_nonces (agent_id, nonce, expires_at) VALUES (?, ?, ?)').run(row.agentId, nonce, new Date(Date.now() + 5 * 60_000).toISOString()); } catch { return null; }
     this.db.prepare('UPDATE core_agents SET last_seen_at = ? WHERE agent_id = ?').run(now(), row.agentId);
-    return row;
+    delete row.publicKey; delete row.previousPublicKey; delete row.previousKeyExpiresAt; return row;
   }
   listAgents() {
-    return this.db.prepare('SELECT agent_id AS agentId, center_id AS centerId, security_domain AS securityDomain, name, status, created_at AS createdAt, last_seen_at AS lastSeenAt FROM core_agents ORDER BY created_at DESC').all();
+    return this.db.prepare('SELECT agent_id AS agentId, center_id AS centerId, security_domain AS securityDomain, name, key_id AS keyId, key_id AS fingerprint, status, created_at AS createdAt, last_seen_at AS lastSeenAt, previous_key_expires_at AS previousKeyExpiresAt FROM core_agents ORDER BY created_at DESC').all();
+  }
+  rotateAgentKey(agentId, publicKey, previousKeyExpiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString()) {
+    let keyId; try { keyId = fingerprint(publicKey); } catch { throw Object.assign(new Error('Agent public key is invalid'), { code: 'agent_public_key_invalid' }); }
+    const result = this.db.prepare("UPDATE core_agents SET previous_public_key = public_key, previous_key_expires_at = ?, public_key = ?, key_id = ?, last_seen_at = ? WHERE agent_id = ? AND status = 'ACTIVE'").run(previousKeyExpiresAt, publicKey, keyId, now(), agentId);
+    if (!result.changes) throw Object.assign(new Error('active agent not found'), { code: 'agent_not_found' });
+    return { agentId, keyId, fingerprint: keyId, previousKeyExpiresAt };
   }
   setAgentStatus(agentId, status) {
     if (!['ACTIVE', 'DISABLED'].includes(status)) throw Object.assign(new Error('invalid agent status'), { code: 'agent_invalid' });
@@ -223,6 +240,11 @@ export class CoreStore {
   envelope(requestId) {
     const row = this.db.prepare('SELECT envelope_json FROM core_approval_requests WHERE request_id = ?').get(requestId);
     return row ? JSON.parse(row.envelope_json) : null;
+  }
+  approvalCode(requestId) {
+    const row = this.db.prepare('SELECT envelope_json FROM core_approval_requests WHERE request_id = ?').get(requestId);
+    const value = row ? JSON.parse(row.envelope_json ?? '{}').approvalCode : null;
+    return typeof value === 'string' && value ? value : null;
   }
   updatePresentationMetadata(requestId, incoming) {
     const current = this.envelope(requestId);
@@ -652,7 +674,7 @@ export class CoreStore {
     }
     const status = cloudStatus === 'APPROVED' ? 'APPROVED' : cloudStatus === 'REJECTED' ? 'REJECTED' : cloudStatus === 'UNKNOWN' ? 'CLOUD_STATUS_UNCONFIRMED' : 'CLOUD_SUBMITTED';
     const timestamp = now();
-    this.db.prepare("UPDATE core_approval_requests SET status = ?, cloud_status = ?, cloud_workflow_step = ?, cloud_approval_id = COALESCE(?, cloud_approval_id), cloud_transfer_task_id = COALESCE(?, cloud_transfer_task_id), cloud_checked_at = ?, approved_at = ?, expires_at = ?, last_error = NULL, updated_at = ? WHERE request_id = ?").run(status, cloudStatus, result.workflowStep ?? null, result.approvalId ?? null, result.transferTaskId ?? null, timestamp, status === 'APPROVED' ? (result.approvedAt ?? timestamp) : null, result.expiresAt ?? null, timestamp, requestId);
+    this.db.prepare("UPDATE core_approval_requests SET status = ?, cloud_status = ?, cloud_workflow_step = ?, cloud_response_summary = ?, cloud_approval_id = COALESCE(?, cloud_approval_id), cloud_transfer_task_id = COALESCE(?, cloud_transfer_task_id), cloud_checked_at = ?, approved_at = ?, expires_at = ?, last_error = NULL, updated_at = ? WHERE request_id = ?").run(status, cloudStatus, result.workflowStep ?? null, result.cloudResponseSummary ?? result.rejectionReason ?? null, result.approvalId ?? null, result.transferTaskId ?? null, timestamp, status === 'APPROVED' ? (result.approvedAt ?? timestamp) : null, result.expiresAt ?? null, timestamp, requestId);
     return this.get(requestId);
   }
 

@@ -96,8 +96,9 @@ function renderAgents(items) {
   coreAgents = items ?? [];
   $('#agent-rows').innerHTML = coreAgents.length ? coreAgents.map((agent) => {
     const active = agent.status === 'ACTIVE';
-    return `<tr><td><div class="fw-semibold">${escapeHtml(agent.name)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(agent.agentId)}</div></td><td>${escapeHtml(agent.centerId)}<div class="small text-body-secondary">${escapeHtml(agent.securityDomain)}</div></td><td><span class="badge text-bg-${active ? 'success' : 'secondary'}">${active ? '启用' : '已禁用'}</span></td><td>${escapeHtml(agent.lastSeenAt ? displayTime(agent.lastSeenAt) : '尚未连接')}</td><td>${escapeHtml(displayTime(agent.createdAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-${active ? 'warning' : 'success'} btn-sm agent-status-button" data-id="${escapeHtml(agent.agentId)}" data-status="${active ? 'DISABLED' : 'ACTIVE'}">${active ? '禁用' : '启用'}</button></div></td></tr>`;
-  }).join('') : '<tr><td colspan="6" class="text-center text-body-secondary py-4">暂无已注册 Agent</td></tr>';
+    const keyState = agent.previousKeyExpiresAt ? `旧身份过渡至 ${escapeHtml(displayTime(agent.previousKeyExpiresAt))}` : '当前身份';
+    return `<tr><td><div class="fw-semibold">${escapeHtml(agent.name)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(agent.agentId)}</div></td><td>${escapeHtml(agent.centerId)}<div class="small text-body-secondary">${escapeHtml(agent.securityDomain)}</div></td><td><span class="badge text-bg-${active ? 'success' : 'secondary'}">${active ? '启用' : '已禁用'}</span><div class="small text-body-secondary mt-1">${escapeHtml(keyState)}</div></td><td><code class="small">${escapeHtml(agent.keyId ?? '-')}</code></td><td>${escapeHtml(agent.lastSeenAt ? displayTime(agent.lastSeenAt) : '尚未连接')}</td><td>${escapeHtml(displayTime(agent.createdAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-${active ? 'warning' : 'success'} btn-sm agent-status-button" data-id="${escapeHtml(agent.agentId)}" data-status="${active ? 'DISABLED' : 'ACTIVE'}">${active ? '禁用' : '启用'}</button></div></td></tr>`;
+  }).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">暂无已注册 Agent</td></tr>';
   document.querySelectorAll('.agent-status-button').forEach((button) => { button.onclick = () => updateAgentStatus(button); });
 }
 async function loadAgents() { try { renderAgents((await api('/api/v1/agents')).items); } catch (error) { message(error.message, 'danger'); } }
@@ -143,10 +144,10 @@ async function showDetail(id) {
   $('#fields').innerHTML = `
     <section class="cam-detail-section"><h4><i class="bi bi-box-seam me-2"></i>发布信息</h4><div class="cam-detail-grid">
       ${textField('软件产品', item.productName)}${textField('软件版本', item.displayVersion ?? item.version)}${textField('候选轮次', item.roundNo ? `第 ${item.roundNo} 轮` : '-')}${textField('验证报告标题', item.reportTitle ?? '旧版请求未携带')}
-      ${textField('申请编号', item.requestId, { mono: true })}${textField('发布版本标识', item.releaseId, { mono: true })}${textField('候选轮次标识', item.roundId, { mono: true })}${textField('审批同意暗号', item.approvalCode, { mono: true, wide: true })}
+      ${textField('申请编号', item.requestId, { mono: true })}${textField('发布版本标识', item.releaseId, { mono: true })}${textField('候选轮次标识', item.roundId, { mono: true })}${textField('审批同意暗号', item.approvalCodeConfigured ? '已生成（详情中隐藏）' : '旧版申请未生成', { wide: true })}
     </div></section>
     <section class="cam-detail-section"><h4><i class="bi bi-arrow-left-right me-2"></i>审批与传输</h4><div class="cam-detail-grid">
-      ${detailField('云管提交状态', retryPanel, { wide: true })}${textField('云管审批 ID', item.cloudApprovalId, { mono: true })}${textField('传输任务 ID', item.cloudTransferTaskId, { mono: true })}
+      ${detailField('云管提交状态', retryPanel, { wide: true })}${textField('云管审批 ID', item.cloudApprovalId, { mono: true })}${detailField('云管处理意见', item.cloudResponseSummary ? escapeHtml(item.cloudResponseSummary) : '<span class="text-body-secondary">云管尚未返回处理意见</span>', { wide: true })}${textField('传输任务 ID', item.cloudTransferTaskId, { mono: true })}
       ${detailField('正式制品传输进度', transferPanel, { wide: true })}
       ${textField('清单 SHA-256', item.manifestSha256, { mono: true, wide: true })}${textField('云管附件标识', item.cloudAttachmentId ?? '待上传', { mono: true })}
     </div></section>
@@ -281,8 +282,10 @@ $('#confirm-submit').addEventListener('click', () => $('#confirm-dialog').close(
 $('#confirm-dialog').addEventListener('click', (event) => { if (event.target === $('#confirm-dialog')) $('#confirm-dialog').close('cancel'); });
 $('#agents-refresh').addEventListener('click', loadAgents);
 document.querySelectorAll('[data-page]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); location.hash = link.dataset.page; showPage(link.dataset.page); }));
-$('#agent-token-copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#agent-token').value); message('服务令牌已复制'); } catch { $('#agent-token').select(); message('复制失败，请手动复制服务令牌', 'warning'); } });
-$('#agent-token-dismiss').addEventListener('click', () => { $('#agent-token').value = ''; $('#agent-token-result').classList.add('d-none'); });
+if (!$('#agent-public-key')) { const field = document.createElement('div'); field.className = 'mt-3'; field.innerHTML = '<label class="form-label" for="agent-public-key">Agent 身份公钥</label><textarea id="agent-public-key" name="publicKey" class="form-control font-monospace" rows="5" placeholder="-----BEGIN PUBLIC KEY-----" required></textarea>'; $('#agent-form').insertBefore(field, $('#agent-form').querySelector('.d-flex')); }
+const agentHelp = $('#agent-form')?.parentElement?.querySelector('.alert-info'); if (agentHelp) agentHelp.innerHTML = '<i class="bi bi-info-circle me-1"></i>Agent 在本地生成 Ed25519 身份密钥。请从 Agent 的 <code>/api/v1/identity</code> 接口复制公钥到这里完成配对；Core 不保存 Agent 私钥。';
+$('#agent-token-result')?.classList.add('d-none');
+const agentSubmit = $('#agent-form button[type="submit"]'); if (agentSubmit) agentSubmit.innerHTML = '<i class="bi bi-shield-check me-1"></i>配对并注册 Agent';
 $('#agent-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
@@ -291,10 +294,8 @@ $('#agent-form').addEventListener('submit', async (event) => {
   button.disabled = true;
   try {
     const result = await api('/api/v1/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData(form))) });
-    $('#agent-token').value = result.item.token;
-    $('#agent-token-result').classList.remove('d-none');
     form.reset();
-    message(`Agent ${result.item.name} 已注册；请立即保存一次性服务令牌`);
+    message(`Agent 已配对注册，身份指纹：${result.item.fingerprint}`);
     await loadAgents();
   } catch (error) { $('#agent-error').textContent = error.message; $('#agent-error').classList.remove('d-none'); }
   finally { button.disabled = false; }

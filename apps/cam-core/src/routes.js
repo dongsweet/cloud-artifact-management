@@ -115,7 +115,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, ena
     if (!current.cloudApprovalId || !['CLOUD_SUBMITTED', 'CLOUD_STATUS_UNCONFIRMED'].includes(current.status)) return current;
     cloudStatusInFlight.add(requestId);
     try {
-      const updated = store.applyCloudStatus(requestId, await cloud.getApproval(current.cloudApprovalId, current));
+      const updated = store.applyCloudStatus(requestId, await cloud.getApproval(current.cloudApprovalId, { ...current, approvalCode: store.approvalCode(requestId) }));
       if (['APPROVED', 'REJECTED'].includes(updated.status)) {
         store.enqueueApprovalResult(requestId);
         cloudStatusNextAttempt.delete(requestId);
@@ -203,8 +203,12 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, ena
     if (!authorization) return error(reply, 401, 'gate_auth_required', '受控交换身份校验失败');
   });
 
-  const agentPrincipal = (request) => store.authenticateAgent(request.headers['x-cam-agent-token']);
-  app.addHook('onRequest', async (request, reply) => {
+  const agentPrincipal = (request) => store.authenticateAgent({
+    agentId: request.headers['x-cam-agent-id'], timestamp: request.headers['x-cam-agent-timestamp'],
+    nonce: request.headers['x-cam-agent-nonce'], signature: request.headers['x-cam-agent-signature'],
+    method: request.method, path: request.url.split('?')[0], body: request.body === undefined ? '' : JSON.stringify(request.body)
+  });
+  app.addHook('preHandler', async (request, reply) => {
     if (!request.url.startsWith('/api/v1/agent/')) return;
     const principal = agentPrincipal(request);
     if (!principal) return error(reply, 401, 'agent_auth_required', 'Agent 身份凭证无效或已禁用');
@@ -220,10 +224,19 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, ena
     try { return reply.code(201).send({ item: store.registerAgent(request.body ?? {}) }); }
     catch (err) { return error(reply, 400, err.code ?? 'agent_invalid', err.message); }
   });
+  app.post('/api/v1/agents/:agentId/rotate', { bodyLimit: 8192 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    try { return { item: store.rotateAgentKey(request.params.agentId, request.body?.publicKey) }; }
+    catch (err) { return error(reply, 400, err.code ?? 'agent_rotation_failed', err.message); }
+  });
   app.patch('/api/v1/agents/:agentId', { bodyLimit: 4096 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
     try { return { ok: store.setAgentStatus(request.params.agentId, request.body?.status) }; }
     catch (err) { return error(reply, 400, err.code ?? 'agent_invalid', err.message); }
+  });
+  app.post('/api/v1/agent/key-rotation', { bodyLimit: 8192 }, async (request, reply) => {
+    try { return { item: store.rotateAgentKey(request.agentPrincipal.agentId, request.body?.publicKey) }; }
+    catch (err) { return error(reply, 400, err.code ?? 'agent_rotation_failed', err.message); }
   });
   app.get('/api/v1/distribution-tasks', async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');

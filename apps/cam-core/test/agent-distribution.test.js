@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { buildCoreApp } from '../src/server.js';
+import { generateIdentity, randomNonce, signRequest } from '../../../libs/cam-agent-auth/src/protocol.js';
 
 test('Core scopes queued distribution tasks and parallel file chunks to each Agent identity', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-distribution-'));
@@ -18,23 +19,32 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     db.prepare(`INSERT INTO core_transfer_tasks (transfer_task_id, request_id, status, manifest_sha256, created_at, updated_at) VALUES ('TR-AGENT', 'REQ-AGENT', 'RECEIVED', ?, '2026-01-01', '2026-01-01')`).run('a'.repeat(64));
     db.prepare('INSERT INTO core_artifacts (sha256, size_bytes, file_path, received_at) VALUES (?, ?, ?, ?)').run(sha, payload.length, filePath, '2026-01-01');
     db.prepare(`INSERT INTO core_release_artifacts (request_id, package_key, file_name, size_bytes, sha256) VALUES ('REQ-AGENT', 'pkg', 'artifact.bin', ?, ?)`).run(payload.length, sha);
-    const west = app.coreStore.registerAgent({ centerId: 'CENTER-WEST', securityDomain: 'PROD', name: 'west-agent' });
-    const east = app.coreStore.registerAgent({ centerId: 'CENTER-EAST', securityDomain: 'PROD', name: 'east-agent' });
+    const westIdentity = generateIdentity(); const eastIdentity = generateIdentity();
+    const west = app.coreStore.registerAgent({ centerId: 'CENTER-WEST', securityDomain: 'PROD', name: 'west-agent', publicKey: westIdentity.publicKeyPem });
+    const east = app.coreStore.registerAgent({ centerId: 'CENTER-EAST', securityDomain: 'PROD', name: 'east-agent', publicKey: eastIdentity.publicKeyPem });
     const task = app.coreStore.createDistributionTask({ agentId: west.agentId, artifactId: 'BASELINE-REQ-AGENT' });
 
     const noIdentity = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull' });
     assert.equal(noIdentity.statusCode, 401);
-    const eastTasks = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: { 'x-cam-agent-token': east.token } });
+    const auth = (agent, identity, method, path, body = '') => { const timestamp = new Date().toISOString(); const nonce = randomNonce(); return { 'x-cam-agent-id': agent.agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(identity.privateKeyPem, method, path, timestamp, nonce, body) }; };
+    const eastTasks = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: auth(east, eastIdentity, 'POST', '/api/v1/agent/tasks/pull') });
     assert.equal(eastTasks.statusCode, 200, eastTasks.body); assert.deepEqual(eastTasks.json().items, []);
-    const westTasks = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: { 'x-cam-agent-token': west.token } });
+    const westTasks = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: auth(west, westIdentity, 'POST', '/api/v1/agent/tasks/pull') });
     assert.equal(westTasks.statusCode, 200, westTasks.body); assert.equal(westTasks.json().items[0].taskId, task.taskId);
+    const replayTimestamp = new Date().toISOString(); const replayNonce = randomNonce();
+    const replayHeaders = { 'x-cam-agent-id': west.agentId, 'x-cam-agent-timestamp': replayTimestamp, 'x-cam-agent-nonce': replayNonce, 'x-cam-agent-signature': signRequest(westIdentity.privateKeyPem, 'POST', '/api/v1/agent/tasks/pull', replayTimestamp, replayNonce, '') };
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: replayHeaders })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: replayHeaders })).statusCode, 401, 'a nonce must not be reusable');
+    const rotatedIdentity = generateIdentity(); app.coreStore.rotateAgentKey(west.agentId, rotatedIdentity.publicKeyPem);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: auth(west, rotatedIdentity, 'POST', '/api/v1/agent/tasks/pull') })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: auth(west, westIdentity, 'POST', '/api/v1/agent/tasks/pull') })).statusCode, 200, 'the previous identity remains valid during the grace period');
 
-    const chunk = await app.inject({ method: 'GET', url: `/api/v1/agent/tasks/${task.taskId}/files/${sha}/parts/1`, headers: { 'x-cam-agent-token': west.token, 'x-cam-chunk-size': '10' } });
+    const chunkPath = `/api/v1/agent/tasks/${task.taskId}/files/${sha}/parts/1`; const chunk = await app.inject({ method: 'GET', url: chunkPath, headers: { ...auth(west, westIdentity, 'GET', chunkPath), 'x-cam-chunk-size': '10' } });
     assert.equal(chunk.statusCode, 206, chunk.body); assert.equal(chunk.headers['content-range'], `bytes 10-19/${payload.length}`);
     assert.deepEqual(chunk.rawPayload, payload.subarray(10, 20));
-    const crossed = await app.inject({ method: 'GET', url: `/api/v1/agent/tasks/${task.taskId}/files/${sha}/parts/0`, headers: { 'x-cam-agent-token': east.token, 'x-cam-chunk-size': '10' } });
+    const crossedPath = `/api/v1/agent/tasks/${task.taskId}/files/${sha}/parts/0`; const crossed = await app.inject({ method: 'GET', url: crossedPath, headers: { ...auth(east, eastIdentity, 'GET', crossedPath), 'x-cam-chunk-size': '10' } });
     assert.equal(crossed.statusCode, 404);
-    const completed = await app.inject({ method: 'POST', url: `/api/v1/agent/tasks/${task.taskId}/progress`, headers: { 'x-cam-agent-token': west.token }, payload: { status: 'COMPLETED', progress: { state: 'ready' } } });
+    const progressPath = `/api/v1/agent/tasks/${task.taskId}/progress`; const progressBody = JSON.stringify({ status: 'COMPLETED', progress: { state: 'ready' } }); const completed = await app.inject({ method: 'POST', url: progressPath, headers: { ...auth(west, westIdentity, 'POST', progressPath, progressBody), 'content-type': 'application/json' }, payload: JSON.parse(progressBody) });
     assert.equal(completed.statusCode, 200, completed.body); assert.equal(completed.json().item.status, 'COMPLETED');
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });

@@ -71,6 +71,6 @@ GET /api/v1/artifacts/:sha256/content
 
 ## 身份与后续分发
 
-当前 Core 查询接口沿用 Core 管理 API 的登录会话鉴权；`cam-agent` 的设备身份认证和任务级访问授权尚未实现。Agent 分发功能落地时，应为 Agent 建立独立设备凭据，并由 Core 根据 Agent 身份、分发任务和目标范围授权版本基线及其文件。不得为了 Agent 访问而开放匿名目录或摘要下载。
+`cam-agent` 使用首次配对的 Ed25519 设备身份，不使用固定服务令牌。Core 注册 Agent 时保存公钥和指纹；Agent 请求携带 `X-CAM-Agent-Id`、`X-CAM-Agent-Timestamp`、`X-CAM-Agent-Nonce` 和 `X-CAM-Agent-Signature`，签名覆盖 HTTP 方法、路径、时间戳、随机数和请求体摘要。Core 拒绝过期时间戳、重复随机数、禁用 Agent 和无效签名。Agent 可使用旧身份签名提交新公钥，Core 在短暂过渡期接受旧、新公钥后完成轮换。Core 仍根据 Agent 身份、分发任务和目标范围授权版本基线及其文件，不开放匿名目录或摘要下载。
 
 当前单文件下载路由用于受控查询和验证。Agent 正式分发上线前，还需实现任务绑定下载授权、可续传分块读取、下载审计和撤销检查；目录查询接口不代表 Agent 已获得文件下载授权。

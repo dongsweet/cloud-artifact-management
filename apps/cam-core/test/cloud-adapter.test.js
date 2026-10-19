@@ -122,7 +122,9 @@ test('CloudAdapter resolves environment-specific IDs and creates an EOMS work or
   assert.equal(result.requestBody.title, '云平台制品验证报告审批 曙光云 Stack 8.0.6.2 第 2 轮固化申请');
   assert.match(result.requestBody.workOrderDetail, /软件产品：曙光云 Stack/u);
   assert.match(result.requestBody.workOrderDetail, /候选轮次：第 2 轮/u);
-  assert.match(result.requestBody.workOrderDetail, /审批同意暗号（回复必须包含）：c{64}/u);
+  assert.match(result.requestBody.workOrderDetail, /^<p><strong>审批同意暗号（回复必须包含）：c{64}<\/strong><\/p>/u);
+  assert.match(result.requestBody.workOrderDetail, /发布申请编号：FREEZE-1/u);
+  assert.match(result.requestBody.workOrderDetail, /CAM-METADATA/iu);
   assert.deepEqual(result.mappingSnapshot.processUsers, [{ userId: '2308', username: 'zhuren_luan' }]);
   assert.ok(calls.some(({ url }) => new URL(url).pathname === EOMS_PATHS.responsiblePersons));
   assert.ok(calls.every(({ options }) => options.headers['x-auth-secret'] === 'secret' && options.headers['x-auth-userid'] === '2308'));
