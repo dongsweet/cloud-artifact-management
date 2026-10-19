@@ -42,7 +42,7 @@ async function rotateEdgeKey({ keyring, gateConfig, fetchImpl = fetch }) {
   return keyring.markEdgeConfirmed(pending.id);
 }
 
-export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, enableKeyRotation = false, cloudRetryDelayMs = 30_000, cloudStatusPollMs = 30_000, approvalResultRetryBaseMs = 5_000, workerIntervalMs = 5_000, fetchImpl = fetch }) {
+export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, agentServiceIdentity, rotateAgentServiceIdentity, enableKeyRotation = false, cloudRetryDelayMs = 30_000, cloudStatusPollMs = 30_000, approvalResultRetryBaseMs = 5_000, workerIntervalMs = 5_000, fetchImpl = fetch }) {
   let rotationInFlight;
   const rotateKey = () => {
     if (rotationInFlight) return rotationInFlight;
@@ -227,6 +227,16 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, ena
   app.get('/api/v1/agents', async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
     return { items: store.listAgents() };
+  });
+  app.get('/api/v1/agent-service-identity', async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    return { publicKey: agentServiceIdentity?.publicKeyPem ?? null, fingerprint: agentServiceIdentity?.fingerprint ?? null, previousPublicKey: agentServiceIdentity?.previousPublicKeyPem ?? null, previousFingerprint: agentServiceIdentity?.previousFingerprint ?? null, previousKeyExpiresAt: agentServiceIdentity?.previousKeyExpiresAt ?? null };
+  });
+  app.post('/api/v1/agent-service-identity/rotate', { bodyLimit: 4096 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (typeof rotateAgentServiceIdentity !== 'function') return error(reply, 503, 'service_identity_unavailable', 'Core 服务身份轮换不可用');
+    try { return reply.code(202).send(await rotateAgentServiceIdentity()); }
+    catch (err) { return error(reply, 500, 'service_identity_rotation_failed', err.message); }
   });
   app.post('/api/v1/agents', { bodyLimit: 8192 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');

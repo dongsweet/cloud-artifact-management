@@ -125,7 +125,8 @@ function openAgentRotation(agentId) {
   renderAgentRotationSummary();
   $('#agent-rotation-dialog').showModal();
 }
-async function loadAgents() { try { renderAgents((await api('/api/v1/agents')).items); } catch (error) { message(error.message, 'danger'); } }
+async function loadAgentServiceIdentity() { try { const item = await api('/api/v1/agent-service-identity'); $('#agent-service-public-key').value = item.publicKey ?? ''; $('#agent-service-fingerprint').textContent = item.fingerprint ? `指纹：${item.fingerprint}` : ''; } catch (error) { message(error.message, 'danger'); } }
+async function loadAgents() { try { renderAgents((await api('/api/v1/agents')).items); await loadAgentServiceIdentity(); } catch (error) { message(error.message, 'danger'); } }
 async function updateAgentStatus(button) {
   const nextStatus = button.dataset.status;
   button.disabled = true;
@@ -314,6 +315,8 @@ $('#confirm-cancel').addEventListener('click', () => $('#confirm-dialog').close(
 $('#confirm-submit').addEventListener('click', () => $('#confirm-dialog').close('confirm'));
 $('#confirm-dialog').addEventListener('click', (event) => { if (event.target === $('#confirm-dialog')) $('#confirm-dialog').close('cancel'); });
 $('#agents-refresh').addEventListener('click', loadAgents);
+$('#agent-service-copy').addEventListener('click', async () => { const value = $('#agent-service-public-key').value; if (!value) return; try { await navigator.clipboard.writeText(value); message('Core 服务公钥已复制'); } catch { $('#agent-service-public-key').select(); message('浏览器未授权自动复制，请按 Ctrl+C 复制'); } });
+$('#agent-service-rotate').addEventListener('click', async (event) => { if (!await confirmDialog({ title: '轮换 Core 服务密钥', text: '轮换后必须把新公钥配置到所有 Agent，并在过渡期内保留旧公钥。确认继续吗？', confirmLabel: '确认轮换', confirmClass: 'btn-warning' })) return; event.currentTarget.disabled = true; try { const result = await api('/api/v1/agent-service-identity/rotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); $('#agent-service-public-key').value = result.publicKey ?? ''; $('#agent-service-fingerprint').textContent = `新指纹：${result.fingerprint ?? '-'} · 旧公钥过渡至 ${displayTime(result.previousKeyExpiresAt)}`; message('Core 服务密钥已轮换，请立即更新所有 Agent 的 Core 公钥配置'); } catch (error) { message(error.message, 'danger'); } finally { event.currentTarget.disabled = false; } });
 $('#agent-rotation-close').addEventListener('click', () => $('#agent-rotation-dialog').close());
 $('#agent-rotation-dialog').addEventListener('click', (event) => { if (event.target === $('#agent-rotation-dialog')) $('#agent-rotation-dialog').close(); });
 async function changeAgentRotation(action, body) {

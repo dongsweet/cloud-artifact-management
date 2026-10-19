@@ -71,6 +71,10 @@ Docker volume 中。升级镜像或重建容器前先执行 `sudo -E sh deploy/i
 
 `cam-core` 对接统一云管时，先将 `deploy/.env.example` 复制为目标主机的 `deploy/.env`，再使用同一个环境文件启动 Compose：
 
+Core 与 Agent 的应用接口采用双向 Ed25519 签名。首次配对时，在 Core 的“Agent 管理”页面复制“Core 服务公钥”，转为单行 Base64 后写入目标机 `deploy/.env` 的 `CAM_CORE_PUBLIC_KEY_B64`，两个 Agent 共用这份 Core 公钥；每个 Agent 的私钥仍各自保存在本机独立数据目录。Core 不会在缺少 Agent 预置信任公钥时退回未签名通信。
+
+Core 服务密钥轮换由已登录的 Core 管理员调用 `POST /api/v1/agent-service-identity/rotate` 完成。接口立即切换到新密钥，并返回新旧公钥和旧公钥过期时间。将新公钥配置为 `CAM_CORE_PUBLIC_KEY_B64`，旧公钥配置为 `CAM_CORE_PREVIOUS_PUBLIC_KEY_B64`，过期时间配置为 `CAM_CORE_PREVIOUS_PUBLIC_KEY_EXPIRES_AT`，随后重建 Agent 容器；这也会更新暂时离线 Agent 下次启动时的信任配置。过渡期结束后清空旧公钥变量并再次重建。密钥文件必须和 Core 数据一起持久保存；丢失时按身份重置流程重新分发公钥。
+
 ```bash
 cp deploy/.env.example deploy/.env
 ${EDITOR:-vi} deploy/.env

@@ -35,7 +35,7 @@ test('Agent tests its signed Core pairing and persists a rotated identity', asyn
   const registered = core.coreStore.registerAgent({ name: 'paired-agent', centerId: 'TEST', publicKey: identity.publicKeyPem });
   const options = {
     dataDir: join(dataDir, 'agent'), agentId: registered.agentId, startWorker: false,
-    coreUrl: await core.listen({ host: '127.0.0.1', port: 0 })
+    coreUrl: await core.listen({ host: '127.0.0.1', port: 0 }), corePublicKey: core.agentServiceIdentity.publicKeyPem
   };
   let app = await buildAgentApp(options);
   try {
@@ -78,7 +78,7 @@ test('Core-triggered Agent rotation recovers the same pending key after a lost r
     if (loseResponse && String(args[0]).endsWith('/api/v1/agent/key-rotation')) { loseResponse = false; throw new Error('simulated response loss'); }
     return response;
   };
-  const options = { dataDir: agentDir, agentId: registered.agentId, startWorker: false, coreUrl, fetchImpl };
+  const options = { dataDir: agentDir, agentId: registered.agentId, startWorker: false, coreUrl, corePublicKey: core.agentServiceIdentity.publicKeyPem, fetchImpl };
   let app = await buildAgentApp(options);
   try {
     await app.agentPoll();
@@ -93,4 +93,21 @@ test('Core-triggered Agent rotation recovers the same pending key after a lost r
     assert.equal(core.coreStore.getAgentIdentity(registered.agentId).confirmedAt !== null, true);
     assert.equal(core.coreStore.getAgentIdentity(registered.agentId).rotationRequestedAt, null);
   } finally { await app.close(); await core.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Agent rejects Core responses without a trusted key or with a modified body', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-response-signature-'));
+  const identity = generateIdentity();
+  const core = await buildCoreApp({ dataDir: join(dataDir, 'core'), enableAuth: false });
+  const agentDir = join(dataDir, 'agent'); await mkdir(agentDir); await writeFile(join(agentDir, 'identity.json'), JSON.stringify(identity));
+  const registered = core.coreStore.registerAgent({ name: 'signature-agent', centerId: 'TEST', publicKey: identity.publicKeyPem });
+  const coreUrl = await core.listen({ host: '127.0.0.1', port: 0 });
+  const options = { dataDir: agentDir, agentId: registered.agentId, coreUrl, startWorker: false };
+  const missing = await buildAgentApp(options);
+  const signIn = async (app) => { await app.agentAuthStore.createUser({ username: 'admin', displayName: 'Admin', password: 'Agent-Integration-2026', roles: ['CORE_ADMIN'] }, null, { bootstrap: true }); await app.agentAuthStore.db.prepare('UPDATE core_users SET must_change_password = 0').run(); const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'admin', password: 'Agent-Integration-2026' } }); return { cookie: login.headers['set-cookie'].map((value) => value.split(';')[0]).join('; '), 'x-cam-agent-csrf': login.json().csrfToken }; };
+  try { const response = await missing.inject({ method: 'POST', url: '/api/v1/identity/test', headers: await signIn(missing), payload: {} }); assert.equal(response.statusCode, 503); assert.equal(response.json().error.code, 'core_public_key_missing'); } finally { await missing.close(); }
+  const tamperedDir = join(dataDir, 'tampered-agent'); await mkdir(tamperedDir); await writeFile(join(tamperedDir, 'identity.json'), JSON.stringify(identity));
+  const tampered = await buildAgentApp({ ...options, dataDir: tamperedDir, corePublicKey: core.agentServiceIdentity.publicKeyPem, fetchImpl: async (...args) => { const response = await fetch(...args); const body = await response.arrayBuffer(); const bytes = Buffer.from(body); if (bytes.length) bytes[0] ^= 1; return new Response(bytes, { status: response.status, headers: response.headers }); } });
+  try { const response = await tampered.inject({ method: 'POST', url: '/api/v1/identity/test', headers: await signIn(tampered), payload: {} }); assert.equal(response.statusCode, 502); assert.equal(response.json().error.code, 'core_response_signature_invalid'); }
+  finally { await tampered.close(); await core.close(); await rm(dataDir, { recursive: true, force: true }); }
 });

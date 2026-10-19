@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { buildServer } from '../../../libs/cam-server/src/server.js';
 import { openDatabase } from '../../../libs/cam-sqlite/src/database.js';
 import { AuthStore } from '../../cam-core/src/core-auth-store.js';
-import { randomNonce, signRequest } from '../../../libs/cam-agent-auth/src/protocol.js';
+import { fingerprint, randomNonce, signRequest, verifyResponse } from '../../../libs/cam-agent-auth/src/protocol.js';
 import { createIdentityRotation, loadAgentIdentity } from './identity-rotation.js';
 import { agentPage } from './web.js';
 
@@ -38,7 +38,7 @@ function registerAuth(app, auth) {
   app.post('/api/v1/auth/password', { bodyLimit: 4096 }, async (request, reply) => { if (request.principal?.type !== 'LOCAL_USER') return fail(reply, 403, 'local_account_required', '本地账号密码由 Agent 管理'); if (!auth.csrf(request.principal, request.headers['x-cam-agent-csrf'])) return fail(reply, 403, 'csrf_invalid', '会话校验失败，请刷新页面后重试'); try { await auth.changePassword(request.principal.id, request.body?.password, request.principal.id, request.body?.oldPassword); reply.header('Set-Cookie', [cookie('cam_agent_session', '', true, true), cookie('cam_agent_csrf', '', false, true)]); return { ok: true, loginRequired: true }; } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'password_failed', err.message); } });
 }
 
-export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE_URL, agentId = AGENT_ID, fetchImpl = fetch, startWorker = true } = {}) {
+export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE_URL, agentId = AGENT_ID, corePublicKey = process.env.CAM_CORE_PUBLIC_KEY ?? (process.env.CAM_CORE_PUBLIC_KEY_B64 ? Buffer.from(process.env.CAM_CORE_PUBLIC_KEY_B64, 'base64').toString('utf8') : ''), corePreviousPublicKey = process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY ?? (process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_B64 ? Buffer.from(process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_B64, 'base64').toString('utf8') : ''), corePreviousPublicKeyExpiresAt = process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_EXPIRES_AT ?? '', fetchImpl = fetch, startWorker = true } = {}) {
   await mkdir(join(dataDir, 'cache'), { recursive: true });
   const identityPath = join(dataDir, 'identity.json');
   let identity = await loadAgentIdentity(identityPath);
@@ -48,6 +48,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   const taskColumns = new Set(db.prepare('PRAGMA table_info(agent_tasks)').all().map((column) => column.name));
   if (!taskColumns.has('attempts')) db.exec('ALTER TABLE agent_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
   if (!taskColumns.has('retry_at')) db.exec('ALTER TABLE agent_tasks ADD COLUMN retry_at TEXT');
+  const trustedCoreKeys = [corePublicKey, corePreviousPublicKey].filter((value, index, values) => typeof value === 'string' && value.includes('PUBLIC KEY') && values.indexOf(value) === index).map((publicKeyPem) => ({ publicKeyPem, keyId: fingerprint(publicKeyPem) }));
   const app = await buildServer({ service: 'cam-agent', configure: async (server) => { registerAuth(server, auth); server.addHook('onClose', async () => db.close()); } });
   const sharedAssetRoot = resolve(process.cwd(), 'web-shared', 'assets');
   app.get('/assets/:file', async (request, reply) => {
@@ -68,7 +69,16 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     // An empty string would make fetch send text/plain; Fastify then parses it as
     // a string, changing the signed payload. Send no body for empty requests.
     const requestOptions = { ...options }; delete requestOptions.proofKey; if (body === '') delete requestOptions.body;
-    const response = await fetchImpl(`${coreUrl}${path}`, { signal: AbortSignal.timeout(Number(process.env.CAM_AGENT_REQUEST_TIMEOUT_MS ?? 60_000)), ...requestOptions, headers }); if (!response.ok) { const body = await response.json().catch(() => ({})); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
+    const response = await fetchImpl(`${coreUrl}${path}`, { signal: AbortSignal.timeout(Number(process.env.CAM_AGENT_REQUEST_TIMEOUT_MS ?? 60_000)), ...requestOptions, headers });
+    if (!trustedCoreKeys.length) throw Object.assign(new Error('Core 公钥未配置，拒绝处理 Core 响应'), { code: 'core_public_key_missing', status: 503 });
+    const responseTimestamp = response.headers.get('x-cam-core-timestamp');
+    const responseSignature = response.headers.get('x-cam-core-signature');
+    const responseKeyId = response.headers.get('x-cam-core-key-id');
+    const responseBody = Buffer.from(await response.clone().arrayBuffer());
+    const key = trustedCoreKeys.find((item) => item.keyId === responseKeyId && (item.publicKeyPem !== corePreviousPublicKey || (Date.parse(corePreviousPublicKeyExpiresAt) > Date.now())));
+    const validTimestamp = typeof responseTimestamp === 'string' && Number.isFinite(Date.parse(responseTimestamp)) && Math.abs(Date.now() - Date.parse(responseTimestamp)) <= 5 * 60_000;
+    if (!key || !validTimestamp || !verifyResponse(key.publicKeyPem, responseSignature, response.status, method, path.split('?')[0], nonce, responseTimestamp, responseBody)) throw Object.assign(new Error('Core 响应签名校验失败'), { code: 'core_response_signature_invalid', status: 502 });
+    if (!response.ok) { const body = JSON.parse(responseBody.toString('utf8') || '{}'); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
   };
   const rotation = await createIdentityRotation({ identityPath, identity, request: core, onIdentity: (next) => { identity = next; } });
   app.post('/api/v1/identity/test', { bodyLimit: 4096 }, async (_request, reply) => {
