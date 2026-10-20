@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { buildAgentApp } from '../src/server.js';
+import { createIdentityRotation } from '../src/identity-rotation.js';
 import { buildCoreApp } from '../../cam-core/src/server.js';
 import { generateIdentity } from '../../../libs/cam-agent-auth/src/protocol.js';
 
@@ -83,6 +84,19 @@ test('Agent without a trusted Core public key cannot complete initial or re-enab
     assert.equal(core.coreStore.getAgentIdentity(agentRecord.agentId).status, 'PENDING');
     assert.equal(core.coreStore.getAgentIdentity(agentRecord.agentId).confirmedAt, null);
   } finally { await app.close(); await core.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Agent upgrades the previously cached Core Agent ID into its local echo state', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-id-migration-'));
+  const identityPath = join(dataDir, 'identity.json');
+  const agentId = 'AG-LEGACY-STABLE';
+  await writeFile(`${identityPath}.rotation`, JSON.stringify({ policy: { agentId }, attempts: 0, retryAt: null }));
+  try {
+    let echoedId;
+    const rotation = await createIdentityRotation({ identityPath, identity: generateIdentity(), request: async () => { throw new Error('not called'); }, onAgentId: (id) => { echoedId = id; } });
+    assert.equal(rotation.status().agentId, agentId);
+    assert.equal(echoedId, agentId);
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
 
 test('Core-triggered Agent rotation recovers the same pending key after a lost response and restart', async () => {

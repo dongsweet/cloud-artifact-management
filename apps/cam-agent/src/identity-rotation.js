@@ -32,6 +32,7 @@ export async function createIdentityRotation({ identityPath, identity: initial, 
   let pending = await readJson(pendingPath);
   if (pending !== undefined) pending = validateIdentity(pending);
   let state = await readJson(statePath) ?? { attempts: 0, retryAt: null, lastError: null, policy: null };
+  state.agentId ??= state.policy?.agentId;
   if (state.agentId) onAgentId?.(state.agentId);
   let inFlight;
   const call = async (path, options, signer) => (await (await request(path, options, signer)).json()).item;
