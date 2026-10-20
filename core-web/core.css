@@ -103,6 +103,10 @@
 .cam-artifact-metadata code, .cam-artifact-digest { overflow-wrap: anywhere; word-break: break-word; }
 .cam-artifact-product .table { font-size: .9rem; }
 .cam-artifact-product .table th { white-space: nowrap; }
+.cam-artifact-detail-metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem .75rem; }
+.cam-artifact-detail-field { display: flex; flex-direction: column; gap: .18rem; min-width: 0; padding: .65rem .75rem; border: 1px solid var(--bs-border-color-translucent); border-radius: .4rem; background: var(--bs-tertiary-bg); }
+.cam-artifact-detail-field > span { color: var(--bs-secondary-color); font-size: .78rem; }
+.cam-artifact-detail-field > code { overflow-wrap: anywhere; word-break: break-word; }
 @media (max-width: 576px) {
   .cam-detail-modal { width: calc(100vw - 1rem); max-height: 94vh; }
   .cam-detail-modal .card-body { padding: 1rem; }
@@ -112,6 +116,7 @@
   .cam-artifact-version > summary { flex-wrap: wrap; gap: .45rem .65rem; }
   .cam-artifact-version > summary .small { width: 100%; margin-left: 1.3rem; }
   .cam-artifact-metadata { grid-template-columns: 1fr; }
+  .cam-artifact-detail-metadata { grid-template-columns: 1fr; }
 }
 
 .cam-confirm-modal { width: min(480px, calc(100vw - 2rem)); max-width: none; padding: 0; border: 0; border-radius: .5rem; color: inherit; background: transparent; box-shadow: 0 1rem 3rem rgb(0 0 0 / 25%); }

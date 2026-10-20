@@ -81,23 +81,48 @@ function renderArtifactFile(file) {
   const download = file.downloadUrl ? `<a class="btn btn-outline-primary btn-sm" href="${escapeHtml(file.downloadUrl)}" download="${escapeHtml(file.fileName)}">下载</a>` : '<span class="small text-body-secondary">文件尚未入库</span>';
   return `<tr><td><div class="fw-semibold">${escapeHtml(file.packageKey)}</div><span class="badge text-bg-light border">${escapeHtml(source)}</span></td><td>${escapeHtml(file.fileName)}</td><td class="text-nowrap">${escapeHtml(formatBytes(file.sizeBytes))}</td><td><code class="cam-artifact-digest" title="${escapeHtml(file.sha256)}">${escapeHtml(file.sha256)}</code></td><td>${state}</td><td>${download}</td></tr>`;
 }
-function renderArtifacts(items) {
-  const products = new Map();
-  for (const item of items) {
-    const productName = item.productName || '历史产品';
-    if (!products.has(productName)) products.set(productName, []);
-    products.get(productName).push(item);
-  }
-  $('#artifact-rows').innerHTML = products.size ? [...products.entries()].map(([productName, releases]) => `<article class="card cam-artifact-product"><div class="card-header d-flex align-items-center justify-content-between"><h4 class="h6 mb-0"><i class="bi bi-box-seam me-2 text-primary"></i>${escapeHtml(productName)}</h4><span class="small text-body-secondary">${releases.length} 个正式版本</span></div><div class="card-body d-grid gap-3">${releases.map((item, index) => {
+let artifactItems = [];
+function renderArtifactRows() {
+  const product = $('#artifact-filter-product').value.trim().toLocaleLowerCase();
+  const version = $('#artifact-filter-version').value.trim().toLocaleLowerCase();
+  const storage = $('#artifact-filter-storage').value;
+  const filtered = artifactItems.filter((item) => {
+    const files = item.files ?? [];
+    const stored = files.filter((file) => file.stored).length;
+    return (!product || String(item.productName ?? '历史产品').toLocaleLowerCase().includes(product))
+      && (!version || String(item.displayVersion ?? item.version ?? '未知版本').toLocaleLowerCase().includes(version))
+      && (!storage || (storage === 'STORED' ? stored === files.length && files.length > 0 : stored < files.length));
+  });
+  $('#artifact-count').textContent = `共 ${filtered.length} 个版本`;
+  $('#artifact-rows').innerHTML = filtered.length ? filtered.map((item) => {
     const files = item.files ?? [];
     const stored = files.filter((file) => file.stored).length;
     const version = item.displayVersion ?? item.version ?? '未知版本';
-    return `<details class="cam-artifact-version" ${index === 0 ? 'open' : ''}><summary><span class="cam-artifact-version-name">${escapeHtml(version)}</span><span class="badge text-bg-${stored === files.length && files.length ? 'success' : 'warning'}">${stored} / ${files.length} 个文件已入库</span><span class="small text-body-secondary">接收于 ${escapeHtml(displayTime(item.receivedAt))}</span></summary><div class="cam-artifact-version-body"><div class="cam-artifact-metadata"><span><span class="text-body-secondary">发布标识</span><code>${escapeHtml(item.releaseId ?? '-')}</code></span><span><span class="text-body-secondary">云管审批</span><code>${escapeHtml(item.cloudApprovalId ?? '-')}</code></span><span><span class="text-body-secondary">传输任务</span><code>${escapeHtml(item.transferTaskId ?? '-')}</code></span><span><span class="text-body-secondary">清单 SHA-256</span><code title="${escapeHtml(item.manifestSha256)}">${escapeHtml(item.manifestSha256 ?? '-')}</code></span></div>${files.length ? `<div class="table-responsive"><table data-paginate class="table table-sm table-hover align-middle mb-0"><thead><tr><th>包标识 / 来源</th><th>文件名</th><th>大小</th><th>SHA-256</th><th>状态</th><th></th></tr></thead><tbody>${files.map(renderArtifactFile).join('')}</tbody></table></div>` : '<div class="alert alert-warning mb-0">该历史申请未提供正式文件清单。</div>'}<div class="d-flex justify-content-end mt-3"><button class="btn btn-outline-secondary btn-sm artifact-detail" data-id="${escapeHtml(item.requestId)}">查看审批记录</button></div></div></details>`;
-  }).join('')}</div></article>`).join('') : '<div class="text-center text-body-secondary py-5">暂无已接收的正式版本。审批通过并收到制品后，会按软件和版本展示在这里。</div>';
-  document.querySelectorAll('.artifact-detail').forEach((button) => { button.onclick = async () => { location.hash = 'requests'; showPage('requests'); await showDetail(button.dataset.id); }; });
-  refreshPaginatedTables($('#artifact-rows'));
+    const allStored = files.length > 0 && stored === files.length;
+    return `<tr><td><div class="fw-semibold">${escapeHtml(item.productName ?? '历史产品')}</div></td><td><span class="fw-semibold">${escapeHtml(version)}</span></td><td><span class="badge text-bg-${allStored ? 'success' : 'warning'}">${stored} / ${files.length} 个包已入库</span></td><td>${escapeHtml(displayTime(item.receivedAt))}</td><td class="text-end"><button class="btn btn-outline-primary btn-sm artifact-detail" data-id="${escapeHtml(item.requestId)}"><i class="bi bi-eye me-1"></i>包明细</button></td></tr>`;
+  }).join('') : '<tr><td colspan="5" class="text-center text-body-secondary py-4">没有符合筛选条件的正式版本</td></tr>';
+  $('#artifact-rows').querySelectorAll('.artifact-detail').forEach((button) => { button.onclick = () => showArtifactDetail(button.dataset.id); });
+  refreshPaginatedTables($('#page-artifacts'));
 }
-async function loadArtifacts() { try { renderArtifacts((await api('/api/v1/artifacts')).items); clearMessage(); } catch (error) { message(error.message, 'danger'); } }
+function showArtifactDetail(requestId) {
+  const item = artifactItems.find((entry) => entry.requestId === requestId);
+  if (!item) return;
+  const files = item.files ?? [];
+  const version = item.displayVersion ?? item.version ?? '未知版本';
+  const stored = files.filter((file) => file.stored).length;
+  $('#artifact-detail-title').textContent = `${item.productName ?? '历史产品'} · ${version}`;
+  $('#artifact-detail-status').innerHTML = `<span class="badge text-bg-${stored === files.length && files.length ? 'success' : 'warning'}">${stored} / ${files.length} 个包已入库</span>`;
+  $('#artifact-detail-metadata').innerHTML = [
+    ['接收时间', displayTime(item.receivedAt)], ['发布标识', item.releaseId ?? '-'],
+    ['云管审批', item.cloudApprovalId ?? '-'], ['传输任务', item.transferTaskId ?? '-'],
+    ['清单 SHA-256', item.manifestSha256 ?? '-']
+  ].map(([label, value]) => `<div class="cam-artifact-detail-field"><span>${escapeHtml(label)}</span><code>${escapeHtml(value)}</code></div>`).join('');
+  $('#artifact-file-rows').innerHTML = files.length ? files.map(renderArtifactFile).join('') : '<tr><td colspan="6" class="text-center text-body-secondary py-4">该版本未携带包清单</td></tr>';
+  $('#artifact-approval-link').dataset.id = item.requestId;
+  $('#artifact-detail').showModal();
+  refreshPaginatedTables($('#artifact-detail'));
+}
+async function loadArtifacts() { try { artifactItems = (await api('/api/v1/artifacts')).items ?? []; renderArtifactRows(); clearMessage(); } catch (error) { message(error.message, 'danger'); } }
 function renderAgents(items) {
   coreAgents = items ?? [];
   $('#agent-rows').innerHTML = coreAgents.length ? coreAgents.map((agent) => {
@@ -344,6 +369,13 @@ $('#password-cancel').addEventListener('click', () => { if (!forcedPasswordChang
 $('#logout').addEventListener('click', async () => { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); }); $('#refresh').addEventListener('click', load);
 $('#detail-close').addEventListener('click', () => $('#detail').close());
 $('#detail').addEventListener('click', (event) => { if (event.target === $('#detail')) $('#detail').close(); }); $('#artifacts-refresh').addEventListener('click', loadArtifacts);
+$('#artifact-filter-product').addEventListener('input', renderArtifactRows);
+$('#artifact-filter-version').addEventListener('input', renderArtifactRows);
+$('#artifact-filter-storage').addEventListener('change', renderArtifactRows);
+$('#artifact-filter-reset').addEventListener('click', () => { $('#artifact-filter-product').value = ''; $('#artifact-filter-version').value = ''; $('#artifact-filter-storage').value = ''; renderArtifactRows(); });
+$('#artifact-detail-close').addEventListener('click', () => $('#artifact-detail').close());
+$('#artifact-detail').addEventListener('click', (event) => { if (event.target === $('#artifact-detail')) $('#artifact-detail').close(); });
+$('#artifact-approval-link').addEventListener('click', async (event) => { const requestId = event.currentTarget.dataset.id; $('#artifact-detail').close(); location.hash = 'requests'; showPage('requests'); await showDetail(requestId); });
 $('#confirm-cancel').addEventListener('click', () => $('#confirm-dialog').close('cancel'));
 $('#confirm-submit').addEventListener('click', () => $('#confirm-dialog').close('confirm'));
 $('#confirm-dialog').addEventListener('click', (event) => { if (event.target === $('#confirm-dialog')) $('#confirm-dialog').close('cancel'); });
