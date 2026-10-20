@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -157,6 +157,31 @@ test('Core activates a staged identity after its deadline when an Agent stays of
       assert.equal(restartedCore.agentServiceIdentity.previousFingerprint, oldFingerprint);
     } finally { await restartedCore.close(); }
   } finally { if (core.server?.listening) await core.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Agent automatically rotates on the cycle configured by Core', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-agent-policy-cycle-'));
+  const coreDir = join(dataDir, 'core');
+  const agentDir = join(dataDir, 'agent');
+  const core = await buildCoreApp({ dataDir: coreDir, enableAuth: false });
+  const identity = generateIdentity();
+  await mkdir(agentDir);
+  await writeFile(join(agentDir, 'identity.json'), JSON.stringify(identity));
+  const registered = core.coreStore.registerAgent({ name: 'core-policy-agent', centerId: 'TEST', publicKey: identity.publicKeyPem });
+  const coreUrl = await core.listen({ host: '127.0.0.1', port: 0 });
+  try {
+    core.coreStore.confirmAgentIdentity({ agentId: registered.agentId, currentKey: true, signingKeyId: identity.fingerprint });
+    core.coreStore.setAgentRotationPolicy({ rotationDays: 1, graceHours: 24 });
+    core.coreStore.db.prepare('UPDATE core_agents SET key_rotated_at = ? WHERE agent_id = ?').run(new Date(Date.now() - 2 * 86400_000).toISOString(), registered.agentId);
+    const app = await buildAgentApp({ dataDir: agentDir, agentId: registered.agentId, coreUrl, corePublicKey: core.agentServiceIdentity.publicKeyPem, startWorker: false });
+    try {
+      await app.agentPoll();
+      assert.notEqual(core.coreStore.getAgentIdentity(registered.agentId).keyId, identity.fingerprint, 'Agent follows Core rotationDue and creates a new identity automatically');
+      const localState = JSON.parse(await readFile(join(agentDir, 'identity.json.rotation'), 'utf8'));
+      assert.equal(localState.policy.rotationDays, 1, 'Agent persists the cycle supplied by Core');
+      assert.equal(localState.policy.graceHours, 24, 'Agent persists the transition period supplied by Core');
+    } finally { await app.close(); }
+  } finally { await core.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
 test('Agent does not change Core endpoint or trust while a poll is in flight', async () => {
