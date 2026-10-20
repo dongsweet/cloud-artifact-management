@@ -9,7 +9,7 @@ import { registerCoreAuth, AuthStore } from './auth.js';
 import { GateConfigStore } from '../../../libs/cam-gate/src/config.js';
 import { GateKeyring } from '../../../libs/cam-gate/src/keyring.js';
 import { signResponse } from '../../../libs/cam-agent-auth/src/protocol.js';
-import { loadAgentServiceIdentity, rotateAgentServiceIdentity } from './agent-service-identity.js';
+import { activateStagedAgentServiceIdentity, loadAgentServiceIdentity, rotateAgentServiceIdentity, stageAgentServiceIdentityRotation } from './agent-service-identity.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/core' : join(process.cwd(), 'data', 'core'));
 
@@ -25,7 +25,7 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
   const app = await buildServer({
     service: 'cam-core',
     configure: async (server) => {
-      registerCoreRoutes(server, { store, cloud: cloudAdapter, gateConfig, keyring, agentServiceIdentity, rotateAgentServiceIdentity: async () => { const next = await rotateAgentServiceIdentity(agentServiceIdentityPath, agentServiceIdentity); Object.assign(agentServiceIdentity, next); return { publicKey: next.publicKeyPem, fingerprint: next.fingerprint, previousPublicKey: next.previousPublicKeyPem, previousFingerprint: next.previousFingerprint, previousKeyExpiresAt: next.previousKeyExpiresAt }; }, enableKeyRotation, cloudRetryDelayMs, cloudStatusPollMs, approvalResultRetryBaseMs, workerIntervalMs, fetchImpl });
+      registerCoreRoutes(server, { store, cloud: cloudAdapter, gateConfig, keyring, agentServiceIdentity, rotateAgentServiceIdentity: async () => { const next = await rotateAgentServiceIdentity(agentServiceIdentityPath, agentServiceIdentity); Object.assign(agentServiceIdentity, next); return { publicKey: next.publicKeyPem, fingerprint: next.fingerprint, previousPublicKey: next.previousPublicKeyPem, previousFingerprint: next.previousFingerprint, previousKeyExpiresAt: next.previousKeyExpiresAt }; }, stageAgentServiceIdentityRotation: async () => { const pendingIdentity = await stageAgentServiceIdentityRotation(agentServiceIdentityPath, agentServiceIdentity); const status = store.getCoreIdentityRotationStatus(pendingIdentity.rotationId); if (!status.total) { await activateStagedAgentServiceIdentity(agentServiceIdentityPath, agentServiceIdentity); return { pending: false, publicKey: agentServiceIdentity.publicKeyPem, fingerprint: agentServiceIdentity.fingerprint }; } return { pending: true, rotationId: pendingIdentity.rotationId, publicKey: pendingIdentity.publicKeyPem, fingerprint: pendingIdentity.fingerprint, ...status }; }, activateStagedAgentServiceIdentity: async () => activateStagedAgentServiceIdentity(agentServiceIdentityPath, agentServiceIdentity), enableKeyRotation, cloudRetryDelayMs, cloudStatusPollMs, approvalResultRetryBaseMs, workerIntervalMs, fetchImpl });
       server.addHook('onSend', async (request, reply, payload) => {
         if (!request.url.startsWith('/api/v1/agent/')) return payload;
         const nonce = request.headers['x-cam-agent-nonce'];
@@ -39,10 +39,19 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
           for await (const chunk of body) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
           body = Buffer.concat(chunks);
         }
+        const identity = request.agentPrincipal?.agentId && agentServiceIdentity.pendingIdentity && store.getAgentIdentity(request.agentPrincipal.agentId).coreIdentityRotationId === agentServiceIdentity.pendingIdentity.rotationId
+          ? agentServiceIdentity.pendingIdentity : agentServiceIdentity;
+        if (request.agentPrincipal?.agentId && agentServiceIdentity.pendingIdentity && store.getAgentIdentity(request.agentPrincipal.agentId).coreIdentityRotationId !== agentServiceIdentity.pendingIdentity.rotationId && request.url.split('?')[0] !== '/api/v1/agent/core-identity/confirm' && reply.getHeader('content-type')?.toString().includes('application/json')) {
+          try {
+            const envelope = JSON.parse(Buffer.isBuffer(body) ? body.toString('utf8') : String(body));
+            envelope.coreIdentityRotation = { rotationId: agentServiceIdentity.pendingIdentity.rotationId, previousFingerprint: agentServiceIdentity.pendingIdentity.previousFingerprint, publicKey: agentServiceIdentity.pendingIdentity.publicKeyPem, fingerprint: agentServiceIdentity.pendingIdentity.fingerprint, graceHours: store.getAgentRotationPolicy().graceHours };
+            body = JSON.stringify(envelope);
+          } catch { /* Leave non-JSON payloads untouched. */ }
+        }
         const timestamp = new Date().toISOString();
-        reply.header('x-cam-core-key-id', agentServiceIdentity.fingerprint);
+        reply.header('x-cam-core-key-id', identity.fingerprint);
         reply.header('x-cam-core-timestamp', timestamp);
-        reply.header('x-cam-core-signature', signResponse(agentServiceIdentity.privateKeyPem, reply.statusCode, request.method, request.url.split('?')[0], nonce, timestamp, body));
+        reply.header('x-cam-core-signature', signResponse(identity.privateKeyPem, reply.statusCode, request.method, request.url.split('?')[0], nonce, timestamp, body));
         return body;
       });
       if (enableAuth) registerCoreAuth(server, { auth });

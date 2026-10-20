@@ -147,6 +147,7 @@ export class CoreStore {
     }
     for (const [name, definition] of Object.entries({ public_key: 'TEXT', key_id: 'TEXT', previous_public_key: 'TEXT', previous_key_expires_at: 'TEXT', token_sha256: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
     for (const [name, definition] of Object.entries({ rotation_days: 'INTEGER NOT NULL DEFAULT 90', grace_hours: 'INTEGER NOT NULL DEFAULT 24', key_rotated_at: 'TEXT', key_confirmed_at: 'TEXT', rotation_requested_at: 'TEXT', rotation_error: 'TEXT', rotation_attempts: 'INTEGER NOT NULL DEFAULT 0', rotation_retry_at: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
+    for (const [name, definition] of Object.entries({ core_identity_rotation_id: 'TEXT', core_identity_confirmed_at: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
     db.exec('UPDATE core_agents SET key_rotated_at = created_at WHERE key_rotated_at IS NULL');
     db.exec(`
       CREATE TABLE IF NOT EXISTS core_agent_rotation_policy (
@@ -190,7 +191,7 @@ export class CoreStore {
     if (!row && keyId) {
       row = this.db.prepare("SELECT agent_id AS agentId, center_id AS centerId, name, public_key AS publicKey, key_id AS keyId, previous_public_key AS previousPublicKey, previous_key_expires_at AS previousKeyExpiresAt, status FROM core_agents WHERE previous_public_key IS NOT NULL AND previous_key_expires_at > ?").all(now()).find((candidate) => fingerprint(candidate.previousPublicKey) === keyId);
     }
-    const pendingIdentityRequest = allowPendingIdentity && row?.status === 'PENDING' && ((method === 'GET' && path === '/api/v1/agent/identity') || (method === 'POST' && path === '/api/v1/agent/identity/confirm'));
+    const pendingIdentityRequest = allowPendingIdentity && row?.status === 'PENDING' && ((method === 'GET' && path === '/api/v1/agent/identity') || (method === 'POST' && ['/api/v1/agent/identity/confirm', '/api/v1/agent/core-identity/confirm'].includes(path)));
     if (!row || (row.status !== 'ACTIVE' && !pendingIdentityRequest) || !Number.isFinite(Date.parse(timestamp)) || Math.abs(Date.now() - Date.parse(timestamp)) > 5 * 60_000) return null;
     const currentKey = verifyRequest(row.publicKey, signature, method, path, timestamp, nonce, body);
     const keyOk = currentKey || (row.previousPublicKey && row.previousKeyExpiresAt && Date.parse(row.previousKeyExpiresAt) > Date.now() && verifyRequest(row.previousPublicKey, signature, method, path, timestamp, nonce, body));
@@ -209,6 +210,16 @@ export class CoreStore {
     const row = this.db.prepare('SELECT rotation_days AS rotationDays, grace_hours AS graceHours FROM core_agent_rotation_policy WHERE singleton = 1').get();
     return { rotationDays: row.rotationDays, graceHours: row.graceHours };
   }
+  confirmCoreIdentity(agentId, { rotationId, fingerprint }) {
+    if (typeof rotationId !== 'string' || !rotationId || typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/u.test(fingerprint)) throw Object.assign(new Error('Core 身份轮换确认信息无效'), { code: 'core_identity_confirmation_invalid' });
+    const result = this.db.prepare("UPDATE core_agents SET core_identity_rotation_id = ?, core_identity_confirmed_at = ? WHERE agent_id = ? AND status IN ('ACTIVE', 'PENDING')").run(rotationId, now(), agentId);
+    if (!result.changes) throw Object.assign(new Error('Agent 不存在或未启用'), { code: 'agent_disabled' });
+    return this.getCoreIdentityRotationStatus(rotationId);
+  }
+  getCoreIdentityRotationStatus(rotationId) {
+    const totals = this.db.prepare("SELECT count(*) AS total, sum(CASE WHEN core_identity_rotation_id = ? THEN 1 ELSE 0 END) AS confirmed FROM core_agents WHERE status <> 'DISABLED'").get(rotationId);
+    return { total: totals.total, confirmed: totals.confirmed ?? 0, pending: totals.total - (totals.confirmed ?? 0) };
+  }
   getAgentIdentity(agentId) {
     const row = this.db.prepare('SELECT * FROM core_agents WHERE agent_id = ?').get(agentId);
     if (!row) throw Object.assign(new Error('Agent 不存在'), { code: 'agent_not_found' });
@@ -218,6 +229,7 @@ export class CoreStore {
     const rotationDue = Boolean(row.rotation_requested_at) || Date.parse(nextRotationAt) <= Date.now();
     return { agentId: row.agent_id, centerId: row.center_id, name: row.name, keyId: row.key_id, fingerprint: row.key_id, status: row.status, createdAt: row.created_at, lastSeenAt: row.last_seen_at,
       previousKeyExpiresAt: row.previous_key_expires_at, rotationDays: policy.rotationDays, graceHours: policy.graceHours, rotatedAt, confirmedAt: row.key_confirmed_at, nextRotationAt, rotationRequestedAt: row.rotation_requested_at, rotationDue,
+      coreIdentityRotationId: row.core_identity_rotation_id, coreIdentityConfirmedAt: row.core_identity_confirmed_at,
       rotationState: row.rotation_error ? 'RETRY_WAIT' : !row.key_confirmed_at ? 'AWAITING_CONFIRMATION' : rotationDue ? 'REQUESTED' : 'CURRENT', rotationError: row.rotation_error, rotationAttempts: row.rotation_attempts, rotationRetryAt: row.rotation_retry_at };
   }
   setAgentRotationPolicy({ rotationDays, graceHours }) {

@@ -86,6 +86,30 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     const key = trustedCoreKeys.find((item) => item.keyId === responseKeyId && (item.keyId === config.fingerprint || Date.parse(config.previousPublicKeyExpiresAt) > Date.now()));
     const validTimestamp = typeof responseTimestamp === 'string' && Number.isFinite(Date.parse(responseTimestamp)) && Math.abs(Date.now() - Date.parse(responseTimestamp)) <= 5 * 60_000;
     if (!key || !validTimestamp || !verifyResponse(key.publicKeyPem, responseSignature, response.status, method, path.split('?')[0], nonce, responseTimestamp, responseBody)) throw Object.assign(new Error('Core 响应签名校验失败'), { code: 'core_response_signature_invalid', status: 502 });
+    if (response.headers.get('content-type')?.includes('application/json')) {
+      let envelope;
+      try { envelope = JSON.parse(responseBody.toString('utf8') || '{}'); } catch { envelope = null; }
+      const proposal = envelope?.coreIdentityRotation;
+      if (proposal) {
+        const accepted = coreConnection.acceptIdentityRotation(proposal);
+        if (path.split('?')[0] !== '/api/v1/agent/core-identity/confirm') {
+          try {
+            const confirmation = JSON.stringify({ rotationId: proposal.rotationId, fingerprint: accepted.fingerprint });
+            await core('/api/v1/agent/core-identity/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: confirmation }, signer);
+            coreConnection.clearIdentityRotation(proposal.rotationId);
+          } catch (error) {
+            if (error.code !== 'agent_identity_pending') throw error;
+          }
+        }
+      } else {
+        const trustedRotationId = coreConnection.get().coreIdentityRotationId;
+        if (trustedRotationId && path.split('?')[0] !== '/api/v1/agent/core-identity/confirm') {
+          const confirmation = JSON.stringify({ rotationId: trustedRotationId, fingerprint: coreConnection.get().fingerprint });
+          try { await core('/api/v1/agent/core-identity/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: confirmation }, signer); coreConnection.clearIdentityRotation(trustedRotationId); }
+          catch (error) { if (error.code !== 'agent_identity_pending') throw error; }
+        }
+      }
+    }
     if (!response.ok) { const body = JSON.parse(responseBody.toString('utf8') || '{}'); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
   };
   const rotation = await createIdentityRotation({ identityPath, identity, request: core, onIdentity: (next) => { identity = next; }, onAgentId: (next) => { agentId = next; }, initialAgentId: legacyAgentId });

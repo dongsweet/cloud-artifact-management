@@ -24,6 +24,7 @@ export class CoreConnectionStore {
       corePublicKey: defaults.corePublicKey ? normalizeKey(defaults.corePublicKey, 'Core 当前公钥') : '',
       previousPublicKey: defaults.previousPublicKey ? normalizeKey(defaults.previousPublicKey, 'Core 过渡公钥') : '',
       previousPublicKeyExpiresAt: defaults.previousPublicKeyExpiresAt ?? '',
+      coreIdentityRotationId: null,
       lastTestAt: null, lastTestState: 'NOT_TESTED'
     };
   }
@@ -52,7 +53,7 @@ export class CoreConnectionStore {
     if (!previousPublicKey) previousPublicKeyExpiresAt = '';
     if (previousPublicKey && !previousPublicKeyExpiresAt) throw Object.assign(new Error('配置旧 Core 公钥时必须设置过期时间'), { code: 'core_previous_key_expiry_required' });
     if (previousPublicKeyExpiresAt && !Number.isFinite(Date.parse(previousPublicKeyExpiresAt))) throw Object.assign(new Error('Core 旧公钥过期时间无效'), { code: 'core_previous_key_expiry_invalid' });
-    const next = { coreUrl, corePublicKey, previousPublicKey, previousPublicKeyExpiresAt, lastTestAt: null, lastTestState: 'NOT_TESTED' };
+    const next = { coreUrl, corePublicKey, previousPublicKey, previousPublicKeyExpiresAt, coreIdentityRotationId: null, lastTestAt: null, lastTestState: 'NOT_TESTED' };
     const timestamp = new Date().toISOString();
     const upsert = this.db.prepare('INSERT INTO agent_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at');
     this.db.exec('BEGIN IMMEDIATE');
@@ -60,6 +61,37 @@ export class CoreConnectionStore {
       for (const [key, value] of Object.entries(next)) upsert.run(key, JSON.stringify(value), timestamp);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.get();
+  }
+  acceptIdentityRotation({ rotationId, previousFingerprint, publicKey, graceHours }) {
+    if (typeof rotationId !== 'string' || !rotationId || !Number.isInteger(graceHours) || graceHours < 1 || graceHours > 168) throw Object.assign(new Error('Core 身份轮换提案无效'), { code: 'core_identity_rotation_invalid' });
+    const before = this.get();
+    const nextKey = normalizeKey(publicKey, 'Core 新公钥');
+    const nextFingerprint = fingerprint(nextKey);
+    if (before.coreIdentityRotationId === rotationId && before.fingerprint === nextFingerprint) return before;
+    if (before.fingerprint !== previousFingerprint) throw Object.assign(new Error('Core 身份轮换提案的旧指纹与本机信任身份不匹配'), { code: 'core_identity_rotation_conflict' });
+    const next = {
+      coreUrl: before.coreUrl,
+      corePublicKey: nextKey,
+      previousPublicKey: before.corePublicKey,
+      previousPublicKeyExpiresAt: new Date(Date.now() + graceHours * 3600_000).toISOString(),
+      coreIdentityRotationId: rotationId,
+      lastTestAt: null,
+      lastTestState: 'NOT_TESTED'
+    };
+    const timestamp = new Date().toISOString();
+    const upsert = this.db.prepare('INSERT INTO agent_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const [key, value] of Object.entries(next)) upsert.run(key, JSON.stringify(value), timestamp);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.get();
+  }
+  clearIdentityRotation(rotationId) {
+    if (this.get().coreIdentityRotationId !== rotationId) return this.get();
+    const timestamp = new Date().toISOString();
+    this.db.prepare('INSERT INTO agent_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at').run('coreIdentityRotationId', JSON.stringify(null), timestamp);
     return this.get();
   }
   markTest(state) {

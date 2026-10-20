@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { buildAgentApp } from '../src/server.js';
 import { buildCoreApp } from '../../cam-core/src/server.js';
-import { rotateAgentServiceIdentity } from '../../cam-core/src/agent-service-identity.js';
+import { rotateAgentServiceIdentity, stageAgentServiceIdentityRotation } from '../../cam-core/src/agent-service-identity.js';
 import { generateIdentity } from '../../../libs/cam-agent-auth/src/protocol.js';
 
 async function login(app, create = true) {
@@ -92,6 +92,49 @@ test('Agent configures Core through authenticated APIs and preserves trust acros
     assert.equal(expired.statusCode, 502, expired.body);
     assert.equal(expired.json().error.code, 'core_response_signature_invalid');
   } finally { await app.close(); await core.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Core identity rotation is proposed under the old key and activated after each Agent confirms', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-agent-mutual-rotation-'));
+  const coreDir = join(dataDir, 'core');
+  const core = await buildCoreApp({ dataDir: coreDir, enableAuth: false });
+  const identity = generateIdentity();
+  const registered = core.coreStore.registerAgent({ name: 'rotation-agent', centerId: 'TEST', publicKey: identity.publicKeyPem });
+  const secondIdentity = generateIdentity();
+  const secondRegistered = core.coreStore.registerAgent({ name: 'offline-rotation-agent', centerId: 'TEST', publicKey: secondIdentity.publicKeyPem });
+  const pendingIdentity = generateIdentity();
+  const pendingRegistered = core.coreStore.registerAgent({ name: 'pending-rotation-agent', centerId: 'TEST', publicKey: pendingIdentity.publicKeyPem });
+  const coreUrl = await core.listen({ host: '127.0.0.1', port: 0 });
+  core.coreStore.confirmAgentIdentity({ agentId: registered.agentId, currentKey: true, signingKeyId: identity.fingerprint });
+  core.coreStore.confirmAgentIdentity({ agentId: secondRegistered.agentId, currentKey: true, signingKeyId: secondIdentity.fingerprint });
+  const agentDir = join(dataDir, 'agent');
+  const secondAgentDir = join(dataDir, 'second-agent');
+  const pendingAgentDir = join(dataDir, 'pending-agent');
+  await mkdir(agentDir);
+  await mkdir(secondAgentDir);
+  await mkdir(pendingAgentDir);
+  await writeFile(join(agentDir, 'identity.json'), JSON.stringify(identity));
+  await writeFile(join(secondAgentDir, 'identity.json'), JSON.stringify(secondIdentity));
+  await writeFile(join(pendingAgentDir, 'identity.json'), JSON.stringify(pendingIdentity));
+  const oldFingerprint = core.agentServiceIdentity.fingerprint;
+  const app = await buildAgentApp({ dataDir: agentDir, agentId: registered.agentId, coreUrl, corePublicKey: core.agentServiceIdentity.publicKeyPem, startWorker: false });
+  const secondApp = await buildAgentApp({ dataDir: secondAgentDir, agentId: secondRegistered.agentId, coreUrl, corePublicKey: core.agentServiceIdentity.publicKeyPem, startWorker: false });
+  const pendingApp = await buildAgentApp({ dataDir: pendingAgentDir, agentId: pendingRegistered.agentId, coreUrl, corePublicKey: core.agentServiceIdentity.publicKeyPem, startWorker: false });
+  try {
+    await stageAgentServiceIdentityRotation(join(coreDir, 'core-agent-identity.json'), core.agentServiceIdentity);
+    assert.equal(core.agentServiceIdentity.fingerprint, oldFingerprint, 'Core keeps signing with the old identity until all registered Agents confirm');
+    await app.agentPoll();
+    assert.equal(core.coreStore.getCoreIdentityRotationStatus(core.agentServiceIdentity.pendingIdentity.rotationId).pending, 2, 'the offline and not-yet-enabled Agents keep the Core rotation staged');
+    assert.equal(core.agentServiceIdentity.fingerprint, oldFingerprint, 'Core does not switch globally while one Agent is still offline');
+    await secondApp.agentPoll();
+    assert.equal(core.coreStore.getCoreIdentityRotationStatus(core.agentServiceIdentity.pendingIdentity.rotationId).pending, 1, 'the not-yet-enabled Agent can confirm the staged Core identity');
+    await pendingApp.agentPoll();
+    const settings = app.agentAuthStore.db.prepare('SELECT setting_value FROM agent_settings WHERE setting_key = ?').get('corePublicKey');
+    assert.equal(JSON.parse(settings.setting_value).trim(), (core.agentServiceIdentity.fingerprint === oldFingerprint ? core.agentServiceIdentity.pendingIdentity.publicKeyPem : core.agentServiceIdentity.publicKeyPem).trim());
+    assert.equal(core.coreStore.getCoreIdentityRotationStatus(core.agentServiceIdentity.rotationId).pending, 0);
+    assert.notEqual(core.agentServiceIdentity.fingerprint, oldFingerprint, 'Core activates the new identity after Agent confirmation');
+    assert.equal(core.agentServiceIdentity.pendingIdentity, null);
+  } finally { await app.close(); await secondApp.close(); await pendingApp.close(); await core.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
 test('Agent does not change Core endpoint or trust while a poll is in flight', async () => {

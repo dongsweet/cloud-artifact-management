@@ -35,7 +35,7 @@ async function rotateEdgeKey({ keyring, gateConfig, fetchImpl = fetch }) {
   return keyring.activateIdentityRotation(receipt);
 }
 
-export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, agentServiceIdentity, rotateAgentServiceIdentity, enableKeyRotation = false, cloudRetryDelayMs = 30_000, cloudStatusPollMs = 30_000, approvalResultRetryBaseMs = 5_000, workerIntervalMs = 5_000, fetchImpl = fetch }) {
+export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, agentServiceIdentity, rotateAgentServiceIdentity, stageAgentServiceIdentityRotation, activateStagedAgentServiceIdentity, enableKeyRotation = false, cloudRetryDelayMs = 30_000, cloudStatusPollMs = 30_000, approvalResultRetryBaseMs = 5_000, workerIntervalMs = 5_000, fetchImpl = fetch }) {
   let rotationInFlight;
   const rotateKey = () => {
     if (rotationInFlight) return rotationInFlight;
@@ -210,7 +210,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     if (!request.url.startsWith('/api/v1/agent/')) return;
     const principal = agentPrincipal(request);
     if (!principal) return error(reply, 401, 'agent_auth_required', 'Agent 身份凭证无效或已禁用');
-    if (principal.status === 'PENDING' && !((request.method === 'GET' && request.url.split('?')[0] === '/api/v1/agent/identity') || (request.method === 'POST' && request.url.split('?')[0] === '/api/v1/agent/identity/confirm'))) return error(reply, 403, 'agent_identity_pending', 'Agent 尚未通过重新启用后的身份验证');
+    if (principal.status === 'PENDING' && !((request.method === 'GET' && request.url.split('?')[0] === '/api/v1/agent/identity') || (request.method === 'POST' && ['/api/v1/agent/identity/confirm', '/api/v1/agent/core-identity/confirm'].includes(request.url.split('?')[0])))) return error(reply, 403, 'agent_identity_pending', 'Agent 尚未通过重新启用后的身份验证');
     request.agentPrincipal = principal;
   });
 
@@ -220,7 +220,8 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
   app.get('/api/v1/agent-service-identity', async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
-    return { publicKey: agentServiceIdentity?.publicKeyPem ?? null, fingerprint: agentServiceIdentity?.fingerprint ?? null, previousPublicKey: agentServiceIdentity?.previousPublicKeyPem ?? null, previousFingerprint: agentServiceIdentity?.previousFingerprint ?? null, previousKeyExpiresAt: agentServiceIdentity?.previousKeyExpiresAt ?? null, agentRotationPolicy: store.getAgentRotationPolicy() };
+    const pendingIdentity = agentServiceIdentity?.pendingIdentity;
+    return { publicKey: agentServiceIdentity?.publicKeyPem ?? null, fingerprint: agentServiceIdentity?.fingerprint ?? null, previousPublicKey: agentServiceIdentity?.previousPublicKeyPem ?? null, previousFingerprint: agentServiceIdentity?.previousFingerprint ?? null, previousKeyExpiresAt: agentServiceIdentity?.previousKeyExpiresAt ?? null, agentRotationPolicy: store.getAgentRotationPolicy(), pendingRotation: pendingIdentity ? { rotationId: pendingIdentity.rotationId, publicKey: pendingIdentity.publicKeyPem, fingerprint: pendingIdentity.fingerprint, ...store.getCoreIdentityRotationStatus(pendingIdentity.rotationId) } : null };
   });
   app.put('/api/v1/agent-rotation-policy', { bodyLimit: 4096 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
@@ -229,8 +230,8 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
   app.post('/api/v1/agent-service-identity/rotate', { bodyLimit: 4096 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
-    if (typeof rotateAgentServiceIdentity !== 'function') return error(reply, 503, 'service_identity_unavailable', 'Core 服务身份轮换不可用');
-    try { return reply.code(202).send(await rotateAgentServiceIdentity()); }
+    if (typeof stageAgentServiceIdentityRotation !== 'function') return error(reply, 503, 'service_identity_unavailable', 'Core 服务身份轮换不可用');
+    try { return reply.code(202).send(await stageAgentServiceIdentityRotation()); }
     catch (err) { return error(reply, 500, 'service_identity_rotation_failed', err.message); }
   });
   app.post('/api/v1/agents', { bodyLimit: 8192 }, async (request, reply) => {
@@ -262,6 +263,20 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   app.post('/api/v1/agent/identity/confirm', { bodyLimit: 4096 }, async (request, reply) => {
     try { return { item: store.confirmAgentIdentity(request.agentPrincipal) }; }
     catch (err) { return error(reply, 409, err.code ?? 'agent_confirmation_failed', err.message); }
+  });
+  app.post('/api/v1/agent/core-identity/confirm', { bodyLimit: 4096 }, async (request, reply) => {
+    const pending = agentServiceIdentity?.pendingIdentity;
+    const { rotationId, fingerprint } = request.body ?? {};
+    if (!pending) {
+      if (rotationId === agentServiceIdentity?.rotationId && fingerprint === agentServiceIdentity?.fingerprint) return { ok: true, item: { rotationId, fingerprint, confirmed: true } };
+      return error(reply, 409, 'core_identity_rotation_mismatch', 'Core 身份轮换提案已变化或不匹配');
+    }
+    if (rotationId !== pending.rotationId || fingerprint !== pending.fingerprint) return error(reply, 409, 'core_identity_rotation_mismatch', 'Core 身份轮换提案已变化或不匹配');
+    try {
+      const status = store.confirmCoreIdentity(request.agentPrincipal.agentId, { rotationId, fingerprint });
+      if (!status.pending && typeof activateStagedAgentServiceIdentity === 'function') await activateStagedAgentServiceIdentity();
+      return { ok: true, item: { rotationId, fingerprint, confirmed: true } };
+    } catch (err) { return error(reply, 409, err.code ?? 'core_identity_confirmation_failed', err.message); }
   });
   app.post('/api/v1/agent/identity/failure', { bodyLimit: 4096 }, async (request, reply) => {
     try { return { item: store.reportAgentRotationFailure(request.agentPrincipal.agentId, request.body ?? {}) }; }
