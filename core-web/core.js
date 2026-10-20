@@ -82,15 +82,31 @@ function renderArtifactFile(file) {
   return `<tr><td><div class="fw-semibold">${escapeHtml(file.packageKey)}</div><span class="badge text-bg-light border">${escapeHtml(source)}</span></td><td>${escapeHtml(file.fileName)}</td><td class="text-nowrap">${escapeHtml(formatBytes(file.sizeBytes))}</td><td><code class="cam-artifact-digest" title="${escapeHtml(file.sha256)}">${escapeHtml(file.sha256)}</code></td><td>${state}</td><td>${download}</td></tr>`;
 }
 let artifactItems = [];
+function setArtifactOptions(select, values, defaultLabel, selectedValue = '') {
+  select.innerHTML = `<option value="">${escapeHtml(defaultLabel)}</option>${values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}`;
+  select.value = values.includes(selectedValue) ? selectedValue : '';
+}
+function renderArtifactFilterOptions() {
+  const productSelect = $('#artifact-filter-product');
+  const versionSelect = $('#artifact-filter-version');
+  const selectedProduct = productSelect.value;
+  const selectedVersion = versionSelect.value;
+  const products = [...new Set(artifactItems.map((item) => item.productName || '历史产品'))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  setArtifactOptions(productSelect, products, '全部产品', selectedProduct);
+  const versions = [...new Set(artifactItems
+    .filter((item) => !productSelect.value || (item.productName || '历史产品') === productSelect.value)
+    .map((item) => item.displayVersion ?? item.version ?? '未知版本'))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  setArtifactOptions(versionSelect, versions, '全部版本', selectedVersion);
+}
 function renderArtifactRows() {
-  const product = $('#artifact-filter-product').value.trim().toLocaleLowerCase();
-  const version = $('#artifact-filter-version').value.trim().toLocaleLowerCase();
+  const product = $('#artifact-filter-product').value;
+  const version = $('#artifact-filter-version').value;
   const storage = $('#artifact-filter-storage').value;
   const filtered = artifactItems.filter((item) => {
     const files = item.files ?? [];
     const stored = files.filter((file) => file.stored).length;
-    return (!product || String(item.productName ?? '历史产品').toLocaleLowerCase().includes(product))
-      && (!version || String(item.displayVersion ?? item.version ?? '未知版本').toLocaleLowerCase().includes(version))
+    return (!product || (item.productName || '历史产品') === product)
+      && (!version || (item.displayVersion ?? item.version ?? '未知版本') === version)
       && (!storage || (storage === 'STORED' ? stored === files.length && files.length > 0 : stored < files.length));
   });
   $('#artifact-count').textContent = `共 ${filtered.length} 个版本`;
@@ -122,7 +138,7 @@ function showArtifactDetail(requestId) {
   $('#artifact-detail').showModal();
   refreshPaginatedTables($('#artifact-detail'));
 }
-async function loadArtifacts() { try { artifactItems = (await api('/api/v1/artifacts')).items ?? []; renderArtifactRows(); clearMessage(); } catch (error) { message(error.message, 'danger'); } }
+async function loadArtifacts() { try { artifactItems = (await api('/api/v1/artifacts')).items ?? []; renderArtifactFilterOptions(); renderArtifactRows(); clearMessage(); } catch (error) { message(error.message, 'danger'); } }
 function renderAgents(items) {
   coreAgents = items ?? [];
   $('#agent-rows').innerHTML = coreAgents.length ? coreAgents.map((agent) => {
@@ -369,10 +385,10 @@ $('#password-cancel').addEventListener('click', () => { if (!forcedPasswordChang
 $('#logout').addEventListener('click', async () => { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); }); $('#refresh').addEventListener('click', load);
 $('#detail-close').addEventListener('click', () => $('#detail').close());
 $('#detail').addEventListener('click', (event) => { if (event.target === $('#detail')) $('#detail').close(); }); $('#artifacts-refresh').addEventListener('click', loadArtifacts);
-$('#artifact-filter-product').addEventListener('input', renderArtifactRows);
-$('#artifact-filter-version').addEventListener('input', renderArtifactRows);
+$('#artifact-filter-product').addEventListener('change', () => { renderArtifactFilterOptions(); renderArtifactRows(); });
+$('#artifact-filter-version').addEventListener('change', renderArtifactRows);
 $('#artifact-filter-storage').addEventListener('change', renderArtifactRows);
-$('#artifact-filter-reset').addEventListener('click', () => { $('#artifact-filter-product').value = ''; $('#artifact-filter-version').value = ''; $('#artifact-filter-storage').value = ''; renderArtifactRows(); });
+$('#artifact-filter-reset').addEventListener('click', () => { $('#artifact-filter-product').value = ''; $('#artifact-filter-version').value = ''; $('#artifact-filter-storage').value = ''; renderArtifactFilterOptions(); renderArtifactRows(); });
 $('#artifact-detail-close').addEventListener('click', () => $('#artifact-detail').close());
 $('#artifact-detail').addEventListener('click', (event) => { if (event.target === $('#artifact-detail')) $('#artifact-detail').close(); });
 $('#artifact-approval-link').addEventListener('click', async (event) => { const requestId = event.currentTarget.dataset.id; $('#artifact-detail').close(); location.hash = 'requests'; showPage('requests'); await showDetail(requestId); });
