@@ -87,6 +87,32 @@ test('Agent public-key registration works with the legacy NOT NULL token column'
   } finally { db.close(); }
 });
 
+test('Core applies one persisted rotation policy to every Agent and its next rotation', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-rotation-policy-'));
+  const app = await buildCoreApp({ dataDir, enableAuth: false });
+  try {
+    const firstIdentity = generateIdentity();
+    const first = app.coreStore.registerAgent({ centerId: 'TEST', name: 'policy-agent-1', publicKey: firstIdentity.publicKeyPem });
+    app.coreStore.confirmAgentIdentity({ agentId: first.agentId, currentKey: true, signingKeyId: firstIdentity.fingerprint });
+    assert.deepEqual(app.coreStore.getAgentRotationPolicy(), { rotationDays: 90, graceHours: 24 });
+
+    assert.deepEqual(app.coreStore.setAgentRotationPolicy({ rotationDays: 30, graceHours: 12 }), { rotationDays: 30, graceHours: 12 });
+    assert.equal(app.coreStore.getAgentIdentity(first.agentId).rotationDays, 30);
+    assert.equal(app.coreStore.getAgentIdentity(first.agentId).graceHours, 12);
+    const nextIdentity = generateIdentity();
+    const rotated = app.coreStore.rotateAgentKey(first.agentId, nextIdentity.publicKeyPem);
+    const graceMs = Date.parse(rotated.previousKeyExpiresAt) - Date.now();
+    assert.ok(graceMs > 11.9 * 3600_000 && graceMs <= 12 * 3600_000);
+
+    const second = app.coreStore.registerAgent({ centerId: 'TEST', name: 'policy-agent-2', publicKey: generateIdentity().publicKeyPem });
+    assert.equal(app.coreStore.getAgentIdentity(second.agentId).rotationDays, 30);
+    assert.equal(app.coreStore.getAgentIdentity(second.agentId).graceHours, 12);
+    app.coreStore.setAgentRotationPolicy({ rotationDays: 7, graceHours: 6 });
+    assert.equal(Date.parse(app.coreStore.getAgentIdentity(first.agentId).nextRotationAt), Date.parse(rotated.rotatedAt) + 7 * 86400_000);
+    assert.equal(app.coreStore.getAgentIdentity(second.agentId).rotationDays, 7);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('disabling and re-enabling an Agent requires a fresh signed identity probe before business access', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-reenable-'));
   const app = await buildCoreApp({ dataDir, enableAuth: false });

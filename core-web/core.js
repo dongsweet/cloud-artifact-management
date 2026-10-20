@@ -109,9 +109,8 @@ function renderAgents(items) {
     return `<tr><td><div class="fw-semibold">${escapeHtml(agent.name)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(agent.agentId)}</div></td><td>${escapeHtml(agent.centerId)}</td><td><span class="badge text-bg-${statusColor}">${statusLabel}</span><div class="small text-${agent.rotationError ? 'danger' : 'body-secondary'} mt-1">${escapeHtml(keyState)}</div>${pending ? '<div class="small text-body-secondary">Agent 使用已配置的 Core 公钥完成签名校验后自动启用。</div>' : ''}${agent.rotationError ? `<div class="small text-danger">${escapeHtml(agent.rotationError)}</div><div class="small text-body-secondary">已尝试 ${agent.rotationAttempts} 次 · ${escapeHtml(displayTime(agent.rotationRetryAt))} 重试</div>` : ''}</td><td><code class="small d-inline-block text-break" style="max-width:12rem">${escapeHtml(agent.keyId ?? '-')}</code></td><td>${escapeHtml(agent.lastSeenAt ? displayTime(agent.lastSeenAt) : '尚未连接')}</td><td>${escapeHtml(displayTime(agent.nextRotationAt))}<div class="small text-body-secondary">每 ${escapeHtml(agent.rotationDays)} 天 · 过渡 ${escapeHtml(agent.graceHours)} 小时</div></td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-primary btn-sm agent-rotation-button" data-id="${escapeHtml(agent.agentId)}" ${active ? '' : 'disabled'}><i class="bi bi-arrow-repeat me-1"></i>身份轮换</button><button class="btn btn-outline-${active || pending ? 'warning' : 'success'} btn-sm agent-status-button" data-id="${escapeHtml(agent.agentId)}" data-status="${active || pending ? 'DISABLED' : 'ACTIVE'}">${active ? '禁用' : pending ? '取消启用' : '启用并验证'}</button></div></td></tr>`;
   }).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">暂无已注册 Agent</td></tr>';
   document.querySelectorAll('.agent-status-button').forEach((button) => { button.onclick = () => updateAgentStatus(button); });
-  document.querySelectorAll('.agent-rotation-button').forEach((button) => { button.onclick = () => openAgentRotation(button.dataset.id); });
+  document.querySelectorAll('.agent-rotation-button').forEach((button) => { button.onclick = () => requestAgentRotation(button.dataset.id, button); });
   refreshPaginatedTables($('#page-agents'));
-  if ($('#agent-rotation-dialog').open) renderAgentRotationSummary();
 }
 function agentRotationLabel(agent) {
   if (!agent.keyId) return '待身份配对';
@@ -120,22 +119,22 @@ function agentRotationLabel(agent) {
   if (agent.rotationState === 'REQUESTED') return '等待 Agent 执行轮换';
   return agent.previousKeyExpiresAt && Date.parse(agent.previousKeyExpiresAt) > Date.now() ? `配对成功 · 旧身份过渡至 ${displayTime(agent.previousKeyExpiresAt)}` : '配对成功 · 身份有效';
 }
-function renderAgentRotationSummary() {
-  const agent = coreAgents.find((item) => item.agentId === $('#agent-rotation-dialog').dataset.agentId);
-  if (!agent) return;
-  $('#agent-rotation-summary').textContent = `${agent.name} · ${agent.centerId}\n${agentRotationLabel(agent)}\n最近换钥：${displayTime(agent.rotatedAt)}\n签名确认：${agent.confirmedAt ? displayTime(agent.confirmedAt) : '尚未确认'}\n下次轮换：${displayTime(agent.nextRotationAt)}${agent.rotationRequestedAt ? `\n请求时间：${displayTime(agent.rotationRequestedAt)}` : ''}${agent.rotationError ? `\n最近错误：${agent.rotationError}\n已尝试 ${agent.rotationAttempts} 次，下次重试：${displayTime(agent.rotationRetryAt)}` : ''}`;
-  $('#agent-rotate-now').disabled = agent.status !== 'ACTIVE' || !agent.confirmedAt || Boolean(agent.rotationRequestedAt);
-}
-function openAgentRotation(agentId) {
+async function requestAgentRotation(agentId, button) {
   const agent = coreAgents.find((item) => item.agentId === agentId);
-  $('#agent-rotation-dialog').dataset.agentId = agentId;
-  $('#agent-rotation-days').value = agent.rotationDays;
-  $('#agent-grace-hours').value = agent.graceHours;
-  $('#agent-rotation-error').classList.add('d-none');
-  renderAgentRotationSummary();
-  $('#agent-rotation-dialog').showModal();
+  if (!agent || !await confirmDialog({
+    title: '轮换 Agent 身份',
+    text: `将为 ${agent.name} 排队身份轮换。Agent 主动连接 Core 后会生成并持久化新密钥；离线时继续使用现有身份，Core 保留请求，Agent 重连后执行，失败会自动重试。旧身份在新身份切换后保留 ${agent.graceHours} 小时过渡期。风险主要是 Agent 本地密钥数据丢失或损坏时需要重新配对；正常断网可恢复。确认发起吗？`,
+    confirmLabel: '发起轮换', confirmClass: 'btn-warning'
+  })) return;
+  if (button) button.disabled = true;
+  try {
+    await api(`/api/v1/agents/${encodeURIComponent(agentId)}/rotate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    message('身份轮换请求已排队，等待 Agent 主动连接');
+    await loadAgents();
+  } catch (error) { message(error.message, 'danger'); }
+  finally { if (button) button.disabled = false; }
 }
-async function loadAgentServiceIdentity() { try { const item = await api('/api/v1/agent-service-identity'); $('#agent-service-public-key').value = item.publicKey ?? ''; $('#agent-service-fingerprint').textContent = item.fingerprint ? `指纹：${item.fingerprint}` : ''; } catch (error) { message(error.message, 'danger'); } }
+async function loadAgentServiceIdentity() { try { const item = await api('/api/v1/agent-service-identity'); $('#agent-service-public-key').value = item.publicKey ?? ''; $('#agent-service-fingerprint').textContent = item.fingerprint ? `指纹：${item.fingerprint}` : ''; $('#agent-default-rotation-days').value = item.agentRotationPolicy?.rotationDays ?? 90; $('#agent-default-grace-hours').value = item.agentRotationPolicy?.graceHours ?? 24; } catch (error) { message(error.message, 'danger'); } }
 async function loadAgents() { try { renderAgents((await api('/api/v1/agents')).items); await loadAgentServiceIdentity(); } catch (error) { message(error.message, 'danger'); } }
 async function updateAgentStatus(button) {
   const nextStatus = button.dataset.status;
@@ -351,26 +350,16 @@ $('#confirm-dialog').addEventListener('click', (event) => { if (event.target ===
 $('#agents-refresh').addEventListener('click', loadAgents);
 $('#agent-service-copy').addEventListener('click', async () => { const value = $('#agent-service-public-key').value; if (!value) return; try { await navigator.clipboard.writeText(value); message('Core 服务公钥已复制'); } catch { $('#agent-service-public-key').select(); message('浏览器未授权自动复制，请按 Ctrl+C 复制'); } });
 $('#agent-service-rotate').addEventListener('click', async (event) => { if (!await confirmDialog({ title: '轮换 Core 服务密钥', text: '轮换后必须把新公钥配置到所有 Agent，并在过渡期内保留旧公钥。确认继续吗？', confirmLabel: '确认轮换', confirmClass: 'btn-warning' })) return; event.currentTarget.disabled = true; try { const result = await api('/api/v1/agent-service-identity/rotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); $('#agent-service-public-key').value = result.publicKey ?? ''; $('#agent-service-fingerprint').textContent = `新指纹：${result.fingerprint ?? '-'} · 旧公钥过渡至 ${displayTime(result.previousKeyExpiresAt)}`; message('Core 服务密钥已轮换，请立即更新所有 Agent 的 Core 公钥配置'); } catch (error) { message(error.message, 'danger'); } finally { event.currentTarget.disabled = false; } });
-$('#agent-rotation-close').addEventListener('click', () => $('#agent-rotation-dialog').close());
-$('#agent-rotation-dialog').addEventListener('click', (event) => { if (event.target === $('#agent-rotation-dialog')) $('#agent-rotation-dialog').close(); });
-async function changeAgentRotation(action, body) {
-  const agentId = $('#agent-rotation-dialog').dataset.agentId;
-  $('#agent-rotation-error').classList.add('d-none');
+$('#agent-rotation-policy-save').addEventListener('click', async (event) => {
+  const button = event.currentTarget; button.disabled = true;
   try {
-    await api(`/api/v1/agents/${encodeURIComponent(agentId)}/${action}`, { method: action === 'rotate' ? 'POST' : 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    message(action === 'rotate' ? '轮换请求已保存，等待 Agent 主动连接并确认新身份' : 'Agent 自动轮换策略已保存');
+    const result = await api('/api/v1/agent-rotation-policy', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rotationDays: Number($('#agent-default-rotation-days').value), graceHours: Number($('#agent-default-grace-hours').value) }) });
+    $('#agent-default-rotation-days').value = result.item.rotationDays;
+    $('#agent-default-grace-hours').value = result.item.graceHours;
+    message('Agent 统一身份轮换策略已保存');
     await loadAgents();
-  } catch (error) { $('#agent-rotation-error').textContent = error.message; $('#agent-rotation-error').classList.remove('d-none'); }
-}
-$('#agent-rotation-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const button = event.submitter; button.disabled = true;
-  try { await changeAgentRotation('rotation-policy', { rotationDays: Number($('#agent-rotation-days').value), graceHours: Number($('#agent-grace-hours').value) }); }
+  } catch (error) { message(error.message, 'danger'); }
   finally { button.disabled = false; }
-});
-$('#agent-rotate-now').addEventListener('click', async (event) => {
-  event.currentTarget.disabled = true;
-  try { await changeAgentRotation('rotate', {}); } finally { renderAgentRotationSummary(); }
 });
 document.querySelectorAll('[data-page]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); location.hash = link.dataset.page; showPage(link.dataset.page); }));
 window.addEventListener('hashchange', () => { if (!$('#app').classList.contains('d-none')) showPage(pageFromHash()); });

@@ -5,7 +5,7 @@ import test from 'node:test';
 test('Core Agent registration and service identity share one responsive card', async () => {
   const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
   const start = html.indexOf('<section id="page-agents"');
-  const end = html.indexOf('<dialog id="agent-rotation-dialog"', start);
+  const end = html.indexOf('<section id="page-users"', start);
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
   const section = html.slice(start, end);
@@ -20,4 +20,6 @@ test('Core Agent registration and service identity share one responsive card', a
   assert.ok(section.indexOf('id="agent-default-rotation-days"') < section.indexOf('id="agent-service-public-key"'), 'Agent rotation defaults sit in the row above the Core key, aligned with Agent connection fields');
   assert.match(section, /粘贴 Agent 身份公钥并登记/u);
   assert.match(section, /所有 Agent 信任同一份 Core 公钥/u);
+  assert.match(section, /agent-rotation-policy-save/u, 'one global policy editor is shown with the Core service identity');
+  assert.doesNotMatch(html, /agent-rotation-dialog|agent-rotation-days|agent-grace-hours/u, 'manual rotation no longer opens the broken per-Agent settings form');
 });

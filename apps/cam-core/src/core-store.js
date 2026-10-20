@@ -148,6 +148,15 @@ export class CoreStore {
     for (const [name, definition] of Object.entries({ public_key: 'TEXT', key_id: 'TEXT', previous_public_key: 'TEXT', previous_key_expires_at: 'TEXT', token_sha256: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
     for (const [name, definition] of Object.entries({ rotation_days: 'INTEGER NOT NULL DEFAULT 90', grace_hours: 'INTEGER NOT NULL DEFAULT 24', key_rotated_at: 'TEXT', key_confirmed_at: 'TEXT', rotation_requested_at: 'TEXT', rotation_error: 'TEXT', rotation_attempts: 'INTEGER NOT NULL DEFAULT 0', rotation_retry_at: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
     db.exec('UPDATE core_agents SET key_rotated_at = created_at WHERE key_rotated_at IS NULL');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS core_agent_rotation_policy (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        rotation_days INTEGER NOT NULL DEFAULT 90,
+        grace_hours INTEGER NOT NULL DEFAULT 24
+      );
+      INSERT OR IGNORE INTO core_agent_rotation_policy (singleton, rotation_days, grace_hours)
+      VALUES (1, COALESCE((SELECT rotation_days FROM core_agents ORDER BY created_at LIMIT 1), 90), COALESCE((SELECT grace_hours FROM core_agents ORDER BY created_at LIMIT 1), 24));
+    `);
     db.exec('CREATE TABLE IF NOT EXISTS core_agent_nonces (agent_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (agent_id, nonce))');
     const distributionColumns = new Set(db.prepare('PRAGMA table_info(core_distribution_tasks)').all().map((column) => column.name));
     if (!distributionColumns.has('attempts')) db.exec('ALTER TABLE core_distribution_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
@@ -196,21 +205,26 @@ export class CoreStore {
   listAgents() {
     return this.db.prepare('SELECT agent_id FROM core_agents ORDER BY created_at DESC').all().map((row) => this.getAgentIdentity(row.agent_id));
   }
+  getAgentRotationPolicy() {
+    const row = this.db.prepare('SELECT rotation_days AS rotationDays, grace_hours AS graceHours FROM core_agent_rotation_policy WHERE singleton = 1').get();
+    return { rotationDays: row.rotationDays, graceHours: row.graceHours };
+  }
   getAgentIdentity(agentId) {
     const row = this.db.prepare('SELECT * FROM core_agents WHERE agent_id = ?').get(agentId);
     if (!row) throw Object.assign(new Error('Agent 不存在'), { code: 'agent_not_found' });
     const rotatedAt = row.key_rotated_at ?? row.created_at;
-    const nextRotationAt = new Date(Date.parse(rotatedAt) + row.rotation_days * 86400_000).toISOString();
+    const policy = this.getAgentRotationPolicy();
+    const nextRotationAt = new Date(Date.parse(rotatedAt) + policy.rotationDays * 86400_000).toISOString();
     const rotationDue = Boolean(row.rotation_requested_at) || Date.parse(nextRotationAt) <= Date.now();
     return { agentId: row.agent_id, centerId: row.center_id, name: row.name, keyId: row.key_id, fingerprint: row.key_id, status: row.status, createdAt: row.created_at, lastSeenAt: row.last_seen_at,
-      previousKeyExpiresAt: row.previous_key_expires_at, rotationDays: row.rotation_days, graceHours: row.grace_hours, rotatedAt, confirmedAt: row.key_confirmed_at, nextRotationAt, rotationRequestedAt: row.rotation_requested_at, rotationDue,
+      previousKeyExpiresAt: row.previous_key_expires_at, rotationDays: policy.rotationDays, graceHours: policy.graceHours, rotatedAt, confirmedAt: row.key_confirmed_at, nextRotationAt, rotationRequestedAt: row.rotation_requested_at, rotationDue,
       rotationState: row.rotation_error ? 'RETRY_WAIT' : !row.key_confirmed_at ? 'AWAITING_CONFIRMATION' : rotationDue ? 'REQUESTED' : 'CURRENT', rotationError: row.rotation_error, rotationAttempts: row.rotation_attempts, rotationRetryAt: row.rotation_retry_at };
   }
-  setAgentRotationPolicy(agentId, { rotationDays, graceHours }) {
+  setAgentRotationPolicy({ rotationDays, graceHours }) {
     if (!Number.isInteger(rotationDays) || rotationDays < 1 || rotationDays > 365 || !Number.isInteger(graceHours) || graceHours < 1 || graceHours > 168) throw Object.assign(new Error('轮换周期应为 1–365 天，过渡期应为 1–168 小时'), { code: 'agent_policy_invalid' });
-    this.getAgentIdentity(agentId);
-    this.db.prepare('UPDATE core_agents SET rotation_days = ?, grace_hours = ? WHERE agent_id = ?').run(rotationDays, graceHours, agentId);
-    return this.getAgentIdentity(agentId);
+    this.db.prepare('UPDATE core_agent_rotation_policy SET rotation_days = ?, grace_hours = ? WHERE singleton = 1').run(rotationDays, graceHours);
+    this.db.prepare('UPDATE core_agents SET rotation_days = ?, grace_hours = ?').run(rotationDays, graceHours);
+    return this.getAgentRotationPolicy();
   }
   requestAgentRotation(agentId) {
     const agent = this.getAgentIdentity(agentId);
@@ -238,7 +252,7 @@ export class CoreStore {
     // overwrite the previous key. Grace keys may only retry that exact change.
     if (keyId === agent.keyId) return agent;
     if (signingKeyId !== undefined && (signingKeyId !== agent.keyId || expectedKeyId !== agent.keyId)) throw Object.assign(new Error('当前身份已变化，拒绝使用旧身份再次换钥'), { code: 'agent_rotation_conflict' });
-    previousKeyExpiresAt ??= new Date(Date.now() + agent.graceHours * 3600_000).toISOString();
+    previousKeyExpiresAt ??= new Date(Date.now() + this.getAgentRotationPolicy().graceHours * 3600_000).toISOString();
     const timestamp = now();
     const result = this.db.prepare("UPDATE core_agents SET previous_public_key = public_key, previous_key_expires_at = ?, public_key = ?, key_id = ?, last_seen_at = ?, key_rotated_at = ?, key_confirmed_at = NULL, rotation_requested_at = NULL, rotation_error = NULL, rotation_attempts = 0, rotation_retry_at = NULL WHERE agent_id = ? AND status = 'ACTIVE'").run(previousKeyExpiresAt, publicKey, keyId, timestamp, timestamp, agentId);
     if (!result.changes) throw Object.assign(new Error('active agent not found'), { code: 'agent_not_found' });

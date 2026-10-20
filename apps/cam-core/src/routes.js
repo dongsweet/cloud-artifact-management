@@ -220,7 +220,12 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
   app.get('/api/v1/agent-service-identity', async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
-    return { publicKey: agentServiceIdentity?.publicKeyPem ?? null, fingerprint: agentServiceIdentity?.fingerprint ?? null, previousPublicKey: agentServiceIdentity?.previousPublicKeyPem ?? null, previousFingerprint: agentServiceIdentity?.previousFingerprint ?? null, previousKeyExpiresAt: agentServiceIdentity?.previousKeyExpiresAt ?? null };
+    return { publicKey: agentServiceIdentity?.publicKeyPem ?? null, fingerprint: agentServiceIdentity?.fingerprint ?? null, previousPublicKey: agentServiceIdentity?.previousPublicKeyPem ?? null, previousFingerprint: agentServiceIdentity?.previousFingerprint ?? null, previousKeyExpiresAt: agentServiceIdentity?.previousKeyExpiresAt ?? null, agentRotationPolicy: store.getAgentRotationPolicy() };
+  });
+  app.put('/api/v1/agent-rotation-policy', { bodyLimit: 4096 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    try { return { item: store.setAgentRotationPolicy(request.body ?? {}) }; }
+    catch (err) { return error(reply, 400, err.code ?? 'agent_policy_invalid', err.message); }
   });
   app.post('/api/v1/agent-service-identity/rotate', { bodyLimit: 4096 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
@@ -237,11 +242,6 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
     try { return reply.code(202).send({ item: store.requestAgentRotation(request.params.agentId) }); }
     catch (err) { return error(reply, 400, err.code ?? 'agent_rotation_failed', err.message); }
-  });
-  app.put('/api/v1/agents/:agentId/rotation-policy', { bodyLimit: 4096 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
-    try { return { item: store.setAgentRotationPolicy(request.params.agentId, request.body ?? {}) }; }
-    catch (err) { return error(reply, 400, err.code ?? 'agent_policy_invalid', err.message); }
   });
   app.patch('/api/v1/agents/:agentId', { bodyLimit: 4096 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
