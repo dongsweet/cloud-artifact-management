@@ -16,7 +16,7 @@ test('Core Agent registration and service identity share one responsive card', a
   assert.match(section, /col-xl-6/u);
   assert.match(section, /agent-service-public-key" class="form-control font-monospace cam-gate-bundle" rows="7" readonly/u);
   assert.ok(section.indexOf('id="agent-service-copy"') < section.indexOf('id="agent-service-public-key"'), 'copy action stays with its key block');
-  assert.match(section, /card-header d-flex align-items-center justify-content-between"><h3 class="card-title">已注册 Agent<\/h3><button id="agent-service-rotate"/u, 'Core identity rotation action sits in the registered-Agent list header');
+  assert.match(section, /card-header cam-action-header"><h3 class="card-title">已注册 Agent<\/h3><button id="agent-service-rotate"/u, 'Core identity rotation action uses the aligned registered-Agent list header');
   assert.match(section, /button class="btn btn-primary btn-sm" type="submit" form="agent-form"/u, 'registration action stays in the section header');
   assert.ok(section.indexOf('id="agent-default-rotation-days"') < section.indexOf('id="agent-service-public-key"'), 'Agent rotation defaults sit in the row above the Core key, aligned with Agent connection fields');
   assert.match(section, /粘贴 Agent 身份公钥并登记/u);
