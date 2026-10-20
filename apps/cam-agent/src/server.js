@@ -67,6 +67,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   });
   app.get('/assets/layout.css', async (_request, reply) => reply.type('text/css; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'layout.css'))));
   app.get('/assets/table-pagination.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'table-pagination.js'))));
+  app.get('/assets/artifact-catalog.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'artifact-catalog.js'))));
   app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(agentPage()));
   const core = async (path, options = {}, signer = identity) => {
     const config = coreConnection.get();
@@ -179,7 +180,23 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   const poll = async () => { if (running || configuring || testing) return; running = true; try { await rotation.sync(); const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST', body: '' })).json()).items ?? []; for (const task of tasks) if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
   app.get('/api/v1/identity', async () => ({ agentId: rotation.status().agentId ?? null, publicKey: identity.publicKeyPem, fingerprint: identity.fingerprint, registered: Boolean(rotation.status().agentId), rotation: rotation.status() }));
   app.post('/api/v1/tasks/pull', async (_request, reply) => { if (running) return reply.code(202).send({ queued: false, running: true }); queueMicrotask(() => { void poll(); }); return reply.code(202).send({ queued: true }); });
-  app.get('/api/v1/available-artifacts', async (_request, reply) => { try { const response = await core('/api/v1/agent/available-artifacts'); return reply.send(await response.json()); } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'artifact_list_failed', err.message); } });
+  app.get('/api/v1/available-artifacts', async (_request, reply) => {
+    try {
+      const response = await core('/api/v1/agent/available-artifacts'); const catalog = await response.json();
+      const items = await Promise.all((catalog.items ?? []).map(async (item) => {
+        const files = await Promise.all((item.files ?? []).map(async (file) => {
+          try { const info = await stat(join(dataDir, 'cache', file.sha256)); return { ...file, cached: info.size === file.sizeBytes }; }
+          catch { return { ...file, cached: false }; }
+        }));
+        const task = db.prepare('SELECT status, last_error, updated_at FROM agent_tasks WHERE artifact_id = ? ORDER BY updated_at DESC LIMIT 1').get(item.artifactId);
+        const allCached = files.length > 0 && files.every((file) => file.cached);
+        const agentStatus = allCached ? 'CACHED' : task?.last_error ? 'FAILED' : task?.status === 'RUNNING' ? 'RUNNING' : task ? 'QUEUED' : 'NOT_CACHED';
+        const agentStatusLabel = { CACHED: '已缓存', FAILED: '传输失败', RUNNING: '传输中', QUEUED: '排队中', NOT_CACHED: '未拉取' }[agentStatus];
+        return { ...item, files, agentStatus, agentStatusLabel, agentStatusDetail: task?.last_error ?? null };
+      }));
+      return reply.send({ items });
+    } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'artifact_list_failed', err.message); }
+  });
   app.post('/api/v1/tasks/request', { bodyLimit: 8192 }, async (request, reply) => { try { const response = await core('/api/v1/agent/distribution-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifactId: request.body?.artifactId }) }); const result = await response.json(); queueMicrotask(() => { void poll(); }); return reply.code(201).send(result); } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'distribution_request_failed', err.message); } });
   app.get('/api/v1/tasks', async () => ({ items: db.prepare('SELECT * FROM agent_tasks ORDER BY updated_at DESC').all().map((row) => ({ taskId: row.task_id, artifactId: row.artifact_id, status: row.status, progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, lastError: row.last_error, updatedAt: row.updated_at })) }));
   app.get('/api/v1/cache/:artifactId', async (request, reply) => { if (typeof request.params.artifactId !== 'string' || !/^[A-Za-z0-9._-]{1,255}$/.test(request.params.artifactId)) return reply.code(400).send({ ready: false }); const path = join(dataDir, 'cache', request.params.artifactId); try { const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch { return reply.code(404).send({ ready: false }); } });

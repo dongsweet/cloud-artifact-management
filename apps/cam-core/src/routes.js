@@ -291,7 +291,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     try { return reply.code(201).send({ item: store.createDistributionTask(request.body ?? {}) }); }
     catch (err) { return error(reply, err.code === 'artifact_not_found' ? 404 : 409, err.code ?? 'distribution_task_invalid', err.message); }
   });
-  app.get('/api/v1/agent/available-artifacts', async (_request, reply) => reply.send({ items: store.listArtifacts().map(({ artifactId, productName, displayVersion, version, revision, files, receivedAt }) => ({ artifactId, productName, displayVersion, version, revision, packageCount: files.length, receivedAt })) }));
+  app.get('/api/v1/agent/available-artifacts', async (_request, reply) => reply.send({ items: store.listArtifacts().map(({ artifactId, productName, displayVersion, version, revision, releaseId, manifestSha256, cloudApprovalId, transferTaskId, files, receivedAt }) => ({ artifactId, productName, displayVersion, version, revision, releaseId, manifestSha256, cloudApprovalId, transferTaskId, files: files.map(({ packageKey, fileName, sizeBytes, sha256, source, stored }) => ({ packageKey, fileName, sizeBytes, sha256, source, stored })), receivedAt })) }));
   app.post('/api/v1/agent/distribution-tasks', { bodyLimit: 8192 }, async (request, reply) => {
     try { return reply.code(201).send({ item: store.createDistributionTask({ agentId: request.agentPrincipal.agentId, artifactId: request.body?.artifactId }) }); }
     catch (err) { return error(reply, err.code === 'artifact_not_found' ? 404 : 409, err.code ?? 'distribution_task_invalid', err.message); }

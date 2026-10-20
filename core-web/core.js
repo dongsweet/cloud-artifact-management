@@ -1,5 +1,6 @@
 import { renderGatePairing } from './gate-pairing.js?v=20261020-peer-save-feedback';
 import { refreshPaginatedTables } from './table-pagination.js?v=20261020-table-pagination';
+import { mountArtifactCatalog } from './artifact-catalog.js?v=20261020-shared-artifact-catalog';
 let csrf = null;
 document.querySelector('#gate-pairing-mount').innerHTML = renderGatePairing('core');
 let forcedPasswordChange = false;
@@ -67,80 +68,27 @@ function render(items) {
 }
 async function load({ quiet = false } = {}) { try { render((await api('/api/v1/approval-requests')).items); if (!quiet) clearMessage(); if ($('#detail').open && $('#detail').dataset.requestId) await showDetail($('#detail').dataset.requestId); } catch (error) { if (!quiet) message(error.message, 'danger'); } }
 function startRequestPolling() { if (requestPollTimer) return; requestPollTimer = setInterval(() => { if (!$('#app').classList.contains('d-none') && !$('#page-requests').classList.contains('d-none') && !document.hidden) void load({ quiet: true }); }, 5000); }
-function formatBytes(value) {
-  const bytes = Number(value);
-  if (!Number.isFinite(bytes) || bytes < 0) return '-';
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let size = bytes;
-  let unit = -1;
-  do { size /= 1024; unit++; } while (size >= 1024 && unit < units.length - 1);
-  return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unit]}`;
-}
-function renderArtifactFile(file) {
-  const source = file.source === 'INHERITED' ? '复用已有文件' : '本版本文件';
-  const state = file.stored ? '<span class="badge text-bg-success">已入库</span>' : '<span class="badge text-bg-warning">待入库</span>';
-  const download = file.downloadUrl ? `<a class="btn btn-outline-primary btn-sm" href="${escapeHtml(file.downloadUrl)}" download="${escapeHtml(file.fileName)}">下载</a>` : '<span class="small text-body-secondary">文件尚未入库</span>';
-  return `<tr><td><div class="fw-semibold">${escapeHtml(file.packageKey)}</div><span class="badge text-bg-light border">${escapeHtml(source)}</span></td><td>${escapeHtml(file.fileName)}</td><td class="text-nowrap">${escapeHtml(formatBytes(file.sizeBytes))}</td><td><code class="cam-artifact-digest" title="${escapeHtml(file.sha256)}">${escapeHtml(file.sha256)}</code></td><td>${state}</td><td>${download}</td></tr>`;
-}
 let artifactItems = [];
-function setArtifactOptions(select, values, defaultLabel, selectedValue = '') {
-  select.innerHTML = `<option value="">${escapeHtml(defaultLabel)}</option>${values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}`;
-  select.value = values.includes(selectedValue) ? selectedValue : '';
-}
-function renderArtifactFilterOptions() {
-  const productSelect = $('#artifact-filter-product');
-  const versionSelect = $('#artifact-filter-version');
-  const selectedProduct = productSelect.value;
-  const selectedVersion = versionSelect.value;
-  const products = [...new Set(artifactItems.map((item) => item.productName || '历史产品'))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
-  setArtifactOptions(productSelect, products, '全部产品', selectedProduct);
-  const versions = [...new Set(artifactItems
-    .filter((item) => !productSelect.value || (item.productName || '历史产品') === productSelect.value)
-    .map((item) => item.displayVersion ?? item.version ?? '未知版本'))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
-  setArtifactOptions(versionSelect, versions, '全部版本', selectedVersion);
-}
-function renderArtifactRows() {
-  const product = $('#artifact-filter-product').value;
-  const version = $('#artifact-filter-version').value;
-  const storage = $('#artifact-filter-storage').value;
-  const filtered = artifactItems.filter((item) => {
-    const files = item.files ?? [];
-    const stored = files.filter((file) => file.stored).length;
-    return (!product || (item.productName || '历史产品') === product)
-      && (!version || (item.displayVersion ?? item.version ?? '未知版本') === version)
-      && (!storage || (storage === 'STORED' ? stored === files.length && files.length > 0 : stored < files.length));
-  });
-  $('#artifact-count').textContent = `共 ${filtered.length} 个版本`;
-  $('#artifact-rows').innerHTML = filtered.length ? filtered.map((item) => {
-    const files = item.files ?? [];
-    const stored = files.filter((file) => file.stored).length;
-    const version = item.displayVersion ?? item.version ?? '未知版本';
-    const allStored = files.length > 0 && stored === files.length;
-    return `<tr><td><div class="fw-semibold">${escapeHtml(item.productName ?? '历史产品')}</div></td><td><span class="fw-semibold">${escapeHtml(version)}</span></td><td><span class="badge text-bg-${allStored ? 'success' : 'warning'}">${stored} / ${files.length} 个包已入库</span></td><td>${escapeHtml(displayTime(item.receivedAt))}</td><td class="text-end"><button class="btn btn-outline-primary btn-sm artifact-detail" data-id="${escapeHtml(item.requestId)}"><i class="bi bi-eye me-1"></i>包明细</button></td></tr>`;
-  }).join('') : '<tr><td colspan="5" class="text-center text-body-secondary py-4">没有符合筛选条件的正式版本</td></tr>';
-  $('#artifact-rows').querySelectorAll('.artifact-detail').forEach((button) => { button.onclick = () => showArtifactDetail(button.dataset.id); });
-  refreshPaginatedTables($('#page-artifacts'));
-}
-function showArtifactDetail(requestId) {
-  const item = artifactItems.find((entry) => entry.requestId === requestId);
-  if (!item) return;
+let artifactCatalog = null;
+function coreArtifactStatus(item) {
   const files = item.files ?? [];
-  const version = item.displayVersion ?? item.version ?? '未知版本';
   const stored = files.filter((file) => file.stored).length;
-  $('#artifact-detail-title').textContent = `${item.productName ?? '历史产品'} · ${version}`;
-  $('#artifact-detail-status').innerHTML = `<span class="badge text-bg-${stored === files.length && files.length ? 'success' : 'warning'}">${stored} / ${files.length} 个包已入库</span>`;
-  $('#artifact-detail-metadata').innerHTML = [
-    ['接收时间', displayTime(item.receivedAt)], ['发布标识', item.releaseId ?? '-'],
-    ['云管审批', item.cloudApprovalId ?? '-'], ['传输任务', item.transferTaskId ?? '-'],
-    ['清单 SHA-256', item.manifestSha256 ?? '-']
-  ].map(([label, value]) => `<div class="cam-artifact-detail-field"><span>${escapeHtml(label)}</span><code>${escapeHtml(value)}</code></div>`).join('');
-  $('#artifact-file-rows').innerHTML = files.length ? files.map(renderArtifactFile).join('') : '<tr><td colspan="6" class="text-center text-body-secondary py-4">该版本未携带包清单</td></tr>';
-  $('#artifact-approval-link').dataset.id = item.requestId;
-  $('#artifact-detail').showModal();
-  refreshPaginatedTables($('#artifact-detail'));
+  const complete = files.length > 0 && stored === files.length;
+  return { key: complete ? 'STORED' : 'MISSING', label: `${stored} / ${files.length} 个包已入库`, color: complete ? 'success' : 'warning' };
 }
-async function loadArtifacts() { try { artifactItems = (await api('/api/v1/artifacts')).items ?? []; renderArtifactFilterOptions(); renderArtifactRows(); clearMessage(); } catch (error) { message(error.message, 'danger'); } }
+async function loadArtifacts() {
+  try {
+    artifactItems = (await api('/api/v1/artifacts')).items ?? [];
+    artifactCatalog?.update(artifactItems);
+    if (!artifactCatalog) artifactCatalog = mountArtifactCatalog($('#artifact-catalog'), artifactItems, {
+      statusOptions: [{ key: 'STORED', label: '全部文件已入库' }, { key: 'MISSING', label: '有文件未入库' }],
+      statusFor: coreArtifactStatus,
+      onHistory: async (item) => { location.hash = 'requests'; showPage('requests'); await showDetail(item.requestId); },
+      emptyLabel: '暂无已接收的正式版本。审批通过并收到制品后，会显示在这里。'
+    });
+    clearMessage();
+  } catch (error) { message(error.message, 'danger'); }
+}
 function renderAgents(items) {
   coreAgents = items ?? [];
   $('#agent-rows').innerHTML = coreAgents.length ? coreAgents.map((agent) => {
@@ -431,13 +379,6 @@ $('#detail-close').addEventListener('click', () => $('#detail').close());
 $('#detail').addEventListener('click', (event) => { if (event.target === $('#detail')) $('#detail').close(); }); $('#artifacts-refresh').addEventListener('click', loadArtifacts);
 $('#distribution-refresh').addEventListener('click', loadDistribution);
 $('#distribution-form').addEventListener('submit', createDistributionTask);
-$('#artifact-filter-product').addEventListener('change', () => { renderArtifactFilterOptions(); renderArtifactRows(); });
-$('#artifact-filter-version').addEventListener('change', renderArtifactRows);
-$('#artifact-filter-storage').addEventListener('change', renderArtifactRows);
-$('#artifact-filter-reset').addEventListener('click', () => { $('#artifact-filter-product').value = ''; $('#artifact-filter-version').value = ''; $('#artifact-filter-storage').value = ''; renderArtifactFilterOptions(); renderArtifactRows(); });
-$('#artifact-detail-close').addEventListener('click', () => $('#artifact-detail').close());
-$('#artifact-detail').addEventListener('click', (event) => { if (event.target === $('#artifact-detail')) $('#artifact-detail').close(); });
-$('#artifact-approval-link').addEventListener('click', async (event) => { const requestId = event.currentTarget.dataset.id; $('#artifact-detail').close(); location.hash = 'requests'; showPage('requests'); await showDetail(requestId); });
 $('#confirm-cancel').addEventListener('click', () => $('#confirm-dialog').close('cancel'));
 $('#confirm-submit').addEventListener('click', () => $('#confirm-dialog').close('confirm'));
 $('#confirm-dialog').addEventListener('click', (event) => { if (event.target === $('#confirm-dialog')) $('#confirm-dialog').close('cancel'); });
