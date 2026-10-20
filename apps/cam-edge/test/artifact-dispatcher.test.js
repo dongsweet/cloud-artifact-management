@@ -25,7 +25,7 @@ test('artifact dispatcher skips stored objects, resumes missing chunks and submi
     freezes,
     candidates: { get: () => ({ status: 'COMPLETED', source_path: sourcePath, final_sha256: sha256, expected_size: bytes.length }) },
     gateConfig: { get: () => ({ coreTransferUrl: 'http://core.example', transferTimeoutMs: 1_000, chunkSizeBytes: 1024 * 1024 }) },
-    keyring: { currentSecret: async () => Buffer.from('secret') },
+    keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
     fetchImpl: async (url, options = {}) => {
       calls.push({ url, options });
       if (url.endsWith('/manifest') && options.method === 'POST') return { ok: true, json: async () => ({ item: { fileCount: 1 } }) };
@@ -62,7 +62,7 @@ test('artifact dispatcher registers the local manifest before repairing a legacy
   const dispatcher = createArtifactDispatcher({
     freezes, candidates: { get: () => ({ status: 'COMPLETED', source_path: sourcePath, final_sha256: sha256, expected_size: bytes.length }) },
     gateConfig: { get: () => ({ coreTransferUrl: 'http://core.example', transferTimeoutMs: 1_000, chunkSizeBytes: 1024 * 1024 }) },
-    keyring: { currentSecret: async () => Buffer.from('secret') },
+    keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
     fetchImpl: async (url, options = {}) => {
       calls.push({ url, options });
       if (url.endsWith('/manifest') && options.method === 'POST') return { ok: true, json: async () => ({ item: { fileCount: 1 } }) };
@@ -92,7 +92,7 @@ test('artifact dispatcher exposes a failed attempt for retry after a Core connec
   const dispatcher = createArtifactDispatcher({
     freezes, candidates: { get() { throw new Error('unexpected source lookup'); } },
     gateConfig: { get: () => ({ coreTransferUrl: 'http://core.example', transferTimeoutMs: 1_000, chunkSizeBytes: 1024 * 1024 }) },
-    keyring: { currentSecret: async () => Buffer.from('secret') },
+    keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
     fetchImpl: async () => { throw new Error('connection refused'); }, logger: { warn() {} }
   });
   try {

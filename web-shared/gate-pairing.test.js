@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { renderGatePairing } from './gate-pairing.js';
 
-test('Core and Edge pairing screens share the same component structure and role-specific controls', () => {
+test('Core and Edge pairing screens share identity rotation controls and component structure', () => {
   const core = renderGatePairing('core');
   const edge = renderGatePairing('edge');
   const ids = (html) => [...html.matchAll(/\bid="([^"]+)"/gu)].map((match) => match[1]);
@@ -19,8 +19,8 @@ test('Core and Edge pairing screens share the same component structure and role-
   assert.match(core, /立即轮换/u);
   assert.match(edge, /本端 Edge 身份/u);
   assert.match(edge, /保存 Core 身份/u);
-  assert.match(edge, /由 Core 统一设置并发起密钥轮换/u);
-  assert.doesNotMatch(edge, /gate-schedule/u);
+  assert.match(edge, /gate-schedule/u);
+  assert.match(edge, /立即轮换本端身份/u);
   assert.ok(core.indexOf('id="gate-trust-peer"') < core.indexOf('id="gate-peer-edit"'), 'save action is beside and before re-pair');
   assert.ok(edge.indexOf('id="gate-trust-peer"') < edge.indexOf('id="gate-peer-edit"'), 'save action is beside and before re-pair');
   assert.throws(() => renderGatePairing('agent'), TypeError);

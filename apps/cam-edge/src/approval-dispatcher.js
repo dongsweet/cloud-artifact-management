@@ -6,13 +6,15 @@ export function createApprovalDispatcher({ freezes, gateConfig, keyring, fetchIm
   let closed = false;
   const nextAttemptAt = new Map();
 
-  async function coreRequest(path, config, secret, options = {}) {
+  async function coreRequest(path, config, options = {}) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.connectTimeoutMs);
     try {
+      const body = options.body ?? '';
+      const headers = await keyring.requestHeaders(options.method ?? 'GET', path, body, options.headers ?? {});
       return await fetchImpl(`${config.coreControlUrl.replace(/\/$/u, '')}${path}`, {
         ...options,
-        headers: { ...(options.headers ?? {}), 'x-cam-gate-secret': secret.toString('base64url') },
+        headers,
         signal: controller.signal
       });
     } finally { clearTimeout(timeout); }
@@ -26,9 +28,7 @@ export function createApprovalDispatcher({ freezes, gateConfig, keyring, fetchIm
     try {
       const config = gateConfig.get();
       if (!config.coreControlUrl) throw Object.assign(new Error('请先配置 Edge 外侧访问 Core 的控制地址'), { code: 'gate_address_missing' });
-      const secret = await keyring.currentSecret();
-      if (!secret) throw Object.assign(new Error('网闸共享密钥尚未初始化，请先完成 Core/Edge 配对'), { code: 'gate_key_not_configured' });
-      const response = await coreRequest('/api/v1/gate/approval-requests', config, secret, {
+      const response = await coreRequest('/api/v1/gate/approval-requests', config, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify(freezes.approvalEnvelope(freezeId))
       });

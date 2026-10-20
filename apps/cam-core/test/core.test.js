@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { buildCoreApp } from '../src/server.js';
-import { trustTestPeer } from '../../../libs/cam-gate/test-helper.js';
+import { signedTestHeaders, trustTestPeer } from '../../../libs/cam-gate/test-helper.js';
 
 const manifestSha256 = 'a'.repeat(64);
 const reportSha256 = 'b'.repeat(64);
@@ -25,13 +25,13 @@ const envelope = {
   conclusion: 'PASS'
 };
 
-test('Core rejects cross-zone business messages before identity pairing and shared-key establishment', async () => {
+test('Core rejects cross-zone business messages before identity pairing', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-unpaired-'));
   const app = await buildCoreApp({ dataDir, enableAuth: false, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-UNEXPECTED' }) } });
   try {
     assert.equal((await app.gateKeyring.status()).keyConfigured, false);
     assert.equal((await app.gateKeyring.status()).peerTrusted, false);
-    const result = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: { 'x-cam-gate-secret': 'bootstrap-secret' }, payload: envelope });
+    const result = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', payload: envelope });
     assert.equal(result.statusCode, 503, result.body);
     assert.equal(result.json().error.code, 'gate_pairing_required');
     assert.deepEqual(app.coreStore.list(), []);
@@ -45,10 +45,9 @@ test('Core pairing probe authenticates the paired Edge without requiring a brows
   try {
     const unauthorized = await app.inject({ method: 'GET', url: '/api/v1/gate/pairing-probe' });
     assert.equal(unauthorized.statusCode, 401);
-    const secret = await app.gateKeyring.currentSecret();
-    const accepted = await app.inject({ method: 'GET', url: '/api/v1/gate/pairing-probe', headers: { 'x-cam-gate-secret': secret.toString('base64url') } });
+    const accepted = await app.inject({ method: 'GET', url: '/api/v1/gate/pairing-probe', headers: await signedTestHeaders(app.gateKeyring, 'GET', '/api/v1/gate/pairing-probe') });
     assert.equal(accepted.statusCode, 200, accepted.body);
-    assert.deepEqual(accepted.json(), { role: 'core', peerTrusted: true, keyConfigured: true, businessReady: true, activeKeyId: 'TEST', peerFingerprint: (await app.gateKeyring.status()).peerFingerprint });
+    assert.deepEqual(accepted.json(), { role: 'core', peerTrusted: true, keyConfigured: true, businessReady: true, activeKeyId: (await app.gateKeyring.identity()).signingFingerprint, peerFingerprint: (await app.gateKeyring.status()).peerFingerprint });
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
@@ -63,9 +62,9 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, enableAuth: false });
   await trustTestPeer(app.gateKeyring, dataDir, 'edge');
-  const headers = { 'x-cam-gate-secret': 'gate-test' };
+  const headers = (path, payload) => signedTestHeaders(app.gateKeyring, 'POST', path, payload);
   try {
-    const received = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: envelope });
+    const received = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: await headers('/api/v1/gate/approval-requests', envelope), payload: envelope });
     assert.equal(received.statusCode, 202, received.body);
     assert.deepEqual(received.json(), { accepted: true, requestId: 'FREEZE-1', idempotent: false });
 
@@ -74,9 +73,9 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     delete legacyEnvelope.version;
     delete legacyEnvelope.roundNo;
     delete legacyEnvelope.reportTitle;
-    const legacyReceived = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: legacyEnvelope });
+    const legacyReceived = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: await headers('/api/v1/gate/approval-requests', legacyEnvelope), payload: legacyEnvelope });
     assert.equal(legacyReceived.statusCode, 202, legacyReceived.body);
-    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests/FREEZE-LEGACY/sync', headers, payload: {} })).statusCode, 404);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests/FREEZE-LEGACY/sync', payload: {} })).statusCode, 401);
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     const created = app.coreStore.get('FREEZE-1');
@@ -117,7 +116,8 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     const earlyClose = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/close', payload: {} });
     assert.equal(earlyClose.statusCode, 409);
     assert.equal(calls.filter(([kind]) => kind === 'close').length, 0);
-    const receipt = await app.inject({ method: 'POST', url: '/api/v1/gate/receipts', headers, payload: { requestId: 'FREEZE-1', transferTaskId: 'TR-1', manifestSha256 } });
+    const receiptPayload = { requestId: 'FREEZE-1', transferTaskId: 'TR-1', manifestSha256 };
+    const receipt = await app.inject({ method: 'POST', url: '/api/v1/gate/receipts', headers: await headers('/api/v1/gate/receipts', receiptPayload), payload: receiptPayload });
     assert.equal(receipt.statusCode, 200, receipt.body);
     assert.equal(receipt.json().item.status, 'RECEIVED');
     const artifacts = await app.inject({ method: 'GET', url: '/api/v1/artifacts' });
@@ -138,7 +138,7 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     assert.equal(artifactDetail.json().item.artifactId, 'BASELINE-FREEZE-1');
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/artifacts/BASELINE-NOT-FOUND' })).statusCode, 404);
 
-    const replay = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: envelope });
+    const replay = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: await headers('/api/v1/gate/approval-requests', envelope), payload: envelope });
     assert.equal(replay.statusCode, 200);
     assert.equal(replay.json().idempotent, true);
     assert.equal(calls.filter(([kind]) => kind === 'create').length, 2, 'each accepted request gets its own cloud work order; replaying the first is idempotent');
@@ -183,9 +183,10 @@ test('Core polls cloud approval status and reliably pushes only the decision to 
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, enableAuth: false, fetchImpl, approvalResultRetryBaseMs: 5, workerIntervalMs: 10 });
   await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   app.gateConfigStore.save({ edgeControlUrl: 'http://edge-map:3101', edgeTransferUrl: 'http://edge-map:3101' }, 'test');
-  const headers = { 'x-cam-gate-secret': Buffer.from('gate-test').toString('base64url') };
+  const headers = (payload) => signedTestHeaders(app.gateKeyring, 'POST', '/api/v1/gate/approval-requests', payload);
   try {
-    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: { ...envelope, requestId: 'FREEZE-CALLBACK', freezeId: 'FREEZE-CALLBACK' } });
+    const acceptedPayload = { ...envelope, requestId: 'FREEZE-CALLBACK', freezeId: 'FREEZE-CALLBACK' };
+    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: await headers(acceptedPayload), payload: acceptedPayload });
     assert.equal(accepted.statusCode, 202);
     await new Promise((resolve) => setTimeout(resolve, 20));
     cloudStatus = 'APPROVED';
@@ -194,7 +195,7 @@ test('Core polls cloud approval status and reliably pushes only the decision to 
     for (let i = 0; i < 100 && callbacks.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(callbacks.length, 2, 'Core retains and retries the decision callback after a temporary Edge failure');
     assert.equal(callbacks[0].url, 'http://edge-map:3101/api/v1/gate/approval-results');
-    assert.equal(callbacks[0].options.headers['x-cam-gate-secret'], Buffer.from('gate-test').toString('base64url'));
+    assert.equal(typeof callbacks[0].options.headers['x-cam-gate-signature'], 'string');
     assert.deepEqual({ requestId: callbacks[0].payload.requestId, freezeId: callbacks[0].payload.freezeId, status: callbacks[0].payload.status }, { requestId: 'FREEZE-CALLBACK', freezeId: 'FREEZE-CALLBACK', status: 'APPROVED' });
     assert.equal('cloudApprovalId' in callbacks[0].payload, false);
     assert.equal(callbacks[1].payload.eventId, callbacks[0].payload.eventId, 'retries reuse the same idempotency key');
@@ -208,9 +209,10 @@ test('Core acknowledges an approval before a slow cloud work-order create finish
   const cloud = { createApproval: () => new Promise((resolve) => { finishCreate = resolve; }) };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, enableAuth: false });
   await trustTestPeer(app.gateKeyring, dataDir, 'edge');
-  const headers = { 'x-cam-gate-secret': 'gate-test' };
+  const headers = (payload) => signedTestHeaders(app.gateKeyring, 'POST', '/api/v1/gate/approval-requests', payload);
   try {
-    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: { ...envelope, requestId: 'FREEZE-SLOW', freezeId: 'FREEZE-SLOW' } });
+    const payload = { ...envelope, requestId: 'FREEZE-SLOW', freezeId: 'FREEZE-SLOW' };
+    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: await headers(payload), payload });
     assert.equal(accepted.statusCode, 202);
     assert.equal(accepted.json().accepted, true);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -233,10 +235,10 @@ test('Core retries a failed cloud work-order submission from its own background 
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, enableAuth: false, cloudRetryDelayMs: 300, workerIntervalMs: 10 });
   await trustTestPeer(app.gateKeyring, dataDir, 'edge');
-  const headers = { 'x-cam-gate-secret': 'gate-test' };
+  const headers = (payload) => signedTestHeaders(app.gateKeyring, 'POST', '/api/v1/gate/approval-requests', payload);
   const payload = { schemaVersion: 1, type: 'VERIFICATION_APPROVAL_REQUEST', requestId: 'FREEZE-RETRY', freezeId: 'FREEZE-RETRY', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64), reportSha256: 'b'.repeat(64), reportFileName: 'report.pdf', conclusion: 'PASS' };
   try {
-    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload });
+    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: await headers(payload), payload });
     assert.equal(accepted.statusCode, 202);
     assert.equal(accepted.json().accepted, true);
     for (let i = 0; i < 100 && app.coreStore.get('FREEZE-RETRY').cloudSubmissionState !== 'RETRY_WAIT'; i++) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -265,15 +267,16 @@ test('Core receives and verifies the PDF before uploading it and creating the cl
     async createApproval(value) { created = value; return { approvalId: 'APR-WITH-REPORT', status: 'PENDING' }; }
   };
   const fetchImpl = async (_url, options) => {
-    assert.equal(options.headers['x-cam-gate-secret'], Buffer.from('gate-test').toString('base64url'));
+    assert.equal(typeof options.headers['x-cam-gate-signature'], 'string');
     return new Response(pdf, { status: 206, headers: { 'content-type': 'application/pdf', 'content-range': `bytes 0-${pdf.length - 1}/${pdf.length}`, 'x-report-sha256': pdfSha } });
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, enableAuth: false, fetchImpl });
   await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   app.gateConfigStore.save({ edgeControlUrl: 'http://edge-control', edgeTransferUrl: 'http://edge-transfer' }, 'test');
-  const headers = { 'x-cam-gate-secret': 'gate-test' };
+  const headers = (payload) => signedTestHeaders(app.gateKeyring, 'POST', '/api/v1/gate/approval-requests', payload);
   try {
-    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: { ...envelope, requestId: 'FREEZE-REPORT', freezeId: 'FREEZE-REPORT', reportSha256: pdfSha, reportFileName: 'verification.pdf', reportSize: pdf.length } });
+    const payload = { ...envelope, requestId: 'FREEZE-REPORT', freezeId: 'FREEZE-REPORT', reportSha256: pdfSha, reportFileName: 'verification.pdf', reportSize: pdf.length };
+    const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: await headers(payload), payload });
     assert.equal(accepted.statusCode, 202, accepted.body);
     await new Promise((resolve) => setTimeout(resolve, 30));
     const item = app.coreStore.get('FREEZE-REPORT');
@@ -314,26 +317,30 @@ test('Core stores approved files by SHA-256 and lets multiple package entries sh
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, enableAuth: false });
   await trustTestPeer(app.gateKeyring, dataDir, 'edge');
-  const headers = { 'x-cam-gate-secret': 'gate-test' };
+  const headers = (method, path, payload, extra) => signedTestHeaders(app.gateKeyring, method, path, payload, extra);
   const request = { ...envelope, requestId: 'FREEZE-FILES', freezeId: 'FREEZE-FILES', manifestSha256 };
   try {
-    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers, payload: request })).statusCode, 202);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: await headers('POST', '/api/v1/gate/approval-requests', request), payload: request })).statusCode, 202);
     await new Promise((resolve) => setTimeout(resolve, 10));
     await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-FILES/sync', payload: {} });
     const authorize = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-FILES/transfer-authorize', payload: { manifestSha256 } });
     assert.equal(authorize.statusCode, 200, authorize.body);
     const transferTaskId = authorize.json().item.transferTaskId;
-    const registeredManifest = await app.inject({ method: 'POST', url: `/api/v1/gate/transfers/${transferTaskId}/manifest`, headers, payload: { manifest } });
+    const manifestPayload = { manifest };
+    const manifestPath = `/api/v1/gate/transfers/${transferTaskId}/manifest`;
+    const registeredManifest = await app.inject({ method: 'POST', url: manifestPath, headers: await headers('POST', manifestPath, manifestPayload), payload: manifestPayload });
     assert.equal(registeredManifest.statusCode, 200, registeredManifest.body);
     assert.equal(registeredManifest.json().item.fileCount, 2);
     assert.equal(app.coreStore.get('FREEZE-FILES').artifacts.length, 2, 'legacy request gets release artifact references when Edge synchronizes its manifest');
-    const fetchedManifest = await app.inject({ method: 'GET', url: `/api/v1/gate/transfers/${transferTaskId}/manifest`, headers });
+    const fetchedManifest = await app.inject({ method: 'GET', url: manifestPath, headers: await headers('GET', manifestPath) });
     assert.equal(fetchedManifest.statusCode, 200, fetchedManifest.body);
     assert.deepEqual(fetchedManifest.json().items.map((item) => item.receivedParts), [[], []]);
-    const upload = await app.inject({ method: 'PUT', url: `/api/v1/gate/transfers/${transferTaskId}/artifacts/${sha256}`, headers: { ...headers, 'content-type': 'application/octet-stream' }, payload: bytes });
+    const uploadPath = `/api/v1/gate/transfers/${transferTaskId}/artifacts/${sha256}`;
+    const upload = await app.inject({ method: 'PUT', url: uploadPath, headers: await headers('PUT', uploadPath, bytes, { 'content-type': 'application/octet-stream' }), payload: bytes });
     assert.equal(upload.statusCode, 200, upload.body);
     assert.deepEqual(upload.json().packages, ['os-iso', 'base-image']);
-    const prematureReceipt = await app.inject({ method: 'POST', url: '/api/v1/gate/receipts', headers, payload: { requestId: 'FREEZE-FILES', transferTaskId, manifestSha256 } });
+    const receiptPayload = { requestId: 'FREEZE-FILES', transferTaskId, manifestSha256 };
+    const prematureReceipt = await app.inject({ method: 'POST', url: '/api/v1/gate/receipts', headers: await headers('POST', '/api/v1/gate/receipts', receiptPayload), payload: receiptPayload });
     assert.equal(prematureReceipt.statusCode, 200, prematureReceipt.body);
     const artifacts = (await app.inject({ method: 'GET', url: '/api/v1/artifacts' })).json().items;
     assert.equal(artifacts.length, 1);

@@ -27,14 +27,14 @@ test('approval dispatcher sends an outbox request through the mapped Core contro
   const dispatcher = createApprovalDispatcher({
     freezes,
     gateConfig: { get: () => ({ coreControlUrl: 'http://gate.example:3201', connectTimeoutMs: 1000 }) },
-    keyring: { currentSecret: async () => Buffer.from('shared-secret') },
+    keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
     fetchImpl: async (url, options) => { request = { url, options }; return { ok: true, status: 202, json: async () => ({ accepted: true, requestId: state.freezeId, idempotent: false }) }; },
     logger: { warn() {} }
   });
   const result = await dispatcher.dispatchOne(state.freezeId);
   assert.equal(result.dispatchStatus, 'DELIVERED');
   assert.equal(request.url, 'http://gate.example:3201/api/v1/gate/approval-requests');
-  assert.equal(request.options.headers['x-cam-gate-secret'], Buffer.from('shared-secret').toString('base64url'));
+  assert.equal(request.options.headers['x-cam-gate-signature'], 'signed-request');
   assert.equal(JSON.parse(request.options.body).requestId, state.freezeId);
   await dispatcher.close();
 });
@@ -44,7 +44,7 @@ test('approval dispatcher keeps a failed outbox request retryable', async () => 
   const dispatcher = createApprovalDispatcher({
     freezes,
     gateConfig: { get: () => ({ coreControlUrl: 'http://gate.example:3201', connectTimeoutMs: 1000 }) },
-    keyring: { currentSecret: async () => Buffer.from('shared-secret') },
+    keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
     fetchImpl: async () => { throw new Error('connection refused'); },
     logger: { warn() {} }
   });
@@ -63,7 +63,7 @@ test('approval dispatcher never polls Core after request delivery', async () => 
   const dispatcher = createApprovalDispatcher({
     freezes,
     gateConfig: { get: () => ({ coreControlUrl: 'http://gate.example:3201', connectTimeoutMs: 1000 }) },
-    keyring: { currentSecret: async () => Buffer.from('shared-secret') },
+    keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
     fetchImpl: async () => { requests += 1; throw new Error('delivered request must not be resent'); },
     logger: { warn() {} }
   });

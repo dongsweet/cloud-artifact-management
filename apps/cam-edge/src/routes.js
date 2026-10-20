@@ -13,15 +13,6 @@ function error(reply, statusCode, code, message) {
   return reply.code(statusCode).send({ error: { code, message } });
 }
 
-async function gateAuthorized(keyring, received, options = {}) {
-  const status = await keyring.status();
-  const initialKeyConfirmation = options.includePending && !status.keyConfigured && status.rotationState === 'PREPARED';
-  if (!status.peerTrusted || (!status.businessReady && !initialKeyConfirmation)) return 'pairing_required';
-  const verified = await keyring.verifySecret(received, options);
-  if (!verified) return false;
-  return true;
-}
-
 function principal(request) {
   if (request.principal && typeof request.principal.id === 'string') {
     return { principalId: request.principal.id, principalType: request.principal.type ?? 'AUTHENTICATED' };
@@ -151,12 +142,40 @@ export async function finalizeCandidate(store, candidateId) {
 }
 
 export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher, artifactDispatcher }) {
+  app.addHook('preHandler', async (request, reply) => {
+    const url = request.url.split('?')[0];
+    const exchangePath = url === '/api/v1/gate/pairing-probe' || url === '/api/v1/gate/approval-results' || url === '/api/v1/gate/transfer-requests' || url === '/api/v1/gate/identity-rotation/proposals' || url.startsWith('/api/v1/gate/transfer/reports/');
+    if (!exchangePath) return;
+    const status = await keyring.status();
+    const pairingProbe = url === '/api/v1/gate/pairing-probe';
+    if (!status.peerTrusted || (!status.businessReady && !pairingProbe)) return error(reply, 503, 'gate_pairing_required', 'Edge 尚未完成 Core 身份配對，暂不能接收跨区业务消息');
+    const body = request.body === undefined ? '' : Buffer.isBuffer(request.body) ? request.body : JSON.stringify(request.body);
+    const verified = await keyring.verifyRequest({ method: request.method, path: request.url, headers: request.headers, body, bodyDigest: request.body === undefined ? request.headers['x-cam-gate-content-sha256'] : request.headers['x-cam-chunk-sha256'] });
+    if (!verified) return error(reply, 401, 'gate_auth_required', 'Core 请求签名校验失败');
+    if (pairingProbe) await keyring.markPeerConfirmed();
+  });
+  let identityRotationInFlight;
+  const rotateIdentity = () => {
+    if (identityRotationInFlight) return identityRotationInFlight;
+    identityRotationInFlight = (async () => {
+      const config = gateConfig.get();
+      if (!config.coreControlUrl) throw Object.assign(new Error('请先配置 Core 控制地址（外侧）'), { code: 'gate_address_missing' });
+      const proposal = await keyring.proposeIdentityRotation();
+      const path = '/api/v1/gate/identity-rotation/proposals';
+      const body = JSON.stringify(proposal);
+      const response = await fetch(`${config.coreControlUrl.replace(/\/$/u, '')}${path}`, {
+        method: 'POST', headers: await keyring.requestHeaders('POST', path, body, { 'content-type': 'application/json' }), body,
+        signal: AbortSignal.timeout(config.connectTimeoutMs)
+      });
+      const receipt = await response.json().catch(() => ({}));
+      if (!response.ok) throw Object.assign(new Error(receipt.error?.message ?? `Core 身份轮换失败（HTTP ${response.status}）`), { code: receipt.error?.code ?? 'gate_identity_rotation_failed' });
+      return keyring.activateIdentityRotation(receipt);
+    })().catch(async (err) => { await keyring.recordRotationFailure(err); throw err; }).finally(() => { identityRotationInFlight = null; });
+    return identityRotationInFlight;
+  };
   // 专用于 Core 通过网闸映射拉取验证报告。该地址只接受当前轮换密钥，
   // 不经过浏览器会话和外部区账号权限，且申请编号绑定报告路径。
   app.get('/api/v1/gate/transfer/reports/:requestId', async (request, reply) => {
-    const authorization = await gateAuthorized(keyring, request.headers['x-cam-gate-secret']);
-    if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Edge 尚未完成 Core 身份配对，暂不能接收跨区业务消息');
-    if (!authorization) return error(reply, 401, 'gate_auth_required', '报告传输身份校验失败');
     const freeze = freezes.get(request.params.requestId);
     const path = freezes.reportPath(request.params.requestId);
     if (!freeze || !path || freeze.status === 'DRAFT') return error(reply, 404, 'report_not_found', 'verification report not found');
@@ -172,10 +191,10 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   app.get('/api/v1/gate/config', async (request, reply) => {
     const item = gateConfig.get();
     const keys = await keyring.status();
-    return reply.send({ item, secretConfigured: keys.keyConfigured, previousSecretConfigured: Boolean(keys.previousKeyExpiresAt) });
+    return reply.send({ item, identityConfigured: keys.keyConfigured, previousIdentityConfigured: Boolean(keys.previousKeyExpiresAt) });
   });
   app.put('/api/v1/gate/config', { bodyLimit: 8192 }, async (request, reply) => {
-    try { const item = gateConfig.save(request.body ?? {}, request.principal?.id); const keys = await keyring.status(); return reply.send({ item, secretConfigured: keys.keyConfigured, previousSecretConfigured: Boolean(keys.previousKeyExpiresAt) }); }
+    try { const item = gateConfig.save(request.body ?? {}, request.principal?.id); const keys = await keyring.status(); return reply.send({ item, identityConfigured: keys.keyConfigured, previousIdentityConfigured: Boolean(keys.previousKeyExpiresAt) }); }
     catch (err) { return error(reply, 400, err.code ?? 'gate_config_invalid', err.message); }
   });
   app.post('/api/v1/gate/config/test', { bodyLimit: 8192 }, async (request, reply) => {
@@ -193,47 +212,53 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   app.post('/api/v1/gate/keys/test', async (request, reply) => {
     if (!request.principal?.roles?.includes('EDGE_ADMIN')) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
     const status = await keyring.status();
-    if (!status.businessReady) return error(reply, 409, 'gate_pairing_required', '身份配对或首个共享密钥尚未完成，业务通道仍不可用');
+    if (!status.peerTrusted) return error(reply, 409, 'gate_pairing_required', '请先导入 Core 身份包');
     const config = gateConfig.get();
     if (!config.coreControlUrl) return error(reply, 400, 'gate_address_missing', '请先配置 Core 控制地址（外侧）');
     try {
-      const secret = await keyring.currentSecret();
-      const response = await fetch(`${config.coreControlUrl.replace(/\/$/u, '')}/api/v1/gate/pairing-probe`, { headers: { 'x-cam-gate-secret': secret.toString('base64url'), accept: 'application/json' }, signal: AbortSignal.timeout(config.connectTimeoutMs) });
+      const path = '/api/v1/gate/pairing-probe';
+      const response = await fetch(`${config.coreControlUrl.replace(/\/$/u, '')}${path}`, { headers: await keyring.requestHeaders('GET', path, '', { accept: 'application/json' }), signal: AbortSignal.timeout(config.connectTimeoutMs) });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok || body.role !== 'core' || body.businessReady !== true || body.activeKeyId !== status.activeKeyId || body.peerFingerprint !== status.identity.signingFingerprint) return error(reply, 502, body.error?.code ?? 'gate_pairing_probe_failed', body.error?.message ?? 'Core 未确认身份配对和共享密钥状态');
+      if (!response.ok || body.role !== 'core' || body.businessReady !== true || body.peerFingerprint !== status.identity.signingFingerprint) return error(reply, 502, body.error?.code ?? 'gate_pairing_probe_failed', body.error?.message ?? 'Core 未确认身份配对状态');
+      await keyring.markPeerConfirmed();
       return { ok: true, checks: { local: { role: 'edge', peerTrusted: true, keyConfigured: true }, remote: { role: body.role, peerTrusted: body.peerTrusted, keyConfigured: body.keyConfigured }, authenticated: true } };
     } catch (err) { return error(reply, 502, err.code ?? 'gate_pairing_probe_failed', err.message ?? '无法连接 Core 配对测试接口'); }
   });
   app.get('/api/v1/gate/pairing-probe', async (request, reply) => {
-    const authorization = await gateAuthorized(keyring, request.headers['x-cam-gate-secret']);
-    if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Edge 身份配对或共享密钥尚未完成');
-    if (!authorization) return error(reply, 401, 'gate_auth_required', '配对测试共享密钥校验失败');
     const status = await keyring.status();
-    return { role: 'edge', peerTrusted: true, keyConfigured: true, businessReady: true, activeKeyId: status.activeKeyId, peerFingerprint: status.peerFingerprint };
+    return { role: 'edge', peerTrusted: true, keyConfigured: true, businessReady: status.businessReady, activeKeyId: status.identity.signingFingerprint, peerFingerprint: status.peerFingerprint };
   });
   app.put('/api/v1/gate/keys/trusted-peer', { bodyLimit: 16 * 1024 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('EDGE_ADMIN')) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
     try { return { item: await keyring.trustPeer(request.body?.identityBundle) }; }
     catch (err) { return error(reply, 400, err.code ?? 'gate_peer_invalid', err.message); }
   });
-  app.post('/api/v1/gate/key-rotation/proposals', { bodyLimit: 16 * 1024 }, async (request, reply) => {
-    // Signed, encrypted proposals authenticate against the pinned Core identity,
-    // allowing recovery even when the previous shared key is unavailable.
-    try { return await keyring.acceptProposal(request.body ?? {}); }
-    catch (err) { return error(reply, 401, err.code ?? 'gate_rotation_rejected', err.message); }
+  app.put('/api/v1/gate/keys/schedule', { bodyLimit: 4096 }, async (request, reply) => {
+    if (!request.principal?.roles?.includes('EDGE_ADMIN')) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
+    try { return { item: await keyring.configure(request.body ?? {}) }; }
+    catch (err) { return error(reply, 400, err.code ?? 'gate_rotation_config_invalid', err.message); }
   });
-  app.post('/api/v1/gate/key-rotation/proposals/:keyId/confirm', { bodyLimit: 4096 }, async (request, reply) => {
-    const authorization = await gateAuthorized(keyring, request.headers['x-cam-gate-secret'], { includePending: true });
-    if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Edge 尚未完成 Core 身份配对，暂不能处理密钥轮换');
-    if (!authorization) return error(reply, 401, 'gate_auth_required', '网闸密钥确认身份校验失败');
-    if (request.body?.keyId !== request.params.keyId) return error(reply, 400, 'gate_rotation_state_invalid', '轮换密钥 ID 不匹配');
-    try { return { item: await keyring.confirmAtEdge(request.params.keyId) }; }
-    catch (err) { return error(reply, 409, err.code ?? 'gate_rotation_state_invalid', err.message); }
+  app.post('/api/v1/gate/keys/rotate', async (request, reply) => {
+    if (!request.principal?.roles?.includes('EDGE_ADMIN')) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
+    try { return { item: await rotateIdentity() }; }
+    catch (err) { return error(reply, 502, err.code ?? 'gate_identity_rotation_failed', err.message); }
   });
+  app.post('/api/v1/gate/identity-rotation/proposals', { bodyLimit: 16 * 1024 }, async (request, reply) => {
+    try { return await keyring.acceptIdentityRotation(request.body ?? {}); }
+    catch (err) { return error(reply, 409, err.code ?? 'gate_identity_rotation_rejected', err.message); }
+  });
+  if (process.env.NODE_ENV === 'production') {
+    let busy = false;
+    const timer = setInterval(async () => {
+      if (busy) return;
+      try { if (!await keyring.needsRotation()) return; busy = true; await rotateIdentity(); }
+      catch (err) { app.log.warn?.({ code: err.code, message: err.message }, 'CAM Edge 身份轮换失败，将自动重试'); }
+      finally { busy = false; }
+    }, 60_000);
+    timer.unref?.();
+    app.addHook('onClose', async () => clearInterval(timer));
+  }
   app.post('/api/v1/gate/approval-results', { bodyLimit: 16 * 1024 }, async (request, reply) => {
-    const authorization = await gateAuthorized(keyring, request.headers['x-cam-gate-secret']);
-    if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Edge 尚未完成 Core 身份配对，暂不能接收跨区业务消息');
-    if (!authorization) return error(reply, 401, 'gate_auth_required', '网闸审批结果回告身份校验失败');
     try {
       const result = freezes.applyCoreDecision(request.body ?? {});
       return reply.send({ accepted: true, requestId: result.item.freezeId, eventId: request.body.eventId, idempotent: result.idempotent });
@@ -243,9 +268,6 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     }
   });
   app.post('/api/v1/gate/transfer-requests', { bodyLimit: 16 * 1024 }, async (request, reply) => {
-    const authorization = await gateAuthorized(keyring, request.headers['x-cam-gate-secret']);
-    if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Edge 尚未完成 Core 身份配对，暂不能接收正式制品传输任务');
-    if (!authorization) return error(reply, 401, 'gate_auth_required', '正式制品传输任务身份校验失败');
     try {
       const result = freezes.applyTransferReady(request.body ?? {});
       const item = result.item;

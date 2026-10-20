@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { buildEdgeApp } from '../src/app.js';
-import { trustTestPeer } from '../../../libs/cam-gate/test-helper.js';
+import { signedTestHeaders, trustTestPeer } from '../../../libs/cam-gate/test-helper.js';
 
 const sha256 = (data) => createHash('sha256').update(data).digest('hex');
 
@@ -98,17 +98,17 @@ test('Edge accepts only authenticated, idempotent Core approval-result callbacks
     const unpairedDir = `${dataDir}-unpaired`;
     const unpaired = await buildEdgeApp({ dataDir: unpairedDir });
     try {
-      const blocked = await unpaired.inject({ method: 'POST', url: '/api/v1/gate/approval-results', headers: { 'x-cam-gate-secret': 'gate-test' }, payload: {} });
+      const blocked = await unpaired.inject({ method: 'POST', url: '/api/v1/gate/approval-results', payload: {} });
       assert.equal(blocked.statusCode, 503, blocked.body);
       assert.equal(blocked.json().error.code, 'gate_pairing_required');
     } finally { await unpaired.close(); await rm(unpairedDir, { recursive: true, force: true }); }
     const unauthorized = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-results', payload });
     assert.equal(unauthorized.statusCode, 401);
-    const headers = { 'x-cam-gate-secret': Buffer.from('gate-test').toString('base64url') };
+    const headers = await signedTestHeaders(app.gateKeyring, 'POST', '/api/v1/gate/approval-results', payload);
     const accepted = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-results', headers, payload });
     assert.equal(accepted.statusCode, 200, accepted.body);
     assert.deepEqual(accepted.json(), { accepted: true, requestId: freezeId, eventId: payload.eventId, idempotent: false });
-    const replay = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-results', headers, payload });
+    const replay = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-results', headers: await signedTestHeaders(app.gateKeyring, 'POST', '/api/v1/gate/approval-results', payload), payload });
     assert.equal(replay.statusCode, 200, replay.body);
     assert.equal(replay.json().idempotent, true);
     const status = await app.inject({ method: 'GET', url: `/api/v1/rounds/${release.initialRound.roundId}/freezes` });

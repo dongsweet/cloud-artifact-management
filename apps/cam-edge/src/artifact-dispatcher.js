@@ -11,10 +11,15 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
   const nextAttemptAt = new Map();
   const reconciled = new Set();
 
-  async function request(url, config, secret, options = {}) {
+  async function request(url, config, options = {}) {
+    const method = options.method ?? 'GET';
+    const parsed = new URL(url);
+    const path = `${parsed.pathname}${parsed.search}`;
+    const body = options.body && typeof options.body === 'object' && typeof options.body[Symbol.asyncIterator] === 'function' ? '' : options.body ?? '';
+    const headers = await keyring.requestHeaders(method, path, body, options.headers ?? {}, options.headers?.['x-cam-chunk-sha256'] ? { bodyDigest: options.headers['x-cam-chunk-sha256'] } : {});
     return fetchImpl(url, {
       ...options,
-      headers: { ...(options.headers ?? {}), 'x-cam-gate-secret': secret.toString('base64url') },
+      headers,
       signal: AbortSignal.timeout(config.transferTimeoutMs)
     });
   }
@@ -28,19 +33,17 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
     try {
       const config = gateConfig.get();
       if (!config.coreTransferUrl) throw Object.assign(new Error('请先配置 Edge 外侧访问 Core 的制品传输地址'), { code: 'gate_address_missing' });
-      const secret = await keyring.currentSecret();
-      if (!secret) throw Object.assign(new Error('网闸共享密钥尚未初始化，请先完成 Core/Edge 配对'), { code: 'gate_key_not_configured' });
       const base = config.coreTransferUrl.replace(/\/$/u, '');
       const path = `/api/v1/gate/transfers/${encodeURIComponent(freeze.transferTaskId)}`;
       const readManifest = async () => {
-        const response = await request(`${base}${path}/manifest`, config, secret);
+        const response = await request(`${base}${path}/manifest`, config);
         return { response, body: await response.json().catch(() => ({})) };
       };
       let { response: manifestResponse, body: manifestBody } = await readManifest();
       if (!manifestResponse.ok) throw Object.assign(new Error(manifestBody.error?.message ?? `读取 Core 获批清单失败（HTTP ${manifestResponse.status}）`), { code: manifestBody.error?.code ?? 'transfer_manifest_failed' });
       if (manifestBody.requestId !== freeze.freezeId || manifestBody.transferTaskId !== freeze.transferTaskId || manifestBody.manifestSha256 !== freeze.manifestSha256 || !Array.isArray(manifestBody.items)) throw Object.assign(new Error('Core 返回的清单与 Edge 审批记录不一致'), { code: 'transfer_manifest_mismatch' });
       if (manifestBody.items.length === 0 && Array.isArray(freeze.manifest?.items) && freeze.manifest.items.length > 0) {
-        const syncResponse = await request(`${base}${path}/manifest`, config, secret, {
+        const syncResponse = await request(`${base}${path}/manifest`, config, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ manifest: freeze.manifest })
         });
         const syncBody = await syncResponse.json().catch(() => ({}));
@@ -70,7 +73,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
 
         if (item.sizeBytes === 0) {
           const url = `${base}${path}/artifacts/${sha256}`;
-          const response = await request(url, config, secret, { method: 'PUT', headers: { 'content-type': 'application/octet-stream', 'content-length': '0' }, body: Buffer.alloc(0) });
+          const response = await request(url, config, { method: 'PUT', headers: { 'content-type': 'application/octet-stream', 'content-length': '0' }, body: Buffer.alloc(0) });
           if (!response.ok) throw await responseError(response, '空制品上传失败');
         } else {
           const count = Math.ceil(item.sizeBytes / chunkSize);
@@ -84,7 +87,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
             for await (const chunk of stream) partHash.update(chunk);
             const digest = partHash.digest('hex');
             const bodyStream = createReadStream(candidate.source_path, { start: offset, end: offset + size - 1 });
-            const response = await request(`${base}${path}/artifacts/${sha256}/parts/${index}`, config, secret, {
+            const response = await request(`${base}${path}/artifacts/${sha256}/parts/${index}`, config, {
               method: 'PUT', duplex: 'half', body: bodyStream,
               headers: {
                 'content-type': 'application/octet-stream', 'content-length': String(size),
@@ -97,7 +100,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
         }
         sent.add(sha256);
       }
-      const receiptResponse = await request(`${base}/api/v1/gate/receipts`, config, secret, {
+      const receiptResponse = await request(`${base}/api/v1/gate/receipts`, config, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ requestId: freeze.freezeId, transferTaskId: freeze.transferTaskId, manifestSha256: freeze.manifestSha256 })
       });

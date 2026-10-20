@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { buildCoreApp } from '../src/server.js';
-import { trustTestPeer } from '../../../libs/cam-gate/test-helper.js';
+import { signedTestHeaders, trustTestPeer } from '../../../libs/cam-gate/test-helper.js';
 
 function cookies(response) { return response.headers['set-cookie'].map((value) => value.split(';', 1)[0]).join('; '); }
 function cookieValue(response, name) { return response.headers['set-cookie'].map((value) => value.split(';', 1)[0]).find((value) => value.startsWith(`${name}=`)).slice(name.length + 1); }
@@ -65,23 +65,26 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
     assert.equal(reset.json().mustChangePassword, true);
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/approval-requests/UNKNOWN/sync', headers: { cookie: coreCookie }, payload: {} })).statusCode, 403);
 
-    const gate = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: { 'x-cam-gate-secret': 'gate-test' }, payload: { schemaVersion: 1, requestId: 'R-1', freezeId: 'F-1', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64) } });
+    const gatePayload = { schemaVersion: 1, requestId: 'R-1', freezeId: 'F-1', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64) };
+    const gatePath = '/api/v1/gate/approval-requests';
+    const gate = await app.inject({ method: 'POST', url: gatePath, headers: await signedTestHeaders(app.gateKeyring, 'POST', gatePath, gatePayload), payload: gatePayload });
     assert.equal(gate.statusCode, 202, gate.body);
     assert.equal(cookieValue(relogin, 'cam_core_csrf'), coreCsrf);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
-test('gate key authentication accepts the negotiated key and rejects unknown keys', async () => {
+test('gate request authentication requires a fresh signature from the trusted Edge identity', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-gate-rotation-'));
   const app = await buildCoreApp({ dataDir, enableAuth: false, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) } });
   await trustTestPeer(app.gateKeyring, dataDir, 'edge');
   const payload = { schemaVersion: 1, requestId: 'R-ROTATE', freezeId: 'F-ROTATE', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64) };
   try {
-    for (const [index, secret] of ['gate-test', 'gate-test'].entries()) {
-      const response = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: { 'x-cam-gate-secret': secret }, payload });
+    for (const [index] of [0, 1].entries()) {
+      const response = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: await signedTestHeaders(app.gateKeyring, 'POST', '/api/v1/gate/approval-requests', payload), payload });
       assert.equal(response.statusCode, index === 0 ? 202 : 200, response.body);
     }
-    const rejected = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: { 'x-cam-gate-secret': 'retired-gate-key' }, payload: { ...payload, requestId: 'R-ROTATE-2', freezeId: 'F-ROTATE-2' } });
+    const forged = { ...await signedTestHeaders(app.gateKeyring, 'POST', '/api/v1/gate/approval-requests', payload), 'x-cam-gate-signature': 'forged' };
+    const rejected = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-requests', headers: forged, payload: { ...payload, requestId: 'R-ROTATE-2', freezeId: 'F-ROTATE-2' } });
     assert.equal(rejected.statusCode, 401);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
