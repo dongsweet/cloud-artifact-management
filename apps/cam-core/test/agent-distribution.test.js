@@ -74,6 +74,7 @@ test('Agent public-key registration works with the legacy NOT NULL token column'
     const first = store.registerAgent({ centerId: 'TEST', name: 'first', publicKey: identity.publicKeyPem });
     const second = store.registerAgent({ centerId: 'TEST', name: 'second', publicKey: generateIdentity().publicKeyPem });
     assert.notEqual(first.agentId, second.agentId);
+    assert.throws(() => store.registerAgent({ centerId: 'TEST', name: 'duplicate-key', publicKey: identity.publicKeyPem }), { code: 'agent_public_key_duplicate' });
     assert.equal(Object.hasOwn(first, 'securityDomain'), false);
     assert.equal(Object.hasOwn(store.listAgents()[0], 'securityDomain'), false);
     assert.ok(!db.prepare('PRAGMA table_info(core_agents)').all().some((column) => column.name === 'security_domain'));

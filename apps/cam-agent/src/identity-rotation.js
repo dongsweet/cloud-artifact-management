@@ -25,15 +25,22 @@ export async function loadAgentIdentity(path) {
 
 // Core supplies policy; Agent keeps private keys locally and makes all outbound
 // requests. A pending key survives retries, lost responses and process restarts.
-export async function createIdentityRotation({ identityPath, identity: initial, request, onIdentity, now = Date.now }) {
+export async function createIdentityRotation({ identityPath, identity: initial, request, onIdentity, onAgentId, now = Date.now }) {
   let identity = initial;
   const pendingPath = `${identityPath}.pending`;
   const statePath = `${identityPath}.rotation`;
   let pending = await readJson(pendingPath);
   if (pending !== undefined) pending = validateIdentity(pending);
   let state = await readJson(statePath) ?? { attempts: 0, retryAt: null, lastError: null, policy: null };
+  if (state.agentId) onAgentId?.(state.agentId);
   let inFlight;
   const call = async (path, options, signer) => (await (await request(path, options, signer)).json()).item;
+  const rememberAgentId = async (id) => {
+    if (typeof id !== 'string' || !id || state.agentId === id) return;
+    state = { ...state, agentId: id };
+    await saveJson(statePath, state);
+    onAgentId?.(id);
+  };
   const confirm = async () => {
     const policy = await call('/api/v1/agent/identity/confirm', { method: 'POST' });
     state = { ...state, requested: false, attempts: 0, retryAt: null, lastError: null, policy, checkedAt: new Date(now()).toISOString() };
@@ -45,7 +52,11 @@ export async function createIdentityRotation({ identityPath, identity: initial, 
         // Probe with the durable new key first. This also recovers after the
         // old key's grace period has elapsed, without needing the lost reply.
         let accepted = false;
-        try { accepted = (await call('/api/v1/agent/identity', {}, pending)).keyId === pending.fingerprint; }
+        try {
+          const policy = await call('/api/v1/agent/identity', {}, pending);
+          accepted = policy.keyId === pending.fingerprint;
+          if (accepted) await rememberAgentId(policy.agentId);
+        }
         catch (error) { if (error.status !== 401) throw error; }
         if (!accepted) {
           await call('/api/v1/agent/key-rotation', {
@@ -59,6 +70,7 @@ export async function createIdentityRotation({ identityPath, identity: initial, 
         return;
       }
       const policy = await call('/api/v1/agent/identity', {});
+      await rememberAgentId(policy.agentId);
       if (policy.keyId !== identity.fingerprint) throw Object.assign(new Error('Core 当前公钥与本机身份不一致，请检查配对'), { code: 'agent_identity_mismatch' });
       state.policy = policy;
       if (!policy.confirmedAt || state.lastError) await confirm();
@@ -95,5 +107,5 @@ export async function createIdentityRotation({ identityPath, identity: initial, 
     state = { ...state, attempts: 0, retryAt: null, lastError: null, policy: null, checkedAt: null };
     await saveJson(statePath, state);
   };
-  return { sync, resetConnection, status: () => ({ ...state, pending: Boolean(pending), rotating: Boolean(inFlight), paired: Boolean(state.policy?.confirmedAt) && !state.lastError }) };
+  return { sync, resetConnection, status: () => ({ ...state, agentId: state.agentId ?? null, pending: Boolean(pending), rotating: Boolean(inFlight), paired: Boolean(state.policy?.confirmedAt) && !state.lastError }) };
 }

@@ -202,7 +202,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
 
   const agentPrincipal = (request) => store.authenticateAgent({
-    agentId: request.headers['x-cam-agent-id'], timestamp: request.headers['x-cam-agent-timestamp'],
+    agentId: request.headers['x-cam-agent-id'], keyId: request.headers['x-cam-agent-key-id'], timestamp: request.headers['x-cam-agent-timestamp'],
     nonce: request.headers['x-cam-agent-nonce'], signature: request.headers['x-cam-agent-signature'],
     method: request.method, path: request.url.split('?')[0], body: request.body === undefined ? '' : JSON.stringify(request.body), allowPendingIdentity: true
   });

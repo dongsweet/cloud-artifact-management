@@ -7,14 +7,13 @@ import { createHash } from 'node:crypto';
 import { buildServer } from '../../../libs/cam-server/src/server.js';
 import { openDatabase } from '../../../libs/cam-sqlite/src/database.js';
 import { AuthStore } from '../../cam-core/src/core-auth-store.js';
-import { randomNonce, signRequest, verifyResponse } from '../../../libs/cam-agent-auth/src/protocol.js';
+import { fingerprint, randomNonce, signRequest, verifyResponse } from '../../../libs/cam-agent-auth/src/protocol.js';
 import { createIdentityRotation, loadAgentIdentity } from './identity-rotation.js';
 import { agentPage } from './web.js';
 import { CoreConnectionStore } from './core-connection.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/agent' : join(process.cwd(), 'data', 'agent'));
 const CORE_URL = (process.env.CAM_CORE_URL ?? 'http://127.0.0.1:3102').replace(/\/$/u, '');
-const AGENT_ID = process.env.CAM_AGENT_ID ?? '';
 const CHUNK_SIZE = Math.max(64 * 1024, Math.min(64 * 1024 * 1024, Number(process.env.CAM_AGENT_CHUNK_SIZE ?? 4 * 1024 * 1024)));
 const CONCURRENCY = Math.max(1, Math.min(16, Number(process.env.CAM_AGENT_CONCURRENCY ?? 4)));
 
@@ -39,10 +38,11 @@ function registerAuth(app, auth) {
   app.post('/api/v1/auth/password', { bodyLimit: 4096 }, async (request, reply) => { if (request.principal?.type !== 'LOCAL_USER') return fail(reply, 403, 'local_account_required', '本地账号密码由 Agent 管理'); if (!auth.csrf(request.principal, request.headers['x-cam-agent-csrf'])) return fail(reply, 403, 'csrf_invalid', '会话校验失败，请刷新页面后重试'); try { await auth.changePassword(request.principal.id, request.body?.password, request.principal.id, request.body?.oldPassword); reply.header('Set-Cookie', [cookie('cam_agent_session', '', true, true), cookie('cam_agent_csrf', '', false, true)]); return { ok: true, loginRequired: true }; } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'password_failed', err.message); } });
 }
 
-export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE_URL, agentId = AGENT_ID, corePublicKey = process.env.CAM_CORE_PUBLIC_KEY ?? (process.env.CAM_CORE_PUBLIC_KEY_B64 ? Buffer.from(process.env.CAM_CORE_PUBLIC_KEY_B64, 'base64').toString('utf8') : ''), corePreviousPublicKey = process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY ?? (process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_B64 ? Buffer.from(process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_B64, 'base64').toString('utf8') : ''), corePreviousPublicKeyExpiresAt = process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_EXPIRES_AT ?? '', fetchImpl = fetch, startWorker = true } = {}) {
+export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE_URL, corePublicKey = process.env.CAM_CORE_PUBLIC_KEY ?? (process.env.CAM_CORE_PUBLIC_KEY_B64 ? Buffer.from(process.env.CAM_CORE_PUBLIC_KEY_B64, 'base64').toString('utf8') : ''), corePreviousPublicKey = process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY ?? (process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_B64 ? Buffer.from(process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_B64, 'base64').toString('utf8') : ''), corePreviousPublicKeyExpiresAt = process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_EXPIRES_AT ?? '', fetchImpl = fetch, startWorker = true } = {}) {
   await mkdir(join(dataDir, 'cache'), { recursive: true });
   const identityPath = join(dataDir, 'identity.json');
   let identity = await loadAgentIdentity(identityPath);
+  let agentId = '';
   const db = await openDatabase(join(dataDir, 'agent.sqlite'));
   const auth = new AuthStore(db);
   const coreConnection = new CoreConnectionStore(db, { coreUrl, corePublicKey, previousPublicKey: corePreviousPublicKey, previousPublicKeyExpiresAt: corePreviousPublicKeyExpiresAt });
@@ -68,12 +68,11 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   app.get('/assets/table-pagination.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'table-pagination.js'))));
   app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(agentPage()));
   const core = async (path, options = {}, signer = identity) => {
-    if (!agentId) throw Object.assign(new Error('Agent 尚未完成 Core 注册'), { code: 'agent_not_registered' });
     const config = coreConnection.get();
     if (!config.corePublicKey) throw Object.assign(new Error('请先在 Core 身份配对页面配置 Core 公钥'), { code: 'core_public_key_missing', status: 503 });
     const trustedCoreKeys = [{ publicKeyPem: config.corePublicKey, keyId: config.fingerprint }, ...(config.previousPublicKey && Date.parse(config.previousPublicKeyExpiresAt) > Date.now() ? [{ publicKeyPem: config.previousPublicKey, keyId: config.previousFingerprint }] : [])];
     const method = options.method ?? 'GET'; const body = options.body ?? ''; const timestamp = new Date().toISOString(); const nonce = randomNonce();
-    const headers = { accept: 'application/json', 'x-cam-agent-id': agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(signer.privateKeyPem, method, path.split('?')[0], timestamp, nonce, body), ...(options.headers ?? {}) };
+    const headers = { accept: 'application/json', ...(agentId ? { 'x-cam-agent-id': agentId } : { 'x-cam-agent-key-id': signer.fingerprint ?? fingerprint(signer.publicKeyPem) }), 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(signer.privateKeyPem, method, path.split('?')[0], timestamp, nonce, body), ...(options.headers ?? {}) };
     if (options.proofKey) headers['x-cam-agent-new-key-proof'] = signRequest(options.proofKey.privateKeyPem, method, path.split('?')[0], timestamp, nonce, body);
     // An empty string would make fetch send text/plain; Fastify then parses it as
     // a string, changing the signed payload. Send no body for empty requests.
@@ -88,7 +87,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     if (!key || !validTimestamp || !verifyResponse(key.publicKeyPem, responseSignature, response.status, method, path.split('?')[0], nonce, responseTimestamp, responseBody)) throw Object.assign(new Error('Core 响应签名校验失败'), { code: 'core_response_signature_invalid', status: 502 });
     if (!response.ok) { const body = JSON.parse(responseBody.toString('utf8') || '{}'); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
   };
-  const rotation = await createIdentityRotation({ identityPath, identity, request: core, onIdentity: (next) => { identity = next; } });
+  const rotation = await createIdentityRotation({ identityPath, identity, request: core, onIdentity: (next) => { identity = next; }, onAgentId: (next) => { agentId = next; } });
   const admin = async (request, reply) => {
     if (!request.principal?.user?.roles?.includes('CORE_ADMIN')) return fail(reply, 403, 'admin_required', '仅管理员可管理 Core 对接配置');
   };
@@ -119,7 +118,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     if (configuring) return fail(reply, 409, 'core_connection_busy', '正在保存 Core 对接配置');
     try {
       await rotation.sync({ ignoreBackoff: true });
-      return { ok: true, agentId, fingerprint: identity.fingerprint, rotation: rotation.status() };
+      return { ok: true, agentId: rotation.status().agentId, fingerprint: identity.fingerprint, rotation: rotation.status() };
     } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'agent_pairing_failed', err.message); }
   });
   app.post('/api/v1/identity/rotate', { bodyLimit: 4096 }, async (_request, reply) => {
@@ -152,8 +151,8 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
       db.prepare('UPDATE agent_tasks SET status = ?, progress_json = ?, updated_at = ?, last_error = NULL WHERE task_id = ?').run('COMPLETED', JSON.stringify({ state: 'ready' }), new Date().toISOString(), task.taskId); await update(task.taskId, { status: 'COMPLETED', progress: { state: 'ready' } });
     } catch (err) { db.prepare('UPDATE agent_tasks SET status = ?, last_error = ?, updated_at = ? WHERE task_id = ?').run('QUEUED', String(err.message).slice(0, 1000), new Date().toISOString(), task.taskId); await update(task.taskId, { status: 'FAILED', error: err.message }).catch(() => {}); }
   }
-  const poll = async () => { if (running || configuring || testing || !agentId) return; running = true; try { await rotation.sync(); const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST', body: '' })).json()).items ?? []; for (const task of tasks) if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
-  app.get('/api/v1/identity', async () => ({ agentId: agentId || null, publicKey: identity.publicKeyPem, fingerprint: identity.fingerprint, registered: Boolean(agentId), rotation: rotation.status() }));
+  const poll = async () => { if (running || configuring || testing) return; running = true; try { await rotation.sync(); const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST', body: '' })).json()).items ?? []; for (const task of tasks) if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
+  app.get('/api/v1/identity', async () => ({ agentId: rotation.status().agentId ?? null, publicKey: identity.publicKeyPem, fingerprint: identity.fingerprint, registered: Boolean(rotation.status().agentId), rotation: rotation.status() }));
   app.get('/api/v1/tasks', async () => ({ items: db.prepare('SELECT * FROM agent_tasks ORDER BY updated_at DESC').all().map((row) => ({ taskId: row.task_id, artifactId: row.artifact_id, status: row.status, progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, lastError: row.last_error, updatedAt: row.updated_at })) }));
   app.get('/api/v1/cache/:artifactId', async (request, reply) => { if (typeof request.params.artifactId !== 'string' || !/^[A-Za-z0-9._-]{1,255}$/.test(request.params.artifactId)) return reply.code(400).send({ ready: false }); const path = join(dataDir, 'cache', request.params.artifactId); try { const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch { return reply.code(404).send({ ready: false }); } });
   if (startWorker) { const timer = setInterval(() => { void poll(); }, Number(process.env.CAM_AGENT_POLL_MS ?? 5000)); timer.unref?.(); app.addHook('onClose', async () => clearInterval(timer)); queueMicrotask(() => { void poll(); }); }

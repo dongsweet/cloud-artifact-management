@@ -71,7 +71,7 @@ Docker volume 中。升级镜像或重建容器前先执行 `sudo -E sh deploy/i
 
 `cam-core` 对接统一云管时，先将 `deploy/.env.example` 复制为目标主机的 `deploy/.env`，再使用同一个环境文件启动 Compose：
 
-Core 与 Agent 的应用接口采用双向 Ed25519 签名。首次配对时，在 Core 的“Agent 管理”页面复制“Core 服务公钥”，登录各 Agent 的“Core 身份配对”页面，在顶部“Core 对接配置”填写 Core 地址并粘贴完整 PEM 公钥，点击“保存配置”和“测试配对”。两个 Agent 共用这份 Core 公钥；每个 Agent 的私钥仍各自保存在本机独立数据目录。Agent 编号仍由部署变量 `CAM_AGENT_ID` 配置（双节点 Compose 分别对应 `CAM_AGENT_1_ID` / `CAM_AGENT_2_ID`）。缺少 Core 公钥时不会发起业务请求，签名验证失败时拒绝处理响应。
+Core 与 Agent 的应用接口采用双向 Ed25519 签名。首次配对时，在 Core 的“Agent 管理”页面复制“Core 服务公钥”，登录各 Agent 的“Core 身份配对”页面，在顶部“Core 对接配置”填写 Core 地址并粘贴完整 PEM 公钥，点击“保存配置”和“测试配对”。随后复制 Agent 本机公钥到 Core 登记；Agent 首次以公钥指纹发起签名请求后，Core 会返回稳定 Agent 编号并显示在 Agent 页面，无需配置部署变量。两个 Agent 共用 Core 公钥；每个 Agent 的私钥仍各自保存在本机独立数据目录。缺少 Core 公钥时不会发起业务请求，签名验证失败时拒绝处理响应。
 
 Agent 页面保存的 Core 地址和信任公钥持久化到本机 `agent.sqlite`，立即生效，重启后优先于环境变量。`CAM_CORE_URL`、`CAM_CORE_PUBLIC_KEY` / `CAM_CORE_PUBLIC_KEY_B64` 及旧公钥过渡变量保留为部署默认值；页面保存之后仅改环境变量不会覆盖已保存配置。定时刷新不会覆盖正在编辑的内容。
 

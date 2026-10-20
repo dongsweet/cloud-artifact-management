@@ -34,7 +34,7 @@ test('Agent tests its signed Core pairing and persists a rotated identity', asyn
   await writeFile(join(dataDir, 'agent', 'identity.json'), JSON.stringify(identity));
   const registered = core.coreStore.registerAgent({ name: 'paired-agent', centerId: 'TEST', publicKey: identity.publicKeyPem });
   const options = {
-    dataDir: join(dataDir, 'agent'), agentId: registered.agentId, startWorker: false,
+    dataDir: join(dataDir, 'agent'), startWorker: false,
     coreUrl: await core.listen({ host: '127.0.0.1', port: 0 }), corePublicKey: core.agentServiceIdentity.publicKeyPem
   };
   let app = await buildAgentApp(options);
@@ -47,6 +47,7 @@ test('Agent tests its signed Core pairing and persists a rotated identity', asyn
     assert.equal(login.statusCode, 200, login.body);
     const headers = { cookie: login.headers['set-cookie'].map((value) => value.split(';')[0]).join('; '), 'x-cam-agent-csrf': login.json().csrfToken };
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/identity/test', headers, payload: {} })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/identity', headers })).json().agentId, registered.agentId, 'Core assigned ID is echoed to the Agent after signed key discovery');
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/identity/rotate', headers: { cookie: headers.cookie }, payload: {} })).statusCode, 403);
     const rotated = await app.inject({ method: 'POST', url: '/api/v1/identity/rotate', headers, payload: {} });
     assert.equal(rotated.statusCode, 200, rotated.body);
@@ -58,6 +59,9 @@ test('Agent tests its signed Core pairing and persists a rotated identity', asyn
     await app.close(); app = await buildAgentApp(options);
     await app.agentPoll();
     assert.equal(core.coreStore.listAgents()[0].fingerprint, saved.fingerprint);
+    const relogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'admin', password: 'Agent-Integration-2026' } });
+    const restartedHeaders = { cookie: relogin.headers['set-cookie'].map((value) => value.split(';')[0]).join('; '), 'x-cam-agent-csrf': relogin.json().csrfToken };
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/identity', headers: restartedHeaders })).json().agentId, registered.agentId, 'the echoed ID survives an Agent restart');
   } finally { await app.close(); await core.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 

@@ -163,6 +163,9 @@ export class CoreStore {
     for (const [field, value] of Object.entries({ centerId, name })) if (typeof value !== 'string' || !value.trim() || value.length > 128) throw Object.assign(new Error(`${field} is required and must be at most 128 characters`), { code: 'agent_invalid' });
     if (typeof publicKey !== 'string' || !publicKey.includes('PUBLIC KEY')) throw Object.assign(new Error('publicKey is required; paste the Agent identity public key'), { code: 'agent_public_key_required' });
     let keyId; try { keyId = fingerprint(publicKey); } catch { throw Object.assign(new Error('Agent public key is invalid'), { code: 'agent_public_key_invalid' }); }
+    const knownKey = this.db.prepare('SELECT public_key AS publicKey, previous_public_key AS previousPublicKey FROM core_agents WHERE public_key IS NOT NULL OR previous_public_key IS NOT NULL').all()
+      .some((row) => (row.publicKey && fingerprint(row.publicKey) === keyId) || (row.previousPublicKey && fingerprint(row.previousPublicKey) === keyId));
+    if (knownKey) throw Object.assign(new Error('该 Agent 公钥已登记或仍处于身份过渡期，请勿重复配对'), { code: 'agent_public_key_duplicate' });
     const agentId = `AG-${randomUUID()}`;
     const timestamp = now();
     // Old databases require a unique token hash. Keep an inert value for that
@@ -171,15 +174,18 @@ export class CoreStore {
       .run(agentId, centerId.trim(), name.trim(), publicKey, keyId, digest(agentId), timestamp);
     return { agentId, centerId: centerId.trim(), name: name.trim(), keyId, fingerprint: keyId, status: 'PENDING', createdAt: timestamp };
   }
-  authenticateAgent({ agentId, timestamp, nonce, signature, method, path, body = '', allowPendingIdentity = false } = {}) {
+  authenticateAgent({ agentId, keyId, timestamp, nonce, signature, method, path, body = '', allowPendingIdentity = false } = {}) {
     // Signature verification is intentionally independent of browser sessions.
-    if (typeof agentId !== 'string' || typeof timestamp !== 'string' || typeof nonce !== 'string' || typeof signature !== 'string') return null;
-    const row = this.db.prepare("SELECT agent_id AS agentId, center_id AS centerId, name, public_key AS publicKey, previous_public_key AS previousPublicKey, previous_key_expires_at AS previousKeyExpiresAt, status FROM core_agents WHERE agent_id = ?").get(agentId);
+    if ((!agentId && !keyId) || typeof timestamp !== 'string' || typeof nonce !== 'string' || typeof signature !== 'string') return null;
+    let row = agentId ? this.db.prepare("SELECT agent_id AS agentId, center_id AS centerId, name, public_key AS publicKey, key_id AS keyId, previous_public_key AS previousPublicKey, previous_key_expires_at AS previousKeyExpiresAt, status FROM core_agents WHERE agent_id = ?").get(agentId) : this.db.prepare("SELECT agent_id AS agentId, center_id AS centerId, name, public_key AS publicKey, key_id AS keyId, previous_public_key AS previousPublicKey, previous_key_expires_at AS previousKeyExpiresAt, status FROM core_agents WHERE key_id = ?").get(keyId);
+    if (!row && keyId) {
+      row = this.db.prepare("SELECT agent_id AS agentId, center_id AS centerId, name, public_key AS publicKey, key_id AS keyId, previous_public_key AS previousPublicKey, previous_key_expires_at AS previousKeyExpiresAt, status FROM core_agents WHERE previous_public_key IS NOT NULL AND previous_key_expires_at > ?").all(now()).find((candidate) => fingerprint(candidate.previousPublicKey) === keyId);
+    }
     const pendingIdentityRequest = allowPendingIdentity && row?.status === 'PENDING' && ((method === 'GET' && path === '/api/v1/agent/identity') || (method === 'POST' && path === '/api/v1/agent/identity/confirm'));
     if (!row || (row.status !== 'ACTIVE' && !pendingIdentityRequest) || !Number.isFinite(Date.parse(timestamp)) || Math.abs(Date.now() - Date.parse(timestamp)) > 5 * 60_000) return null;
     const currentKey = verifyRequest(row.publicKey, signature, method, path, timestamp, nonce, body);
     const keyOk = currentKey || (row.previousPublicKey && row.previousKeyExpiresAt && Date.parse(row.previousKeyExpiresAt) > Date.now() && verifyRequest(row.previousPublicKey, signature, method, path, timestamp, nonce, body));
-    if (!keyOk) return null;
+    if (!keyOk || (keyId && keyId !== fingerprint(currentKey ? row.publicKey : row.previousPublicKey))) return null;
     this.db.prepare('DELETE FROM core_agent_nonces WHERE expires_at <= ?').run(now());
     try { this.db.prepare('INSERT INTO core_agent_nonces (agent_id, nonce, expires_at) VALUES (?, ?, ?)').run(row.agentId, nonce, new Date(Math.max(Date.now(), Date.parse(timestamp)) + 5 * 60_000).toISOString()); } catch { return null; }
     this.db.prepare('UPDATE core_agents SET last_seen_at = ? WHERE agent_id = ?').run(now(), row.agentId);

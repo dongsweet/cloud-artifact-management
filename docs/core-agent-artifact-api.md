@@ -2,7 +2,7 @@
 
 ## Core 与 Agent 的双向身份签名
 
-Agent 请求继续使用本机独立 Ed25519 私钥签名。规范化内容为 `HTTP_METHOD`、不含 query 的 `PATH`、`TIMESTAMP`、`NONCE` 和原始请求体的 SHA-256，Core 按 Agent 当前公钥验签并检查时间窗口与 nonce 重放。
+Agent 请求继续使用本机独立 Ed25519 私钥签名。规范化内容为 `HTTP_METHOD`、不含 query 的 `PATH`、`TIMESTAMP`、`NONCE` 和原始请求体的 SHA-256，Core 按 Agent 当前公钥验签并检查时间窗口与 nonce 重放。首次请求使用 `x-cam-agent-key-id` 携带本机公钥 SHA-256 指纹作为查找提示，Core 验签成功后在身份策略响应中返回稳定 Agent 编号；Agent 持久保存该编号并在后续请求中使用。编号只用于 Core 内部定位记录和关联任务，不是凭证，也不需要写入 Agent 部署配置。Agent 密钥轮换期间仍以稳定编号关联记录，丢失本地编号时可用已登记的公钥指纹重新发现。
 
 Core 为 Agent API 生成并持久化独立服务身份，私钥位于 Core 数据目录的 `core-agent-identity.json`（权限 `0600`），不会离开 Core。每个 `/api/v1/agent/*` 响应（包括业务错误）都签名，签名覆盖 `HTTP_STATUS`、`HTTP_METHOD`、不含 query 的 `PATH`、对应请求 nonce、响应时间戳和原始响应体 SHA-256。响应头为 `x-cam-core-key-id`、`x-cam-core-timestamp`、`x-cam-core-signature`。Agent 必须先验证时间戳、key ID 和签名，再解析响应或执行任务；缺少可信 Core 公钥或签名不匹配时拒绝响应。
 
@@ -95,7 +95,7 @@ GET /api/v1/artifacts/:sha256/content
 
 `cam-agent` 使用首次配对的 Ed25519 设备身份，不使用固定服务令牌。Core 注册 Agent 时保存公钥和指纹；Agent 请求携带 `X-CAM-Agent-Id`、`X-CAM-Agent-Timestamp`、`X-CAM-Agent-Nonce` 和 `X-CAM-Agent-Signature`，签名覆盖 HTTP 方法、路径、时间戳、随机数和请求体摘要。Core 拒绝过期时间戳、重复随机数、禁用 Agent 和无效签名。Agent 可使用旧身份签名提交新公钥，Core 在短暂过渡期接受旧、新公钥后完成轮换。Core 仍根据 Agent 身份、分发任务和目标范围授权版本基线及其文件，不开放匿名目录或摘要下载。
 
-注册接口 `POST /api/v1/agents` 仅要求 `centerId`、`name`、`publicKey`，不再要求或返回 `securityDomain`。已有数据库升级时删除该字段，保留 Agent 编号、公钥、任务和心跳。中心内多个 Agent 依靠各自设备身份及任务目标区分。
+注册接口 `POST /api/v1/agents` 仅要求 `centerId`、`name`、`publicKey`，不再要求或返回 `securityDomain`。已有数据库升级时删除该字段，保留 Agent 编号、公钥、任务和心跳；重复登记同一公钥会被拒绝。中心内多个 Agent 依靠各自设备身份及任务目标区分。
 
 管理目录的单文件下载路由用于登录用户受控查询。Agent 使用独立的任务接口 `/api/v1/agent/tasks/:taskId/files/:sha256/parts/:index`，只允许读取分配给该 Agent 的文件分块；目录查询接口不代表 Agent 已获得文件下载授权。下载审计仍需在正式上线前补齐。
 
