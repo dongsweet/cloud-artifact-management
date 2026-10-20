@@ -137,6 +137,28 @@ test('Core identity rotation is proposed under the old key and activated after e
   } finally { await app.close(); await secondApp.close(); await pendingApp.close(); await core.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Core activates a staged identity after its deadline when an Agent stays offline', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-agent-rotation-deadline-'));
+  const core = await buildCoreApp({ dataDir, enableAuth: false });
+  try {
+    const agentIdentity = generateIdentity();
+    core.coreStore.registerAgent({ name: 'offline-deadline-agent', centerId: 'TEST', publicKey: agentIdentity.publicKeyPem });
+    const oldFingerprint = core.agentServiceIdentity.fingerprint;
+    const pending = await stageAgentServiceIdentityRotation(join(dataDir, 'core-agent-identity.json'), core.agentServiceIdentity, 1);
+    pending.activationDeadlineAt = new Date(Date.now() - 1_000).toISOString();
+    await writeFile(join(dataDir, 'core-agent-identity.json'), JSON.stringify(core.agentServiceIdentity), { mode: 0o600 });
+    await core.close();
+
+    const restartedCore = await buildCoreApp({ dataDir, enableAuth: false });
+    try {
+      assert.notEqual(restartedCore.agentServiceIdentity.fingerprint, oldFingerprint, 'Core activates the pending identity after the deadline');
+      assert.equal(restartedCore.agentServiceIdentity.pendingIdentity, null);
+      assert.equal(restartedCore.agentServiceIdentity.lastRotationSkippedAgentCount, 1, 'offline Agent is recorded as skipped');
+      assert.equal(restartedCore.agentServiceIdentity.previousFingerprint, oldFingerprint);
+    } finally { await restartedCore.close(); }
+  } finally { if (core.server?.listening) await core.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Agent does not change Core endpoint or trust while a poll is in flight', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-config-busy-'));
   let release;

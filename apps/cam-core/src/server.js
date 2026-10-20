@@ -9,7 +9,7 @@ import { registerCoreAuth, AuthStore } from './auth.js';
 import { GateConfigStore } from '../../../libs/cam-gate/src/config.js';
 import { GateKeyring } from '../../../libs/cam-gate/src/keyring.js';
 import { signResponse } from '../../../libs/cam-agent-auth/src/protocol.js';
-import { activateStagedAgentServiceIdentity, loadAgentServiceIdentity, rotateAgentServiceIdentity, stageAgentServiceIdentityRotation } from './agent-service-identity.js';
+import { activateStagedAgentServiceIdentity, loadAgentServiceIdentity, rotateAgentServiceIdentity, scheduleAgentServiceIdentityActivation, stageAgentServiceIdentityRotation } from './agent-service-identity.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/core' : join(process.cwd(), 'data', 'core'));
 
@@ -18,6 +18,37 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
   const agentServiceIdentity = await loadAgentServiceIdentity(join(dataDir, 'core-agent-identity.json'));
   const agentServiceIdentityPath = join(dataDir, 'core-agent-identity.json');
   const store = new CoreStore(db, { dataDir });
+  let cancelRotationDeadline;
+  let rotationActivation;
+  const pendingDeadline = (pending) => {
+    if (pending.activationDeadlineAt) return Date.parse(pending.activationDeadlineAt);
+    const graceHours = pending.graceHours ?? store.getAgentRotationPolicy().graceHours;
+    return Date.parse(pending.createdAt) + graceHours * 3600_000;
+  };
+  const activatePendingIdentity = async (status) => {
+    if (!agentServiceIdentity.pendingIdentity) return agentServiceIdentity;
+    if (rotationActivation) return rotationActivation;
+    const pending = agentServiceIdentity.pendingIdentity;
+    const graceHours = pending.graceHours ?? store.getAgentRotationPolicy().graceHours;
+    rotationActivation = activateStagedAgentServiceIdentity(agentServiceIdentityPath, agentServiceIdentity, graceHours, { skippedAgentCount: status?.pending ?? 0 });
+    try { return await rotationActivation; }
+    finally { rotationActivation = null; cancelRotationDeadline?.(); cancelRotationDeadline = undefined; }
+  };
+  const scheduleRotationDeadline = (logger) => {
+    cancelRotationDeadline?.();
+    cancelRotationDeadline = undefined;
+    const pending = agentServiceIdentity.pendingIdentity;
+    if (!pending) return;
+    const graceHours = pending.graceHours ?? store.getAgentRotationPolicy().graceHours;
+    const scheduledPending = { ...pending, graceHours, activationDeadlineAt: pending.activationDeadlineAt ?? new Date(pendingDeadline(pending)).toISOString() };
+    cancelRotationDeadline = scheduleAgentServiceIdentityActivation(scheduledPending, async () => {
+      try { await activatePendingIdentity(store.getCoreIdentityRotationStatus(pending.rotationId)); }
+      catch (error) { logger.error({ err: error }, 'Core Agent identity rotation deadline activation failed'); }
+    });
+  };
+  if (agentServiceIdentity.pendingIdentity && pendingDeadline(agentServiceIdentity.pendingIdentity) <= Date.now()) {
+    await activatePendingIdentity(store.getCoreIdentityRotationStatus(agentServiceIdentity.pendingIdentity.rotationId));
+  }
   const auth = new AuthStore(db);
   const gateConfig = new GateConfigStore(db, { table: 'core_gate_config', eventsTable: 'core_gate_config_events', requiredUrlFields: ['edgeControlUrl', 'edgeTransferUrl'] });
   const keyring = new GateKeyring({ filePath: join(dataDir, 'gate-keyring.json'), role: 'core' });
@@ -25,7 +56,8 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
   const app = await buildServer({
     service: 'cam-core',
     configure: async (server) => {
-      registerCoreRoutes(server, { store, cloud: cloudAdapter, gateConfig, keyring, agentServiceIdentity, rotateAgentServiceIdentity: async () => { const next = await rotateAgentServiceIdentity(agentServiceIdentityPath, agentServiceIdentity); Object.assign(agentServiceIdentity, next); return { publicKey: next.publicKeyPem, fingerprint: next.fingerprint, previousPublicKey: next.previousPublicKeyPem, previousFingerprint: next.previousFingerprint, previousKeyExpiresAt: next.previousKeyExpiresAt }; }, stageAgentServiceIdentityRotation: async () => { const pendingIdentity = await stageAgentServiceIdentityRotation(agentServiceIdentityPath, agentServiceIdentity); const status = store.getCoreIdentityRotationStatus(pendingIdentity.rotationId); if (!status.total) { await activateStagedAgentServiceIdentity(agentServiceIdentityPath, agentServiceIdentity); return { pending: false, publicKey: agentServiceIdentity.publicKeyPem, fingerprint: agentServiceIdentity.fingerprint }; } return { pending: true, rotationId: pendingIdentity.rotationId, publicKey: pendingIdentity.publicKeyPem, fingerprint: pendingIdentity.fingerprint, ...status }; }, activateStagedAgentServiceIdentity: async () => activateStagedAgentServiceIdentity(agentServiceIdentityPath, agentServiceIdentity), enableKeyRotation, cloudRetryDelayMs, cloudStatusPollMs, approvalResultRetryBaseMs, workerIntervalMs, fetchImpl });
+      registerCoreRoutes(server, { store, cloud: cloudAdapter, gateConfig, keyring, agentServiceIdentity, rotateAgentServiceIdentity: async () => { const next = await rotateAgentServiceIdentity(agentServiceIdentityPath, agentServiceIdentity); Object.assign(agentServiceIdentity, next); return { publicKey: next.publicKeyPem, fingerprint: next.fingerprint, previousPublicKey: next.previousPublicKeyPem, previousFingerprint: next.previousFingerprint, previousKeyExpiresAt: next.previousKeyExpiresAt }; }, stageAgentServiceIdentityRotation: async () => { const policy = store.getAgentRotationPolicy(); const pendingIdentity = await stageAgentServiceIdentityRotation(agentServiceIdentityPath, agentServiceIdentity, policy.graceHours); const status = store.getCoreIdentityRotationStatus(pendingIdentity.rotationId); if (!status.total) { await activatePendingIdentity({ pending: 0 }); return { pending: false, publicKey: agentServiceIdentity.publicKeyPem, fingerprint: agentServiceIdentity.fingerprint, skippedAgentCount: 0 }; } scheduleRotationDeadline(server.log); return { pending: status.pending, pendingRotation: true, rotationId: pendingIdentity.rotationId, publicKey: pendingIdentity.publicKeyPem, fingerprint: pendingIdentity.fingerprint, activationDeadlineAt: new Date(pendingDeadline(pendingIdentity)).toISOString(), graceHours: pendingIdentity.graceHours ?? policy.graceHours, ...status }; }, activateStagedAgentServiceIdentity: activatePendingIdentity, enableKeyRotation, cloudRetryDelayMs, cloudStatusPollMs, approvalResultRetryBaseMs, workerIntervalMs, fetchImpl });
+      scheduleRotationDeadline(server.log);
       server.addHook('onSend', async (request, reply, payload) => {
         if (!request.url.startsWith('/api/v1/agent/')) return payload;
         const nonce = request.headers['x-cam-agent-nonce'];
@@ -44,7 +76,7 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
         if (request.agentPrincipal?.agentId && agentServiceIdentity.pendingIdentity && store.getAgentIdentity(request.agentPrincipal.agentId).coreIdentityRotationId !== agentServiceIdentity.pendingIdentity.rotationId && request.url.split('?')[0] !== '/api/v1/agent/core-identity/confirm' && reply.getHeader('content-type')?.toString().includes('application/json')) {
           try {
             const envelope = JSON.parse(Buffer.isBuffer(body) ? body.toString('utf8') : String(body));
-            envelope.coreIdentityRotation = { rotationId: agentServiceIdentity.pendingIdentity.rotationId, previousFingerprint: agentServiceIdentity.pendingIdentity.previousFingerprint, publicKey: agentServiceIdentity.pendingIdentity.publicKeyPem, fingerprint: agentServiceIdentity.pendingIdentity.fingerprint, graceHours: store.getAgentRotationPolicy().graceHours };
+            envelope.coreIdentityRotation = { rotationId: agentServiceIdentity.pendingIdentity.rotationId, previousFingerprint: agentServiceIdentity.pendingIdentity.previousFingerprint, publicKey: agentServiceIdentity.pendingIdentity.publicKeyPem, fingerprint: agentServiceIdentity.pendingIdentity.fingerprint, graceHours: agentServiceIdentity.pendingIdentity.graceHours ?? store.getAgentRotationPolicy().graceHours };
             body = JSON.stringify(envelope);
           } catch { /* Leave non-JSON payloads untouched. */ }
         }
@@ -55,7 +87,7 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
         return body;
       });
       if (enableAuth) registerCoreAuth(server, { auth });
-      server.addHook('onClose', async () => db.close());
+      server.addHook('onClose', async () => { cancelRotationDeadline?.(); db.close(); });
     }
   });
   app.decorate('coreStore', store);
