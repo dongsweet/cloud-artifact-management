@@ -25,15 +25,17 @@ export async function loadAgentIdentity(path) {
 
 // Core supplies policy; Agent keeps private keys locally and makes all outbound
 // requests. A pending key survives retries, lost responses and process restarts.
-export async function createIdentityRotation({ identityPath, identity: initial, request, onIdentity, onAgentId, now = Date.now }) {
+export async function createIdentityRotation({ identityPath, identity: initial, request, onIdentity, onAgentId, initialAgentId, now = Date.now }) {
   let identity = initial;
   const pendingPath = `${identityPath}.pending`;
   const statePath = `${identityPath}.rotation`;
   let pending = await readJson(pendingPath);
   if (pending !== undefined) pending = validateIdentity(pending);
   let state = await readJson(statePath) ?? { attempts: 0, retryAt: null, lastError: null, policy: null };
-  state.agentId ??= state.policy?.agentId;
+  const storedAgentId = state.agentId;
+  state.agentId ??= state.policy?.agentId ?? initialAgentId;
   if (state.agentId) onAgentId?.(state.agentId);
+  if (state.agentId && state.agentId !== storedAgentId) await saveJson(statePath, state);
   let inFlight;
   const call = async (path, options, signer) => (await (await request(path, options, signer)).json()).item;
   const rememberAgentId = async (id) => {

@@ -88,7 +88,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     if (!key || !validTimestamp || !verifyResponse(key.publicKeyPem, responseSignature, response.status, method, path.split('?')[0], nonce, responseTimestamp, responseBody)) throw Object.assign(new Error('Core 响应签名校验失败'), { code: 'core_response_signature_invalid', status: 502 });
     if (!response.ok) { const body = JSON.parse(responseBody.toString('utf8') || '{}'); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
   };
-  const rotation = await createIdentityRotation({ identityPath, identity, request: core, onIdentity: (next) => { identity = next; }, onAgentId: (next) => { agentId = next; } });
+  const rotation = await createIdentityRotation({ identityPath, identity, request: core, onIdentity: (next) => { identity = next; }, onAgentId: (next) => { agentId = next; }, initialAgentId: legacyAgentId });
   const admin = async (request, reply) => {
     if (!request.principal?.user?.roles?.includes('CORE_ADMIN')) return fail(reply, 403, 'admin_required', '仅管理员可管理 Core 对接配置');
   };

@@ -96,6 +96,8 @@ test('Agent upgrades the previously cached Core Agent ID into its local echo sta
     const rotation = await createIdentityRotation({ identityPath, identity: generateIdentity(), request: async () => { throw new Error('not called'); }, onAgentId: (id) => { echoedId = id; } });
     assert.equal(rotation.status().agentId, agentId);
     assert.equal(echoedId, agentId);
+    const legacy = await createIdentityRotation({ identityPath: join(dataDir, 'legacy.json'), identity: generateIdentity(), request: async () => { throw new Error('not called'); }, initialAgentId: 'AG-LEGACY-ENV' });
+    assert.equal(legacy.status().agentId, 'AG-LEGACY-ENV');
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
 
