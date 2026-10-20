@@ -7,3 +7,4 @@ coverage/
 *.sqlite-wal
 *.tmp
 deploy/.env
+/local-docs/
