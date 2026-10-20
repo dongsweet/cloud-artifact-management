@@ -10,6 +10,9 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /cam-agent-identity-panel/);
   assert.match(html, /轮换周期和旧密钥过渡期由 Core 下发/);
   assert.match(html, /测试配对并同步状态/);
+  assert.match(html, /本机 Agent 身份<\/h4><div class="d-flex align-items-center gap-2">.*?id="identity-copy"/s);
+  assert.match(html, /Core 服务身份<\/h4><div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">.*?id="core-key-replace".*?id="core-key-cancel".*?id="core-copy"/s);
+  assert.match(html, /轮换 Core 密钥/);
   assert.match(html, /id="core-url" class="form-control bg-body-secondary"[^>]*readonly/);
   assert.match(html, /id="core-public-key" class="form-control agent-identity-key bg-body-secondary"[^>]*readonly/);
   assert.match(html, /id="core-fingerprint" class="form-text font-monospace text-break mt-2"/);
@@ -23,5 +26,6 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.ok(html.includes("$('#core-url').classList.remove('bg-body-secondary')"));
   assert.ok(html.includes("$('#core-public-key').classList.remove('bg-body-secondary')"));
   assert.ok(html.includes("$('#core-key-cancel').onclick=()=>{renderCoreConfig(coreConfig)"));
+  assert.ok(html.includes("$('#core-copy').onclick=()=>copyPublicKey('#core-public-key'"));
   assert.doesNotMatch(html, /立即轮换/);
 });
