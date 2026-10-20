@@ -24,6 +24,9 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     const westIdentity = generateIdentity(); const eastIdentity = generateIdentity();
     const west = app.coreStore.registerAgent({ centerId: 'CENTER-WEST', name: 'west-agent', publicKey: westIdentity.publicKeyPem });
     const east = app.coreStore.registerAgent({ centerId: 'CENTER-EAST', name: 'east-agent', publicKey: eastIdentity.publicKeyPem });
+    assert.equal(west.status, 'PENDING');
+    app.coreStore.confirmAgentIdentity({ agentId: west.agentId, currentKey: true, signingKeyId: westIdentity.fingerprint });
+    app.coreStore.confirmAgentIdentity({ agentId: east.agentId, currentKey: true, signingKeyId: eastIdentity.fingerprint });
     const task = app.coreStore.createDistributionTask({ agentId: west.agentId, artifactId: 'BASELINE-REQ-AGENT' });
 
     const noIdentity = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull' });
@@ -75,7 +78,48 @@ test('Agent public-key registration works with the legacy NOT NULL token column'
     assert.equal(Object.hasOwn(store.listAgents()[0], 'securityDomain'), false);
     assert.ok(!db.prepare('PRAGMA table_info(core_agents)').all().some((column) => column.name === 'security_domain'));
     const timestamp = new Date().toISOString(); const nonce = randomNonce(); const path = '/api/v1/agent/tasks/pull';
-    assert.equal(store.authenticateAgent({ agentId: first.agentId, timestamp, nonce, method: 'POST', path, signature: signRequest(identity.privateKeyPem, 'POST', path, timestamp, nonce) }).agentId, first.agentId);
+    assert.equal(first.status, 'PENDING');
+    assert.equal(store.authenticateAgent({ agentId: first.agentId, timestamp, nonce, method: 'POST', path, signature: signRequest(identity.privateKeyPem, 'POST', path, timestamp, nonce) }), null);
+    store.confirmAgentIdentity({ agentId: first.agentId, currentKey: true, signingKeyId: first.fingerprint });
+    assert.equal(store.authenticateAgent({ agentId: first.agentId, timestamp, nonce: `${nonce}-active`, method: 'POST', path, signature: signRequest(identity.privateKeyPem, 'POST', path, timestamp, `${nonce}-active`) }).agentId, first.agentId);
     assert.equal(store.authenticateAgent({ token: db.prepare('SELECT token_sha256 FROM core_agents WHERE agent_id = ?').get(first.agentId).token_sha256 }), null);
   } finally { db.close(); }
+});
+
+test('disabling and re-enabling an Agent requires a fresh signed identity probe before business access', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-reenable-'));
+  const app = await buildCoreApp({ dataDir, enableAuth: false });
+  try {
+    const identity = generateIdentity();
+    const agent = app.coreStore.registerAgent({ centerId: 'TEST', name: 'reenable-agent', publicKey: identity.publicKeyPem });
+    const auth = (method, path, body = '') => {
+      const timestamp = new Date().toISOString(); const nonce = randomNonce();
+      return { 'x-cam-agent-id': agent.agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(identity.privateKeyPem, method, path, timestamp, nonce, body) };
+    };
+    const probe = await app.inject({ method: 'GET', url: '/api/v1/agent/identity', headers: auth('GET', '/api/v1/agent/identity') });
+    assert.equal(probe.statusCode, 200, probe.body);
+    assert.equal(probe.headers['x-cam-core-signature']?.length > 20, true, 'identity probe response is signed by Core');
+    const confirmBody = '';
+    const confirmed = await app.inject({ method: 'POST', url: '/api/v1/agent/identity/confirm', headers: auth('POST', '/api/v1/agent/identity/confirm', confirmBody) });
+    assert.equal(confirmed.statusCode, 200, confirmed.body);
+    assert.equal(confirmed.json().item.status, 'ACTIVE');
+    assert.equal(app.coreStore.getAgentIdentity(agent.agentId).confirmedAt !== null, true);
+
+    assert.equal(app.coreStore.setAgentStatus(agent.agentId, 'DISABLED'), true);
+    assert.equal(app.coreStore.getAgentIdentity(agent.agentId).confirmedAt, null);
+    assert.equal(app.coreStore.setAgentStatus(agent.agentId, 'ACTIVE'), true);
+    assert.equal(app.coreStore.getAgentIdentity(agent.agentId).status, 'PENDING');
+    assert.equal(app.coreStore.getAgentIdentity(agent.agentId).confirmedAt, null);
+    const tasks = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: auth('POST', '/api/v1/agent/tasks/pull') });
+    assert.equal(tasks.statusCode, 401);
+    const pendingProbe = await app.inject({ method: 'GET', url: '/api/v1/agent/identity', headers: auth('GET', '/api/v1/agent/identity') });
+    assert.equal(pendingProbe.statusCode, 200, pendingProbe.body);
+    const pendingConfirm = await app.inject({ method: 'POST', url: '/api/v1/agent/identity/confirm', headers: auth('POST', '/api/v1/agent/identity/confirm') });
+    assert.equal(pendingConfirm.statusCode, 200, pendingConfirm.body);
+    assert.equal(pendingConfirm.json().item.status, 'ACTIVE');
+    const resumedTasks = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: auth('POST', '/api/v1/agent/tasks/pull') });
+    assert.equal(resumedTasks.statusCode, 200, resumedTasks.body);
+    app.coreStore.setAgentStatus(agent.agentId, 'DISABLED');
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/agent/identity', headers: auth('GET', '/api/v1/agent/identity') })).statusCode, 401);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });

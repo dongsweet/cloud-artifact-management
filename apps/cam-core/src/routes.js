@@ -204,12 +204,13 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   const agentPrincipal = (request) => store.authenticateAgent({
     agentId: request.headers['x-cam-agent-id'], timestamp: request.headers['x-cam-agent-timestamp'],
     nonce: request.headers['x-cam-agent-nonce'], signature: request.headers['x-cam-agent-signature'],
-    method: request.method, path: request.url.split('?')[0], body: request.body === undefined ? '' : JSON.stringify(request.body)
+    method: request.method, path: request.url.split('?')[0], body: request.body === undefined ? '' : JSON.stringify(request.body), allowPendingIdentity: true
   });
   app.addHook('preHandler', async (request, reply) => {
     if (!request.url.startsWith('/api/v1/agent/')) return;
     const principal = agentPrincipal(request);
     if (!principal) return error(reply, 401, 'agent_auth_required', 'Agent 身份凭证无效或已禁用');
+    if (principal.status === 'PENDING' && !((request.method === 'GET' && request.url.split('?')[0] === '/api/v1/agent/identity') || (request.method === 'POST' && request.url.split('?')[0] === '/api/v1/agent/identity/confirm'))) return error(reply, 403, 'agent_identity_pending', 'Agent 尚未通过重新启用后的身份验证');
     request.agentPrincipal = principal;
   });
 
@@ -244,7 +245,10 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
   app.patch('/api/v1/agents/:agentId', { bodyLimit: 4096 }, async (request, reply) => {
     if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
-    try { return { ok: store.setAgentStatus(request.params.agentId, request.body?.status) }; }
+    try {
+      if (!store.setAgentStatus(request.params.agentId, request.body?.status)) return error(reply, 404, 'agent_not_found', 'Agent 不存在');
+      return { ok: true, item: store.getAgentIdentity(request.params.agentId) };
+    }
     catch (err) { return error(reply, 400, err.code ?? 'agent_invalid', err.message); }
   });
   app.post('/api/v1/agent/key-rotation', { bodyLimit: 8192 }, async (request, reply) => {

@@ -167,15 +167,16 @@ export class CoreStore {
     const timestamp = now();
     // Old databases require a unique token hash. Keep an inert value for that
     // constraint; authentication accepts signed identities only.
-    this.db.prepare('INSERT INTO core_agents (agent_id, center_id, name, public_key, key_id, token_sha256, status, created_at) VALUES (?, ?, ?, ?, ?, ?, \'ACTIVE\', ?)')
+    this.db.prepare('INSERT INTO core_agents (agent_id, center_id, name, public_key, key_id, token_sha256, status, created_at) VALUES (?, ?, ?, ?, ?, ?, \'PENDING\', ?)')
       .run(agentId, centerId.trim(), name.trim(), publicKey, keyId, digest(agentId), timestamp);
-    return { agentId, centerId: centerId.trim(), name: name.trim(), keyId, fingerprint: keyId, status: 'ACTIVE', createdAt: timestamp };
+    return { agentId, centerId: centerId.trim(), name: name.trim(), keyId, fingerprint: keyId, status: 'PENDING', createdAt: timestamp };
   }
-  authenticateAgent({ agentId, timestamp, nonce, signature, method, path, body = '' } = {}) {
+  authenticateAgent({ agentId, timestamp, nonce, signature, method, path, body = '', allowPendingIdentity = false } = {}) {
     // Signature verification is intentionally independent of browser sessions.
     if (typeof agentId !== 'string' || typeof timestamp !== 'string' || typeof nonce !== 'string' || typeof signature !== 'string') return null;
     const row = this.db.prepare("SELECT agent_id AS agentId, center_id AS centerId, name, public_key AS publicKey, previous_public_key AS previousPublicKey, previous_key_expires_at AS previousKeyExpiresAt, status FROM core_agents WHERE agent_id = ?").get(agentId);
-    if (!row || row.status !== 'ACTIVE' || !Number.isFinite(Date.parse(timestamp)) || Math.abs(Date.now() - Date.parse(timestamp)) > 5 * 60_000) return null;
+    const pendingIdentityRequest = allowPendingIdentity && row?.status === 'PENDING' && ((method === 'GET' && path === '/api/v1/agent/identity') || (method === 'POST' && path === '/api/v1/agent/identity/confirm'));
+    if (!row || (row.status !== 'ACTIVE' && !pendingIdentityRequest) || !Number.isFinite(Date.parse(timestamp)) || Math.abs(Date.now() - Date.parse(timestamp)) > 5 * 60_000) return null;
     const currentKey = verifyRequest(row.publicKey, signature, method, path, timestamp, nonce, body);
     const keyOk = currentKey || (row.previousPublicKey && row.previousKeyExpiresAt && Date.parse(row.previousKeyExpiresAt) > Date.now() && verifyRequest(row.previousPublicKey, signature, method, path, timestamp, nonce, body));
     if (!keyOk) return null;
@@ -214,7 +215,8 @@ export class CoreStore {
   }
   confirmAgentIdentity(principal) {
     if (!principal.currentKey || principal.signingKeyId !== this.getAgentIdentity(principal.agentId).keyId) throw Object.assign(new Error('必须使用当前身份确认'), { code: 'agent_current_key_required' });
-    this.db.prepare('UPDATE core_agents SET key_confirmed_at = COALESCE(key_confirmed_at, ?), rotation_error = NULL, rotation_attempts = 0, rotation_retry_at = NULL WHERE agent_id = ?').run(now(), principal.agentId);
+    const result = this.db.prepare("UPDATE core_agents SET status = CASE WHEN status = 'PENDING' THEN 'ACTIVE' ELSE status END, key_confirmed_at = COALESCE(key_confirmed_at, ?), rotation_error = NULL, rotation_attempts = 0, rotation_retry_at = NULL WHERE agent_id = ? AND status IN ('ACTIVE', 'PENDING')").run(now(), principal.agentId);
+    if (!result.changes) throw Object.assign(new Error('Agent 已禁用，不能确认身份'), { code: 'agent_disabled' });
     return this.getAgentIdentity(principal.agentId);
   }
   reportAgentRotationFailure(agentId, { message, attempts, retryAt }) {
@@ -238,8 +240,14 @@ export class CoreStore {
   }
   setAgentStatus(agentId, status) {
     if (!['ACTIVE', 'DISABLED'].includes(status)) throw Object.assign(new Error('invalid agent status'), { code: 'agent_invalid' });
-    const result = this.db.prepare('UPDATE core_agents SET status = ? WHERE agent_id = ?').run(status, agentId);
-    return result.changes > 0;
+    const exists = this.db.prepare('SELECT status FROM core_agents WHERE agent_id = ?').get(agentId);
+    if (!exists) return false;
+    if (status === 'ACTIVE' && exists.status === 'DISABLED') {
+      this.db.prepare("UPDATE core_agents SET status = 'PENDING', key_confirmed_at = NULL, rotation_error = NULL, rotation_attempts = 0, rotation_retry_at = NULL WHERE agent_id = ?").run(agentId);
+    } else if (status === 'DISABLED') {
+      this.db.prepare("UPDATE core_agents SET status = 'DISABLED', key_confirmed_at = NULL, rotation_error = NULL, rotation_attempts = 0, rotation_retry_at = NULL WHERE agent_id = ?").run(agentId);
+    }
+    return true;
   }
   createDistributionTask({ agentId, artifactId }) {
     const agent = this.db.prepare("SELECT agent_id FROM core_agents WHERE agent_id = ? AND status = 'ACTIVE'").get(agentId);

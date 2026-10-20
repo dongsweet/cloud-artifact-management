@@ -61,6 +61,26 @@ test('Agent tests its signed Core pairing and persists a rotated identity', asyn
   } finally { await app.close(); await core.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Agent without a trusted Core public key cannot complete initial or re-enable verification', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-no-core-key-'));
+  const core = await buildCoreApp({ dataDir: join(dataDir, 'core'), enableAuth: false });
+  const identity = generateIdentity();
+  await mkdir(join(dataDir, 'agent'));
+  await writeFile(join(dataDir, 'agent', 'identity.json'), JSON.stringify(identity));
+  const agentRecord = core.coreStore.registerAgent({ centerId: 'TEST', name: 'no-core-key', publicKey: identity.publicKeyPem });
+  const options = { dataDir: join(dataDir, 'agent'), agentId: agentRecord.agentId, startWorker: false, coreUrl: 'http://127.0.0.1:1' };
+  let app = await buildAgentApp(options);
+  try {
+    await app.agentPoll();
+    assert.equal(core.coreStore.getAgentIdentity(agentRecord.agentId).status, 'PENDING');
+    core.coreStore.setAgentStatus(agentRecord.agentId, 'DISABLED');
+    core.coreStore.setAgentStatus(agentRecord.agentId, 'ACTIVE');
+    await app.agentPoll();
+    assert.equal(core.coreStore.getAgentIdentity(agentRecord.agentId).status, 'PENDING');
+    assert.equal(core.coreStore.getAgentIdentity(agentRecord.agentId).confirmedAt, null);
+  } finally { await app.close(); await core.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Core-triggered Agent rotation recovers the same pending key after a lost response and restart', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-rotation-recovery-'));
   const agentDir = join(dataDir, 'agent');
