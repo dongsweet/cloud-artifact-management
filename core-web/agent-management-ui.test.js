@@ -21,5 +21,7 @@ test('Core Agent registration and service identity share one responsive card', a
   assert.match(section, /粘贴 Agent 身份公钥并登记/u);
   assert.match(section, /所有 Agent 信任同一份 Core 公钥/u);
   assert.match(section, /agent-rotation-policy-save/u, 'one global policy editor is shown with the Core service identity');
+  assert.match(section, /type="button">保存<\/button>/u, 'the policy action stays compact');
+  assert.doesNotMatch(section, /私钥只保存在 Agent 本机|统一应用于所有 Agent/u, 'the setup card keeps only the concise pairing explanations');
   assert.doesNotMatch(html, /agent-rotation-dialog|agent-rotation-days|agent-grace-hours/u, 'manual rotation no longer opens the broken per-Agent settings form');
 });
