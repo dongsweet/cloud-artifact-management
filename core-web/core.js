@@ -1,4 +1,6 @@
+import { renderGatePairing } from './gate-pairing.js?v=20261020-shared-gate';
 let csrf = null;
+document.querySelector('#gate-pairing-mount').innerHTML = renderGatePairing('core');
 let forcedPasswordChange = false;
 let currentUser = null;
 let coreRoles = {};
