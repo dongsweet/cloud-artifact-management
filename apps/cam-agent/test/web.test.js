@@ -12,7 +12,11 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /测试配对并同步状态/);
   assert.match(html, /id="core-url"[^>]*readonly/);
   assert.match(html, /id="core-public-key"[^>]*readonly/);
+  assert.match(html, /id="core-url" class="form-control bg-body-secondary"/);
+  assert.match(html, /id="core-public-key" class="form-control agent-identity-key bg-body-secondary"/);
   assert.ok(html.includes("$('#core-key-replace').onclick=()=>{editingCore=true"));
+  assert.ok(html.includes("$('#core-url').classList.remove('bg-body-secondary')"));
+  assert.ok(html.includes("$('#core-public-key').classList.remove('bg-body-secondary')"));
   assert.ok(html.includes("$('#core-key-cancel').onclick=()=>{renderCoreConfig(coreConfig)"));
   assert.doesNotMatch(html, /立即轮换/);
 });
