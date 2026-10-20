@@ -374,7 +374,7 @@ window.addEventListener('hashchange', () => { if (!$('#app').classList.contains(
 $('#agent-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
-  const button = form.querySelector('button[type="submit"]');
+  const button = event.submitter ?? document.querySelector('button[form="agent-form"][type="submit"]') ?? form.querySelector('button[type="submit"]');
   $('#agent-error').classList.add('d-none');
   button.disabled = true;
   try {
