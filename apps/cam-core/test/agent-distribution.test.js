@@ -29,11 +29,20 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     app.coreStore.confirmAgentIdentity({ agentId: east.agentId, currentKey: true, signingKeyId: eastIdentity.fingerprint });
     const task = app.coreStore.createDistributionTask({ agentId: west.agentId, artifactId: 'BASELINE-REQ-AGENT' });
 
+    const auth = (agent, identity, method, path, body = '') => { const timestamp = new Date().toISOString(); const nonce = randomNonce(); return { 'x-cam-agent-id': agent.agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(identity.privateKeyPem, method, path, timestamp, nonce, body) }; };
+    const availablePath = '/api/v1/agent/available-artifacts';
+    const available = await app.inject({ method: 'GET', url: availablePath, headers: auth(east, eastIdentity, 'GET', availablePath) });
+    assert.equal(available.statusCode, 200, available.body);
+    assert.equal(available.json().items[0].artifactId, 'BASELINE-REQ-AGENT');
+    const requestPath = '/api/v1/agent/distribution-tasks'; const requestBody = JSON.stringify({ artifactId: 'BASELINE-REQ-AGENT' });
+    const requested = await app.inject({ method: 'POST', url: requestPath, headers: { ...auth(east, eastIdentity, 'POST', requestPath, requestBody), 'content-type': 'application/json' }, payload: JSON.parse(requestBody) });
+    assert.equal(requested.statusCode, 201, requested.body);
+    assert.equal(requested.json().item.agentId, east.agentId, 'Agent-requested pulls remain scoped to the authenticated Agent');
+
     const noIdentity = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull' });
     assert.equal(noIdentity.statusCode, 401);
-    const auth = (agent, identity, method, path, body = '') => { const timestamp = new Date().toISOString(); const nonce = randomNonce(); return { 'x-cam-agent-id': agent.agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(identity.privateKeyPem, method, path, timestamp, nonce, body) }; };
     const eastTasks = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: auth(east, eastIdentity, 'POST', '/api/v1/agent/tasks/pull') });
-    assert.equal(eastTasks.statusCode, 200, eastTasks.body); assert.deepEqual(eastTasks.json().items, []);
+    assert.equal(eastTasks.statusCode, 200, eastTasks.body); assert.equal(eastTasks.json().items[0].taskId, requested.json().item.taskId);
     const westTasks = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull', headers: auth(west, westIdentity, 'POST', '/api/v1/agent/tasks/pull') });
     assert.equal(westTasks.statusCode, 200, westTasks.body); assert.equal(westTasks.json().items[0].taskId, task.taskId);
     const replayTimestamp = new Date().toISOString(); const replayNonce = randomNonce();

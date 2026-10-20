@@ -7,6 +7,8 @@ let currentUser = null;
 let coreRoles = {};
 let coreUsers = [];
 let coreAgents = [];
+let distributionTasks = [];
+let distributionArtifacts = [];
 let resetUserId = null;
 let cloudMappings = null;
 let requestPollTimer = null;
@@ -177,6 +179,47 @@ async function requestAgentRotation(agentId, button) {
 }
 async function loadAgentServiceIdentity() { try { const item = await api('/api/v1/agent-service-identity'); $('#agent-service-public-key').value = item.publicKey ?? ''; $('#agent-service-fingerprint').textContent = item.fingerprint ? `指纹：${item.fingerprint}` : ''; $('#agent-default-rotation-days').value = item.agentRotationPolicy?.rotationDays ?? 90; $('#agent-default-grace-hours').value = item.agentRotationPolicy?.graceHours ?? 24; const pending = item.pendingRotation; $('#agent-service-rotate').disabled = Boolean(pending); $('#agent-service-rotation-status').textContent = pending ? `等待 Agent 确认新身份：${pending.confirmed}/${pending.total}；最晚 ${displayTime(pending.activationDeadlineAt)} 启用，逾期未确认的 Agent 将跳过并需重新配对。新指纹：${pending.fingerprint}` : item.lastRotationSkippedAgentCount ? `上次轮换已完成；${item.lastRotationSkippedAgentCount} 个未确认 Agent 已跳过，重新接入需重新配对。旧身份过渡至 ${displayTime(item.previousKeyExpiresAt)}` : item.previousFingerprint ? `上次轮换已完成；旧身份过渡至 ${displayTime(item.previousKeyExpiresAt)}` : 'Core 身份已与所有已注册 Agent 同步'; } catch (error) { message(error.message, 'danger'); } }
 async function loadAgents() { try { renderAgents((await api('/api/v1/agents')).items); await loadAgentServiceIdentity(); } catch (error) { message(error.message, 'danger'); } }
+function renderDistributionOptions() {
+  const artifactSelect = $('#distribution-artifact');
+  const agentSelect = $('#distribution-agent');
+  const artifactValue = artifactSelect.value;
+  const agentValue = agentSelect.value;
+  artifactSelect.innerHTML = '<option value="">请选择正式版本</option>' + distributionArtifacts.map((item) => `<option value="${escapeHtml(item.artifactId)}">${escapeHtml(`${item.productName ?? '历史产品'} · ${item.displayVersion ?? item.version ?? '未知版本'}（${item.packageCount} 个包）`)}</option>`).join('');
+  agentSelect.innerHTML = '<option value="">请选择 Agent</option>' + coreAgents.filter((item) => item.status === 'ACTIVE').map((item) => `<option value="${escapeHtml(item.agentId)}">${escapeHtml(item.name)} · ${escapeHtml(item.centerId)}</option>`).join('');
+  artifactSelect.value = distributionArtifacts.some((item) => item.artifactId === artifactValue) ? artifactValue : '';
+  agentSelect.value = coreAgents.some((item) => item.agentId === agentValue && item.status === 'ACTIVE') ? agentValue : '';
+}
+function distributionProgress(task) {
+  const progress = task.progress ?? {};
+  if (progress.totalParts) return `${progress.completedParts ?? 0} / ${progress.totalParts} 分块${progress.fileName ? ` · ${progress.fileName}` : ''}`;
+  return progress.state === 'ready' ? '全部文件已校验' : '等待 Agent 拉取';
+}
+function renderDistributionTasks() {
+  const labels = { QUEUED: '排队中', RUNNING: '传输中', COMPLETED: '已就绪' };
+  $('#distribution-rows').innerHTML = distributionTasks.length ? distributionTasks.map((task) => {
+    const agent = coreAgents.find((item) => item.agentId === task.agentId);
+    const artifact = distributionArtifacts.find((item) => item.artifactId === task.artifactId);
+    const status = labels[task.status] ?? task.status;
+    return `<tr><td><code>${escapeHtml(task.taskId)}</code></td><td>${escapeHtml(agent?.name ?? task.agentId)}</td><td>${escapeHtml(artifact ? `${artifact.productName ?? '历史产品'} · ${artifact.displayVersion ?? artifact.version ?? '未知版本'}` : task.artifactId)}</td><td><span class="badge text-bg-${task.status === 'COMPLETED' ? 'success' : task.status === 'RUNNING' ? 'primary' : 'warning'}">${escapeHtml(status)}</span>${task.lastError ? `<div class="small text-danger mt-1">${escapeHtml(task.lastError)}</div>` : ''}</td><td>${escapeHtml(distributionProgress(task))}${task.attempts ? `<div class="small text-body-secondary">失败重试 ${escapeHtml(task.attempts)} 次</div>` : ''}</td><td>${escapeHtml(displayTime(task.updatedAt))}</td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="text-center text-body-secondary py-4">暂无分发任务</td></tr>';
+  refreshPaginatedTables($('#page-distribution'));
+}
+async function loadDistribution() {
+  try {
+    const [artifacts, agents, tasks] = await Promise.all([api('/api/v1/artifacts'), api('/api/v1/agents'), api('/api/v1/distribution-tasks')]);
+    distributionArtifacts = (artifacts.items ?? []).map((item) => ({ ...item, packageCount: (item.files ?? []).length }));
+    coreAgents = agents.items ?? [];
+    distributionTasks = tasks.items ?? [];
+    renderDistributionOptions(); renderDistributionTasks(); clearMessage();
+  } catch (error) { message(error.message, 'danger'); }
+}
+async function createDistributionTask(event) {
+  event.preventDefault();
+  const button = event.submitter; button.disabled = true; $('#distribution-error').classList.add('d-none');
+  try { await api('/api/v1/distribution-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifactId: $('#distribution-artifact').value, agentId: $('#distribution-agent').value }) }); message('分发任务已创建，目标 Agent 会主动拉取'); $('#distribution-form').reset(); await loadDistribution(); }
+  catch (error) { $('#distribution-error').textContent = error.message; $('#distribution-error').classList.remove('d-none'); }
+  finally { button.disabled = false; }
+}
 async function updateAgentStatus(button) {
   const nextStatus = button.dataset.status;
   button.disabled = true;
@@ -345,13 +388,14 @@ async function loadGateKeys({ preserveInputs = false } = {}) {
   return item;
 }
 function showPage(page) {
-  const validPages = new Set(['requests', 'artifacts', 'cloud-config', 'gate-config', 'agents', 'users']);
+  const validPages = new Set(['requests', 'artifacts', 'distribution', 'cloud-config', 'gate-config', 'agents', 'users']);
   if (!validPages.has(page)) page = 'requests';
-  const artifacts = page === 'artifacts'; const cloud = page === 'cloud-config'; const gate = page === 'gate-config'; const agents = page === 'agents'; const users = page === 'users';
-  $('#page-requests').classList.toggle('d-none', artifacts || cloud || gate || agents || users); $('#page-artifacts').classList.toggle('d-none', !artifacts); $('#page-cloud-config').classList.toggle('d-none', !cloud); $('#page-gate-config').classList.toggle('d-none', !gate); $('#page-agents').classList.toggle('d-none', !agents); $('#page-users').classList.toggle('d-none', !users);
-  $('#page-title').textContent = artifacts ? '正式制品' : cloud ? '云管对接配置' : gate ? '网闸对接配置' : agents ? 'Agent 管理' : users ? '账号管理' : '云管审批请求';
+  const artifacts = page === 'artifacts'; const distribution = page === 'distribution'; const cloud = page === 'cloud-config'; const gate = page === 'gate-config'; const agents = page === 'agents'; const users = page === 'users';
+  $('#page-requests').classList.toggle('d-none', artifacts || distribution || cloud || gate || agents || users); $('#page-artifacts').classList.toggle('d-none', !artifacts); $('#page-distribution').classList.toggle('d-none', !distribution); $('#page-cloud-config').classList.toggle('d-none', !cloud); $('#page-gate-config').classList.toggle('d-none', !gate); $('#page-agents').classList.toggle('d-none', !agents); $('#page-users').classList.toggle('d-none', !users);
+  $('#page-title').textContent = artifacts ? '正式制品' : distribution ? 'Agent 分发' : cloud ? '云管对接配置' : gate ? '网闸对接配置' : agents ? 'Agent 管理' : users ? '账号管理' : '云管审批请求';
   document.querySelectorAll('[data-page]').forEach((link) => link.classList.toggle('active', link.dataset.page === page));
   if (artifacts) loadArtifacts();
+  if (distribution) loadDistribution();
   if (cloud) loadCloudConfig();
   if (gate) loadGateConfig();
   if (agents) loadAgents();
@@ -385,6 +429,8 @@ $('#password-cancel').addEventListener('click', () => { if (!forcedPasswordChang
 $('#logout').addEventListener('click', async () => { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); }); $('#refresh').addEventListener('click', load);
 $('#detail-close').addEventListener('click', () => $('#detail').close());
 $('#detail').addEventListener('click', (event) => { if (event.target === $('#detail')) $('#detail').close(); }); $('#artifacts-refresh').addEventListener('click', loadArtifacts);
+$('#distribution-refresh').addEventListener('click', loadDistribution);
+$('#distribution-form').addEventListener('submit', createDistributionTask);
 $('#artifact-filter-product').addEventListener('change', () => { renderArtifactFilterOptions(); renderArtifactRows(); });
 $('#artifact-filter-version').addEventListener('change', renderArtifactRows);
 $('#artifact-filter-storage').addEventListener('change', renderArtifactRows);
