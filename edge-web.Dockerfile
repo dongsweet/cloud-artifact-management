@@ -12,6 +12,7 @@ RUN mkdir -p /out/assets/fonts \
   && cp shared-assets/bootstrap.min.css /out/assets/ \
   && cp shared-assets/adminlte.min.css /out/assets/ \
   && cp shared-assets/bootstrap-icons.min.css /out/assets/ \
+  && cp node_modules/bootstrap/dist/js/bootstrap.bundle.min.js node_modules/admin-lte/dist/js/adminlte.min.js /out/assets/ \
   && cp shared-assets/fonts/* /out/assets/fonts/ \
   && cp layout.css gate-pairing.js gate-pairing.css /out/assets/ \
   && cp index.html /out/ \
