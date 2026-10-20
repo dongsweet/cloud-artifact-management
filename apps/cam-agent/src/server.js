@@ -65,6 +65,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     return reply.type('font/woff2').send(await readFile(join(sharedAssetRoot, 'fonts', request.params.file)));
   });
   app.get('/assets/layout.css', async (_request, reply) => reply.type('text/css; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'layout.css'))));
+  app.get('/assets/table-pagination.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'table-pagination.js'))));
   app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(agentPage()));
   const core = async (path, options = {}, signer = identity) => {
     if (!agentId) throw Object.assign(new Error('Agent 尚未完成 Core 注册'), { code: 'agent_not_registered' });

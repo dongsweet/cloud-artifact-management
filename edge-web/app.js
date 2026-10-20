@@ -1,5 +1,6 @@
 import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js?v=20261011-grant-round-scope';
 import { renderGatePairing } from './gate-pairing.js?v=20261020-peer-save-feedback';
+import { refreshPaginatedTables } from './table-pagination.js?v=20261020-table-pagination';
 const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, currentRoundCandidates: [], currentRoundQueue: [], batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null, nextRoundPreview: null };
 document.querySelector('#gate-pairing-mount').innerHTML = renderGatePairing('edge');
 let importPreviewRequestId = 0;

@@ -5,9 +5,9 @@ COPY core-web/package.json core-web/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 COPY core-web/index.html core-web/core.js core-web/core.css ./
 COPY web-shared/layout.css /build/layout.css
-COPY web-shared/gate-pairing.js web-shared/gate-pairing.css /build/
+COPY web-shared/gate-pairing.js web-shared/gate-pairing.css web-shared/table-pagination.js /build/
 COPY web-shared/assets /build/shared-assets
-RUN mkdir -p /out/assets/fonts && cp shared-assets/bootstrap.min.css /out/assets/ && cp shared-assets/bootstrap-icons.min.css /out/assets/ && cp shared-assets/fonts/* /out/assets/fonts/ && cp shared-assets/adminlte.min.css /out/assets/ && cp layout.css gate-pairing.js gate-pairing.css /out/assets/ && cp index.html /out/ && cp core.js core.css /out/assets/
+RUN mkdir -p /out/assets/fonts && cp shared-assets/bootstrap.min.css /out/assets/ && cp shared-assets/bootstrap-icons.min.css /out/assets/ && cp shared-assets/fonts/* /out/assets/fonts/ && cp shared-assets/adminlte.min.css /out/assets/ && cp layout.css gate-pairing.js gate-pairing.css table-pagination.js /out/assets/ && cp index.html /out/ && cp core.js core.css /out/assets/
 FROM ${CADDY_BASE_IMAGE}
 COPY core-web/Caddyfile /etc/caddy/Caddyfile
 COPY --from=assets /out /srv/web
