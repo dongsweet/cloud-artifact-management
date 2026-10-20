@@ -1,5 +1,5 @@
 import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js?v=20261011-grant-round-scope';
-import { renderGatePairing } from './gate-pairing.js?v=20261020-peer-flow';
+import { renderGatePairing } from './gate-pairing.js?v=20261020-peer-save-feedback';
 const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, currentRoundCandidates: [], currentRoundQueue: [], batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null, nextRoundPreview: null };
 document.querySelector('#gate-pairing-mount').innerHTML = renderGatePairing('edge');
 let importPreviewRequestId = 0;
@@ -155,6 +155,7 @@ async function loadGateKeys({ preserveInputs = false } = {}) {
   $('#gate-secret-status').value = states[item.pairingState] ?? '等待确认配对状态';
   const events = { PEER_TRUSTED: '已保存对端身份', PEER_REPLACED_KEYS_RETIRED: '对端身份已更换，旧密钥已撤销', ROTATION_PROPOSAL_CREATED: '已发起密钥协商', ROTATION_PROPOSAL_ACCEPTED: '已接收密钥提案', ROTATION_ACTIVATED_CORE: '等待 Edge 确认密钥', ROTATION_CONFIRMED_CORE: '双方密钥确认完成', ROTATION_CONFIRMED_EDGE: '业务密钥已生效', ROTATION_RETRY_WAIT: '协商失败，等待重试', SCHEDULE_UPDATED: '轮换策略已更新', BOOTSTRAP_SECRET_RETIRED: '旧初始化密钥已撤销' };
   $('#gate-key-events').innerHTML = (item.recentEvents ?? []).slice(0, 5).map((event) => `<div class="cam-gate-event"><time>${escapeHtml(new Date(event.at).toLocaleString())}</time><span>${escapeHtml(events[event.type] ?? event.type)}</span></div>`).join('') || '<p class="small text-body-secondary mb-0">暂无配对与轮换记录</p>';
+  return item;
 }
 
 function productFilterItems(products) { return products.map((item) => ({ id: item.productId, name: item.name })); }
@@ -856,7 +857,24 @@ $('#gate-copy-identity').addEventListener('click', async () => {
 });
 $('#gate-peer-edit').addEventListener('click', () => { $('#gate-peer-editor').classList.remove('d-none'); $('#gate-peer-editor').dataset.editing = 'true'; $('#gate-peer-fingerprint').classList.add('d-none'); $('#gate-peer-fingerprint-label').textContent = '导入 Core 导出的身份包'; $('#gate-peer-edit').classList.add('d-none'); $('#gate-peer-cancel').classList.remove('d-none'); $('#gate-trust-peer').classList.remove('d-none'); $('#gate-peer-bundle-input').focus({ preventScroll: true }); $('#gate-peer-state').textContent = '替换身份会撤销当前共享密钥，双方需要重新确认配对'; });
 $('#gate-peer-cancel').addEventListener('click', () => { $('#gate-peer-editor').classList.add('d-none'); $('#gate-peer-editor').dataset.editing = ''; $('#gate-peer-fingerprint').classList.remove('d-none'); $('#gate-peer-fingerprint-label').textContent = '已信任的身份指纹'; $('#gate-peer-cancel').classList.add('d-none'); $('#gate-trust-peer').classList.add('d-none'); $('#gate-peer-edit').classList.remove('d-none'); $('#gate-peer-bundle-input').value = ''; $('#gate-peer-state').textContent = '已取消身份替换'; });
-$('#gate-trust-peer').addEventListener('click', async (event) => { const button = event.currentTarget; const original = button.innerHTML; button.disabled = true; button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>保存中'; try { const peerTrusted = Boolean($('#gate-peer-fingerprint').textContent && $('#gate-peer-fingerprint').textContent !== '尚未配对' && $('#gate-peer-fingerprint').textContent !== '尚未导入'); if (peerTrusted && !await confirmAction({ title: '重新配对 Core 身份', message: '确定替换已信任的 Core 身份吗？', detail: '替换对端身份会撤销当前共享密钥，双方需要重新完成身份确认。', confirmText: '确认替换', variant: 'warning' })) return; const identityBundle = JSON.parse($('#gate-peer-bundle-input').value); await api('/api/v1/gate/keys/trusted-peer', { method: 'PUT', body: JSON.stringify({ identityBundle }) }); $('#gate-peer-bundle-input').value = ''; $('#gate-peer-editor').dataset.editing = ''; await loadGateKeys(); showAlert('Core 身份已保存；双方完成互信和密钥确认后才算配对成功'); } catch (error) { showAlert(error.message, 'danger'); } finally { button.disabled = false; button.innerHTML = original; } });
+$('#gate-trust-peer').addEventListener('click', async (event) => {
+  const button = event.currentTarget; const original = button.innerHTML; const notice = $('#gate-pairing-result'); let identitySaved = false;
+  const peerTrusted = Boolean($('#gate-peer-fingerprint').textContent && $('#gate-peer-fingerprint').textContent !== '尚未配对' && $('#gate-peer-fingerprint').textContent !== '尚未导入');
+  notice.className = 'alert alert-info mt-3 mb-0'; notice.textContent = peerTrusted ? '请在确认框中确认替换 Core 身份。' : '正在保存 Core 身份…';
+  button.disabled = true; button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>保存中';
+  try {
+    if (peerTrusted && !await confirmAction({ title: '重新配对 Core 身份', message: '确定替换已信任的 Core 身份吗？', detail: '替换对端身份会撤销当前共享密钥，双方需要重新完成身份确认。', confirmText: '确认替换', variant: 'warning' })) { notice.className = 'alert alert-secondary mt-3 mb-0'; notice.textContent = '已取消身份替换。'; return; }
+    notice.className = 'alert alert-info mt-3 mb-0'; notice.textContent = '正在保存身份并刷新配对状态…';
+    const identityBundle = JSON.parse($('#gate-peer-bundle-input').value);
+    await api('/api/v1/gate/keys/trusted-peer', { method: 'PUT', body: JSON.stringify({ identityBundle }) }); identitySaved = true;
+    $('#gate-peer-bundle-input').value = ''; $('#gate-peer-editor').dataset.editing = '';
+    const item = await loadGateKeys();
+    notice.className = 'alert alert-success mt-3 mb-0'; notice.textContent = `Core 身份已保存。当前状态：${item.pairingState === 'PAIRED' ? '双向配对完成，业务密钥可用' : '身份已更新，等待双方重新完成密钥确认'}。`;
+  } catch (error) {
+    notice.className = `alert alert-${identitySaved ? 'warning' : 'danger'} mt-3 mb-0`;
+    notice.textContent = identitySaved ? `身份已保存，但状态刷新失败：${error.message}` : `身份未保存：${error.message}`;
+  } finally { button.disabled = false; button.innerHTML = original; }
+});
 $('#gate-pairing-test').addEventListener('click', async (event) => { const button = event.currentTarget; const notice = $('#gate-pairing-result'); button.disabled = true; button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>测试中'; notice.className = 'alert alert-info mt-3 mb-0'; notice.textContent = '正在测试身份配对与密钥认证…'; try { const result = await api('/api/v1/gate/keys/test', { method: 'POST' }); notice.className = 'alert alert-success mt-3 mb-0'; notice.textContent = `配对测试通过：本端 Edge 与对端 ${result.checks.remote.role} 均已配对，密钥认证成功（${new Date().toLocaleString()}）。`; showAlert('身份配对、共享密钥和 Core 控制通道均正常'); } catch (error) { notice.className = 'alert alert-danger mt-3 mb-0'; notice.textContent = `配对测试未通过：${error.message}`; showAlert(error.message, 'danger'); } finally { await loadGateKeys({ preserveInputs: true }).catch(() => {}); button.disabled = false; button.innerHTML = '<i class="bi bi-shield-check me-1"></i>测试身份配对'; } });
 window.addEventListener('hashchange', renderRoute);
 
