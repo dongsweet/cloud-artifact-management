@@ -302,6 +302,8 @@ async function loadGateKeys({ preserveInputs = false } = {}) {
   return item;
 }
 function showPage(page) {
+  const validPages = new Set(['requests', 'artifacts', 'cloud-config', 'gate-config', 'agents', 'users']);
+  if (!validPages.has(page)) page = 'requests';
   const artifacts = page === 'artifacts'; const cloud = page === 'cloud-config'; const gate = page === 'gate-config'; const agents = page === 'agents'; const users = page === 'users';
   $('#page-requests').classList.toggle('d-none', artifacts || cloud || gate || agents || users); $('#page-artifacts').classList.toggle('d-none', !artifacts); $('#page-cloud-config').classList.toggle('d-none', !cloud); $('#page-gate-config').classList.toggle('d-none', !gate); $('#page-agents').classList.toggle('d-none', !agents); $('#page-users').classList.toggle('d-none', !users);
   $('#page-title').textContent = artifacts ? '正式制品' : cloud ? '云管对接配置' : gate ? '网闸对接配置' : agents ? 'Agent 管理' : users ? '账号管理' : '云管审批请求';
@@ -311,6 +313,10 @@ function showPage(page) {
   if (gate) loadGateConfig();
   if (agents) loadAgents();
   if (users) loadUsers();
+}
+function pageFromHash() {
+  const value = window.location.hash.slice(1).split('?')[0];
+  return value || 'requests';
 }
 async function loadUsers() {
   try {
@@ -364,6 +370,7 @@ $('#agent-rotate-now').addEventListener('click', async (event) => {
   try { await changeAgentRotation('rotate', {}); } finally { renderAgentRotationSummary(); }
 });
 document.querySelectorAll('[data-page]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); location.hash = link.dataset.page; showPage(link.dataset.page); }));
+window.addEventListener('hashchange', () => { if (!$('#app').classList.contains('d-none')) showPage(pageFromHash()); });
 $('#agent-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
@@ -424,7 +431,7 @@ $('#gate-pairing-test').addEventListener('click', async (event) => {
 });
 $('#gate-schedule').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/keys/schedule', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rotationIntervalDays: Number($('#gate-rotation-days').value), gracePeriodHours: Number($('#gate-grace-hours').value) }) }); await loadGateKeys(); message('自动轮换策略已保存'); } catch (error) { message(error.message, 'danger'); } });
 $('#gate-rotate-now').addEventListener('click', async () => { const button = $('#gate-rotate-now'); button.disabled = true; try { await api('/api/v1/gate/keys/rotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); await loadGateKeys(); message('共享密钥已完成轮换'); } catch (error) { message(error.message, 'danger'); } finally { button.disabled = false; } });
-try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) await load(); } catch { showLogin(); }
+try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) { showPage(pageFromHash()); if (pageFromHash() === 'requests') await load(); } } catch { showLogin(); }
 
 setInterval(() => { if (!document.hidden && !$('#page-gate-config').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadGateKeys({ preserveInputs: true }).catch(() => {}); }, 5000);
 setInterval(() => { if (!document.hidden && !$('#page-agents').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadAgents(); }, 5000);
