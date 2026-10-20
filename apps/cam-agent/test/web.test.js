@@ -14,6 +14,9 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /id="core-public-key" class="form-control agent-identity-key bg-body-secondary"[^>]*readonly/);
   assert.match(html, /id="core-fingerprint" class="form-text font-monospace text-break mt-2"/);
   assert.doesNotMatch(html, /id="core-trusted-key"|id="core-trusted-public-key"/);
+  assert.doesNotMatch(html, /填写本节点可访问的 Core 基地址/);
+  assert.match(html, /<div class="card-footer d-flex flex-wrap justify-content-end gap-2"><button id="core-config-test"/);
+  assert.match(html, /id="core-config-save" type="submit" class="btn btn-primary" disabled[^>]*>.*?保存配置/s);
   assert.ok(html.includes("editingCore=!item.configured"));
   assert.ok(html.includes("$('#core-key-replace').classList.toggle('d-none',!item.configured)"));
   assert.ok(html.includes("$('#core-key-replace').onclick=()=>{editingCore=true"));
