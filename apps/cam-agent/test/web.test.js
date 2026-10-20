@@ -10,10 +10,12 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /cam-agent-identity-panel/);
   assert.match(html, /轮换周期和旧密钥过渡期由 Core 下发/);
   assert.match(html, /测试配对并同步状态/);
-  assert.match(html, /id="core-url"[^>]*readonly/);
-  assert.match(html, /id="core-public-key"[^>]*readonly/);
-  assert.match(html, /id="core-url" class="form-control bg-body-secondary"/);
-  assert.match(html, /id="core-public-key" class="form-control agent-identity-key bg-body-secondary"/);
+  assert.match(html, /id="core-url" class="form-control bg-body-secondary"[^>]*readonly/);
+  assert.match(html, /id="core-public-key" class="form-control agent-identity-key bg-body-secondary"[^>]*readonly/);
+  assert.match(html, /id="core-fingerprint" class="form-text font-monospace text-break mt-2"/);
+  assert.doesNotMatch(html, /id="core-trusted-key"|id="core-trusted-public-key"/);
+  assert.ok(html.includes("editingCore=!item.configured"));
+  assert.ok(html.includes("$('#core-key-replace').classList.toggle('d-none',!item.configured)"));
   assert.ok(html.includes("$('#core-key-replace').onclick=()=>{editingCore=true"));
   assert.ok(html.includes("$('#core-url').classList.remove('bg-body-secondary')"));
   assert.ok(html.includes("$('#core-public-key').classList.remove('bg-body-secondary')"));
