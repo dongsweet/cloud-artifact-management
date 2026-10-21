@@ -39,6 +39,9 @@ test('Edge, Core and Agent shell branding and navigation labels are aligned', as
   assert.match(agent, /if\(deliveryPage\)\$\('#page-tasks'\)\.after\(deliveryPage\)/);
   assert.doesNotMatch(agent, /data-page="cache"|id="page-cache"/);
   assert.match(agent, /id="artifact-cache-summary"/);
+  assert.match(agent, /正式版本总数/);
+  assert.match(agent, /showCacheColumns:true/);
+  assert.match(agent, /pullLabelFor:item=>/);
   assert.match(agent, /id="task-detail-dialog"/);
   assert.match(agent, /立即同步任务/);
 });

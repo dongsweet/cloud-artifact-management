@@ -171,8 +171,9 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     let disk = { totalBytes: null, freeBytes: null };
     try { const info = await statfs(join(dataDir, 'cache')); const block = Number(info.bsize); disk = { totalBytes: Number(info.blocks) * block, freeBytes: Number(info.bavail) * block }; } catch { /* statfs is platform dependent */ }
     const cachedVersions = catalog.filter((item) => item.agentStatus === 'CACHED').length;
+    const taskCounts = catalog.reduce((counts, item) => { if (item.agentStatus === 'QUEUED') counts.queued += 1; else if (item.agentStatus === 'RUNNING') counts.running += 1; else if (item.agentStatus === 'RETRY_WAIT') counts.retry += 1; return counts; }, { queued: 0, running: 0, retry: 0 });
     const invalidFileCount = catalog.reduce((sum, item) => sum + (item.files ?? []).filter((file) => file.cacheState === 'INVALID').length, 0);
-    return { objectCount, cacheBytes, cachedFileCount: catalog.reduce((sum, item) => sum + Number(item.cachedFileCount || 0), 0), cachedVersionCount: cachedVersions, referencedFileCount: referenced.size, orphanObjectCount, invalidFileCount, disk, checkedAt: new Date().toISOString() };
+    return { objectCount, cacheBytes, cachedFileCount: catalog.reduce((sum, item) => sum + Number(item.cachedFileCount || 0), 0), totalVersionCount: catalog.length, cachedVersionCount: cachedVersions, pendingTaskCount: taskCounts.queued + taskCounts.running + taskCounts.retry, taskCounts, referencedFileCount: referenced.size, orphanObjectCount, invalidFileCount, disk, checkedAt: new Date().toISOString() };
   };
   const admin = async (request, reply) => {
     if (!request.principal?.user?.roles?.includes('CORE_ADMIN')) return fail(reply, 403, 'admin_required', '仅管理员可管理 Core 对接配置');
