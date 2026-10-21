@@ -315,6 +315,15 @@ export class CoreStore {
       .run(persistedStatus, attempts, retryAt, JSON.stringify(progress), typeof error === 'string' ? error.slice(0, 1000) : null, timestamp, status === 'COMPLETED' ? timestamp : null, taskId, agentId);
     return this.getDistributionTask(taskId);
   }
+  retryDistributionTask(agentId, taskId) {
+    const task = this.getDistributionTask(taskId);
+    if (!task || task.agentId !== agentId) throw Object.assign(new Error('task not found for this agent'), { code: 'distribution_task_not_found' });
+    if (task.status === 'COMPLETED') throw Object.assign(new Error('已完成的分发任务不能重试'), { code: 'distribution_task_completed' });
+    if (task.status === 'RUNNING') throw Object.assign(new Error('分发任务正在传输，不能重复重试'), { code: 'distribution_task_active' });
+    const timestamp = now();
+    this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', retry_at = ?, updated_at = ? WHERE task_id = ? AND agent_id = ?").run(timestamp, timestamp, taskId, agentId);
+    return this.getDistributionTask(taskId);
+  }
   getAuthorizedDistributionFile(agentId, taskId, sha256) {
     const task = this.getDistributionTask(taskId);
     if (!task || task.agentId !== agentId || !['QUEUED', 'RUNNING'].includes(task.status)) return null;

@@ -310,6 +310,10 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     try { return { item: store.updateDistributionTask(request.agentPrincipal.agentId, request.params.taskId, request.body ?? {}) }; }
     catch (err) { return error(reply, 409, err.code ?? 'distribution_progress_rejected', err.message); }
   });
+  app.post('/api/v1/agent/tasks/:taskId/retry', { bodyLimit: 4096 }, async (request, reply) => {
+    try { return { item: store.retryDistributionTask(request.agentPrincipal.agentId, request.params.taskId) }; }
+    catch (err) { return error(reply, 409, err.code ?? 'distribution_retry_rejected', err.message); }
+  });
   app.get('/api/v1/agent/tasks/:taskId/files/:sha256/parts/:index', async (request, reply) => {
     const file = store.getAuthorizedDistributionFile(request.agentPrincipal.agentId, request.params.taskId, request.params.sha256);
     if (!file) return error(reply, 404, 'distribution_file_not_found', '分发文件不存在或未授权');

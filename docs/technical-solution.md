@@ -521,6 +521,10 @@ transfer-bundle/
 | `cam-agent` | `POST /api/v1/identity/test` | 使用本机签名验证 Core 配对，需要本地登录和 CSRF 校验 |
 | `cam-agent` | `POST /api/v1/identity/rotate` | 使用旧身份向 Core 提交新公钥，并在本地原子保存新身份 |
 | `cam-agent` | `GET /api/v1/tasks` | 查看本地持久化队列及进度 |
+| `cam-agent` | `GET /api/v1/available-artifacts` | 查询 Core 全量正式版本及版本级/文件级本地缓存状态 |
+| `cam-agent` | `GET /api/v1/cache/summary` | 查询缓存对象、文件、容量、可用空间和异常对象摘要 |
+| `cam-agent` | `GET /api/v1/tasks/:taskId` | 查询任务详情、逐文件进度、分块进度和 SHA-256 复用状态 |
+| `cam-agent` | `POST /api/v1/tasks/:taskId/retry` | 请求 Core 立即重试归属本 Agent 的失败任务 |
 | `cam-agent` | `GET /api/v1/cache/:artifactId` | 查询本中心是否有 READY 制品 |
 | `cam-agent` | `GET /api/v1/delivery-grants`、`POST /api/v1/delivery-grants` | 查询或创建面向人工部署人员的正式制品交付授权 |
 | `cam-agent` | `GET /api/v1/delivery-grants/:grantId`、`DELETE /api/v1/delivery-grants/:grantId` | 查看交付授权及下载会话明细，或撤销授权 |
@@ -542,6 +546,14 @@ Core 任务状态为 `QUEUED → RUNNING → COMPLETED`；传输失败会记录�
 单文件默认 4 MiB 分块、4 路并发，可通过 Agent 环境变量调整，最多 16 路；这是初始配置，不代表 SD-WAN 的最优值，部署后应按链路丢包、RTT 和 CPU/磁盘吞吐观测调参。每块请求绑定 Agent、任务、文件摘要和分块序号；并发只作用于同一个文件的不同字节区间。首期不由 Agent 推送文件、不执行控制节点升级，也不开放匿名缓存读取。Core 侧分发管理目前通过受登录保护的 API 操作，图形化运维页面和 AAA 后续接入。
 
 ### cam-agent 人工部署交付
+
+Agent 页面按职责分为三个业务入口：
+
+- **正式制品**是 Agent 主工作台，展示 Core 全量正式版本、版本级缓存摘要和文件级缓存状态；运维人员在这里发起拉取、继续拉取或重试，并在全部文件校验完成后创建部署交付授权。相同 SHA-256 文件跨版本只保留一份缓存对象，并标记为“本机已缓存，可复用”。
+- **传输任务**是 Core→Agent 的任务中心，展示排队、传输中、重试等待和完成任务，以及逐文件、分块、字节进度、最近错误和下次重试时间。Agent 的“立即同步任务”只触发出站轮询；“立即重试”请求 Core 重新放行归属本 Agent 的任务，不提供当前模型无法可靠保证语义的取消操作。
+- **部署交付**处理 Agent→人工部署人员的下载授权和审计，展示授权、下载会话、Range 续传进度和错误，可导出一次性下载清单并撤销授权。它与 Core→Agent 传输使用不同的授权边界和存储记录。
+
+缓存状态不再作为独立导航页面；缓存摘要、文件状态和异常对象在“正式制品”及“传输任务详情”中呈现。原有缓存查询接口继续保留以兼容旧客户端。
 
 当前没有独立的部署系统，Agent 的正式制品库先面向云中心运维人员。Core 完成正式制品分发后，Agent 只把完整校验通过的文件写入本地内容寻址缓存；部署人员登录 Agent，在“正式制品库”按产品和版本筛选，打开版本包明细确认文件，再创建限定文件范围、有效期和下载次数的交付授权。Agent 生成的短期 Token 链接由部署人员交给现有升级程序或人工下载工具使用，下载完成后按清单核对大小和 SHA-256，再由现有控制节点升级程序执行实际部署。
 

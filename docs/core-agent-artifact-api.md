@@ -111,6 +111,20 @@ Agent 交付接口如下：
 | `POST /api/v1/delivery-grants/:grantId/files/:sha256/session` | 用 Token 创建或恢复一个文件下载会话 |
 | `GET /api/v1/delivery-grants/:grantId/files/:sha256/content` | 用 Token 下载 Agent 本地缓存文件，支持 Range 和断点续传 |
 
+### Agent 正式制品与传输任务接口
+
+Agent 页面把正式制品作为本地工作台，把 Core→Agent 的传输任务作为独立任务中心。正式制品目录只展示 Core 已授权的全量正式版本；Agent 点击“拉取”时先请求 Core 创建或重新排队分发任务，文件仍由 Agent 主动分块拉取。目录响应中的 `files[].cached`、`files[].cacheState` 和版本级 `agentStatus` 用于显示本机缓存与跨版本 SHA-256 复用情况。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/v1/available-artifacts` | 查询 Core 全量正式版本；附带版本级缓存摘要、文件级缓存状态、最近任务和可复用文件信息 |
+| `GET /api/v1/cache/summary` | 查询缓存对象数、缓存文件数、占用空间、可用空间、异常对象数和检查时间 |
+| `GET /api/v1/tasks` | 查询本地传输任务；返回展示状态、文件/字节进度、尝试次数、下次重试时间和最近错误 |
+| `GET /api/v1/tasks/:taskId` | 查询单个任务及逐文件、分块进度和本机复用状态 |
+| `POST /api/v1/tasks/:taskId/retry` | 请求 Core 将归属本 Agent 的失败任务立即放回可领取队列，并触发 Agent 重新轮询 |
+
+任务展示状态将 Core 的 `QUEUED + lastError + retryAt` 转换为“重试等待”。任务详情中的 `reused` 表示同一 SHA-256 对象已经在本机缓存，文件不会再次下载。缓存目录继续按 SHA-256 内容寻址，不为每个正式版本复制对象。
+
 ## 身份与后续分发
 
 `cam-agent` 使用首次配对的 Ed25519 设备身份，不使用固定服务令牌。Core 注册 Agent 时保存公钥和指纹；Agent 请求携带 `X-CAM-Agent-Id`、`X-CAM-Agent-Timestamp`、`X-CAM-Agent-Nonce` 和 `X-CAM-Agent-Signature`，签名覆盖 HTTP 方法、路径、时间戳、随机数和请求体摘要。Core 拒绝过期时间戳、重复随机数、禁用 Agent 和无效签名。Agent 可使用旧身份签名提交新公钥，Core 在短暂过渡期接受旧、新公钥后完成轮换。Core 仍根据 Agent 身份、分发任务和目标范围授权版本基线及其文件，不开放匿名目录或摘要下载。

@@ -67,6 +67,16 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     assert.equal(crossed.statusCode, 404);
     const progressPath = `/api/v1/agent/tasks/${task.taskId}/progress`; const progressBody = JSON.stringify({ status: 'COMPLETED', progress: { state: 'ready' } }); const completed = await app.inject({ method: 'POST', url: progressPath, headers: { ...auth(west, finalIdentity, 'POST', progressPath, progressBody), 'content-type': 'application/json' }, payload: JSON.parse(progressBody) });
     assert.equal(completed.statusCode, 200, completed.body); assert.equal(completed.json().item.status, 'COMPLETED');
+
+    const retryTask = app.coreStore.createDistributionTask({ agentId: east.agentId, artifactId: 'BASELINE-REQ-AGENT' });
+    const retryProgressPath = `/api/v1/agent/tasks/${retryTask.taskId}/progress`;
+    const retryProgressBody = JSON.stringify({ status: 'FAILED', progress: { state: 'downloading', completedParts: 0, totalParts: 1 }, error: '模拟链路中断' });
+    const failed = await app.inject({ method: 'POST', url: retryProgressPath, headers: { ...auth(east, eastIdentity, 'POST', retryProgressPath, retryProgressBody), 'content-type': 'application/json' }, payload: JSON.parse(retryProgressBody) });
+    assert.equal(failed.statusCode, 200, failed.body); assert.equal(failed.json().item.status, 'QUEUED'); assert.equal(failed.json().item.attempts, 1); assert.equal(failed.json().item.lastError, '模拟链路中断');
+    const retryPath = `/api/v1/agent/tasks/${retryTask.taskId}/retry`;
+    const retryBody = '{}';
+    const retried = await app.inject({ method: 'POST', url: retryPath, headers: { ...auth(east, eastIdentity, 'POST', retryPath, retryBody), 'content-type': 'application/json' }, payload: {} });
+    assert.equal(retried.statusCode, 200, retried.body); assert.equal(retried.json().item.status, 'QUEUED'); assert.equal(retried.json().item.lastError, '模拟链路中断'); assert.ok(Date.parse(retried.json().item.retryAt) <= Date.now());
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 

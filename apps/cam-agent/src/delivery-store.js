@@ -136,6 +136,7 @@ export class AgentDeliveryStore {
 
   _parseGrant(row) {
     const usedTotal = this.db.prepare("SELECT COUNT(*) AS count FROM agent_delivery_sessions WHERE grant_id = ? AND (bytes_sent > 0 OR status = 'COMPLETED')").get(row.grant_id).count;
+    const sessionSummary = this.db.prepare("SELECT SUM(CASE WHEN status = 'ACTIVE' THEN 1 ELSE 0 END) AS active, SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed, SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completed FROM agent_delivery_sessions WHERE grant_id = ?").get(row.grant_id);
     const items = this.db.prepare(`SELECT i.*, (SELECT COUNT(*) FROM agent_delivery_sessions s
       WHERE s.grant_id = i.grant_id AND s.file_sha256 = i.file_sha256 AND (s.bytes_sent > 0 OR s.status = 'COMPLETED')) AS used_sessions
       FROM agent_delivery_items i WHERE i.grant_id = ? ORDER BY rowid`).all(row.grant_id);
@@ -143,6 +144,7 @@ export class AgentDeliveryStore {
       grantId: row.grant_id, artifactId: row.artifact_id, principalId: row.principal_id, createdBy: row.created_by,
       createdAt: row.created_at, expiresAt: row.expires_at, maxTotalSessions: row.max_total_sessions,
       usedTotalSessions: usedTotal, remainingTotalSessions: Math.max(0, row.max_total_sessions - usedTotal), revokedAt: row.revoked_at,
+      activeSessions: Number(sessionSummary.active ?? 0), failedSessions: Number(sessionSummary.failed ?? 0), completedSessions: Number(sessionSummary.completed ?? 0),
       items: items.map((item) => ({ fileSha256: item.file_sha256, packageKey: item.package_key, fileName: item.file_name, size: item.size_bytes,
         maxSessions: item.max_sessions, usedSessions: item.used_sessions, remainingSessions: Math.max(0, item.max_sessions - item.used_sessions) }))
     };

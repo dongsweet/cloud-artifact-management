@@ -1,6 +1,6 @@
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { mkdir, rename, rm, stat, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, stat, statfs, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
@@ -55,6 +55,13 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   let configuring = false;
   let testing = false;
   db.exec(`CREATE TABLE IF NOT EXISTS agent_tasks (task_id TEXT PRIMARY KEY, artifact_id TEXT NOT NULL, status TEXT NOT NULL, progress_json TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT, last_error TEXT, updated_at TEXT NOT NULL);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS agent_task_files (
+    task_id TEXT NOT NULL, sha256 TEXT NOT NULL, package_key TEXT, file_name TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', reused INTEGER NOT NULL DEFAULT 0,
+    completed_parts INTEGER NOT NULL DEFAULT 0, total_parts INTEGER NOT NULL DEFAULT 0,
+    bytes_downloaded INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, sha256)
+  ); CREATE INDEX IF NOT EXISTS agent_task_files_task_idx ON agent_task_files(task_id, updated_at);`);
   const taskColumns = new Set(db.prepare('PRAGMA table_info(agent_tasks)').all().map((column) => column.name));
   if (!taskColumns.has('attempts')) db.exec('ALTER TABLE agent_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
   if (!taskColumns.has('retry_at')) db.exec('ALTER TABLE agent_tasks ADD COLUMN retry_at TEXT');
@@ -72,6 +79,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   app.get('/assets/layout.css', async (_request, reply) => reply.type('text/css; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'layout.css'))));
   app.get('/assets/table-pagination.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'table-pagination.js'))));
   app.get('/assets/artifact-catalog.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'artifact-catalog.js'))));
+  app.get('/assets/task-table.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'task-table.js'))));
   app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(agentPage()));
   const core = async (path, options = {}, signer = identity) => {
     const config = coreConnection.get();
@@ -118,19 +126,53 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     if (!response.ok) { const body = JSON.parse(responseBody.toString('utf8') || '{}'); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
   };
   const rotation = await createIdentityRotation({ identityPath, identity, request: core, onIdentity: (next) => { identity = next; }, onAgentId: (next) => { agentId = next; }, initialAgentId: legacyAgentId });
+  const cachePath = (sha256) => join(dataDir, 'cache', sha256);
+  const inspectCachedFile = async (file) => {
+    try {
+      const info = await stat(cachePath(file.sha256));
+      if (info.size === Number(file.sizeBytes)) return { ...file, cached: true, cacheState: 'READY', cachedBytes: info.size };
+      return { ...file, cached: false, cacheState: 'INVALID', cachedBytes: info.size };
+    } catch { return { ...file, cached: false, cacheState: 'MISSING', cachedBytes: 0 }; }
+  };
+  const taskForArtifact = (artifactId) => db.prepare('SELECT * FROM agent_tasks WHERE artifact_id = ? ORDER BY updated_at DESC LIMIT 1').get(artifactId);
+  const displayTaskStatus = (task) => {
+    if (!task) return 'NOT_CACHED';
+    if (task.status === 'COMPLETED') return 'CACHED';
+    if (task.last_error && task.retry_at && Date.parse(task.retry_at) > Date.now()) return 'RETRY_WAIT';
+    if (task.status === 'RUNNING') return 'RUNNING';
+    return 'QUEUED';
+  };
   const listAvailableArtifacts = async () => {
     const response = await core('/api/v1/agent/available-artifacts'); const catalog = await response.json();
     return Promise.all((catalog.items ?? []).map(async (item) => {
-      const files = await Promise.all((item.files ?? []).map(async (file) => {
-        try { const info = await stat(join(dataDir, 'cache', file.sha256)); return { ...file, cached: info.size === file.sizeBytes }; }
-        catch { return { ...file, cached: false }; }
-      }));
-      const task = db.prepare('SELECT status, last_error, updated_at FROM agent_tasks WHERE artifact_id = ? ORDER BY updated_at DESC LIMIT 1').get(item.artifactId);
-      const allCached = files.length > 0 && files.every((file) => file.cached);
-      const agentStatus = allCached ? 'CACHED' : task?.last_error ? 'FAILED' : task?.status === 'RUNNING' ? 'RUNNING' : task ? 'QUEUED' : 'NOT_CACHED';
-      const agentStatusLabel = { CACHED: '已缓存', FAILED: '传输失败', RUNNING: '传输中', QUEUED: '排队中', NOT_CACHED: '未拉取' }[agentStatus];
-      return { ...item, files, agentStatus, agentStatusLabel, agentStatusDetail: task?.last_error ?? null };
+      const files = await Promise.all((item.files ?? []).map(inspectCachedFile));
+      const task = taskForArtifact(item.artifactId);
+      const cachedFiles = files.filter((file) => file.cached);
+      const allCached = files.length > 0 && cachedFiles.length === files.length;
+      const taskState = displayTaskStatus(task);
+      const agentStatus = allCached ? 'CACHED' : taskState === 'RETRY_WAIT' ? 'RETRY_WAIT' : taskState === 'RUNNING' ? 'RUNNING' : taskState === 'QUEUED' ? 'QUEUED' : cachedFiles.length ? 'PARTIAL' : 'NOT_CACHED';
+      const agentStatusLabel = { CACHED: '已缓存', PARTIAL: '部分缓存', RETRY_WAIT: '重试等待', RUNNING: '传输中', QUEUED: '排队中', NOT_CACHED: '未拉取' }[agentStatus];
+      return { ...item, files, cachedFileCount: cachedFiles.length, cachedBytes: files.reduce((sum, file) => sum + (file.cachedBytes || 0), 0), totalBytes: files.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0), agentStatus, agentStatusLabel, agentStatusDetail: task?.last_error ?? null, lastTransferAt: task?.updated_at ?? null, taskId: task?.task_id ?? null };
     }));
+  };
+  const cacheSummary = async (items) => {
+    const catalog = items ?? await listAvailableArtifacts();
+    const referenced = new Set(catalog.flatMap((item) => (item.files ?? []).map((file) => file.sha256)));
+    let objectCount = 0; let cacheBytes = 0; let orphanObjectCount = 0;
+    try {
+      const entries = await readdir(join(dataDir, 'cache'), { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile() || !/^[a-f0-9]{64}$/u.test(entry.name)) continue;
+        objectCount += 1;
+        try { cacheBytes += (await stat(cachePath(entry.name))).size; } catch { /* removed while scanning */ }
+        if (!referenced.has(entry.name)) orphanObjectCount += 1;
+      }
+    } catch { /* cache directory is created during startup */ }
+    let disk = { totalBytes: null, freeBytes: null };
+    try { const info = await statfs(join(dataDir, 'cache')); const block = Number(info.bsize); disk = { totalBytes: Number(info.blocks) * block, freeBytes: Number(info.bavail) * block }; } catch { /* statfs is platform dependent */ }
+    const cachedVersions = catalog.filter((item) => item.agentStatus === 'CACHED').length;
+    const invalidFileCount = catalog.reduce((sum, item) => sum + (item.files ?? []).filter((file) => file.cacheState === 'INVALID').length, 0);
+    return { objectCount, cacheBytes, cachedFileCount: catalog.reduce((sum, item) => sum + Number(item.cachedFileCount || 0), 0), cachedVersionCount: cachedVersions, referencedFileCount: referenced.size, orphanObjectCount, invalidFileCount, disk, checkedAt: new Date().toISOString() };
   };
   const admin = async (request, reply) => {
     if (!request.principal?.user?.roles?.includes('CORE_ADMIN')) return fail(reply, 403, 'admin_required', '仅管理员可管理 Core 对接配置');
@@ -172,35 +214,112 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
       return { ok: true, fingerprint: identity.fingerprint, rotation: rotation.status() };
     } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'agent_rotation_failed', err.message); }
   });
-  const localTask = (task) => { db.prepare(`INSERT INTO agent_tasks (task_id, artifact_id, status, progress_json, attempts, retry_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET artifact_id=excluded.artifact_id, status=excluded.status, attempts=excluded.attempts, retry_at=excluded.retry_at, updated_at=excluded.updated_at`).run(task.taskId, task.artifactId, task.status, JSON.stringify(task.progress ?? {}), task.attempts ?? 0, task.retryAt ?? null, new Date().toISOString()); };
+  const nowIso = () => new Date().toISOString();
+  const upsertTaskFiles = (task) => {
+    const timestamp = nowIso();
+    const statement = db.prepare(`INSERT INTO agent_task_files (task_id, sha256, package_key, file_name, size_bytes, total_parts, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(task_id, sha256) DO UPDATE SET package_key=excluded.package_key, file_name=excluded.file_name, size_bytes=excluded.size_bytes, total_parts=excluded.total_parts, updated_at=excluded.updated_at`);
+    for (const file of task.files ?? []) statement.run(task.taskId, file.sha256, file.packageKey ?? null, file.fileName, Number(file.sizeBytes ?? 0), Math.ceil(Number(file.sizeBytes ?? 0) / CHUNK_SIZE), timestamp);
+  };
+  const localTask = (task) => {
+    const timestamp = nowIso();
+    const lastError = Object.hasOwn(task, 'lastError') ? task.lastError : null;
+    db.prepare(`INSERT INTO agent_tasks (task_id, artifact_id, status, progress_json, attempts, retry_at, last_error, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(task_id) DO UPDATE SET artifact_id=excluded.artifact_id, status=excluded.status, progress_json=excluded.progress_json,
+      attempts=excluded.attempts, retry_at=excluded.retry_at, last_error=excluded.last_error, updated_at=excluded.updated_at`)
+      .run(task.taskId, task.artifactId, task.status, JSON.stringify(task.progress ?? {}), task.attempts ?? 0, task.retryAt ?? null, lastError, timestamp);
+    upsertTaskFiles(task);
+  };
+  const updateTaskFile = (taskId, file, fields = {}) => {
+    const timestamp = nowIso();
+    db.prepare(`UPDATE agent_task_files SET status = COALESCE(?, status), reused = COALESCE(?, reused), completed_parts = COALESCE(?, completed_parts),
+      total_parts = COALESCE(?, total_parts), bytes_downloaded = COALESCE(?, bytes_downloaded), last_error = ?, updated_at = ?
+      WHERE task_id = ? AND sha256 = ?`)
+      .run(fields.status ?? null, fields.reused ?? null, fields.completedParts ?? null, fields.totalParts ?? null, fields.bytesDownloaded ?? null, fields.lastError ?? null, timestamp, taskId, file.sha256);
+  };
+  const taskFiles = async (taskId) => Promise.all(db.prepare('SELECT * FROM agent_task_files WHERE task_id = ? ORDER BY file_name').all(taskId).map(async (row) => {
+    let cached = false;
+    try { const info = await stat(cachePath(row.sha256)); cached = info.size === Number(row.size_bytes); } catch { /* cache miss */ }
+    return { taskId: row.task_id, sha256: row.sha256, packageKey: row.package_key, fileName: row.file_name, sizeBytes: row.size_bytes, status: cached ? 'COMPLETED' : row.status, reused: Boolean(row.reused), cached, completedParts: row.completed_parts, totalParts: row.total_parts, bytesDownloaded: cached ? row.size_bytes : row.bytes_downloaded, lastError: row.last_error, updatedAt: row.updated_at };
+  }));
+  const serializeTask = async (row) => {
+    if (!row) return null;
+    const files = await taskFiles(row.task_id);
+    const progress = JSON.parse(row.progress_json || '{}');
+    const completedFiles = files.filter((file) => file.status === 'COMPLETED').length;
+    const totalBytes = files.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0);
+    const completedBytes = files.reduce((sum, file) => sum + Number(file.bytesDownloaded || 0), 0);
+    const displayStatus = row.status === 'COMPLETED' ? 'CACHED' : row.last_error && row.retry_at && Date.parse(row.retry_at) > Date.now() ? 'RETRY_WAIT' : row.status === 'RUNNING' ? 'RUNNING' : 'QUEUED';
+    return { taskId: row.task_id, artifactId: row.artifact_id, status: row.status, displayStatus, progress, files, fileCount: files.length, completedFiles, totalBytes, completedBytes, attempts: row.attempts, retryAt: row.retry_at, lastError: row.last_error, updatedAt: row.updated_at };
+  };
   const update = async (taskId, body) => { const response = await core(`/api/v1/agent/tasks/${encodeURIComponent(taskId)}/progress`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return response.json(); };
   async function downloadTask(task) {
-    localTask({ ...task, status: 'RUNNING' }); await update(task.taskId, { status: 'RUNNING', progress: { state: 'starting' } }).catch(() => {});
+    localTask({ ...task, status: 'RUNNING', lastError: null }); await update(task.taskId, { status: 'RUNNING', progress: { state: 'starting' } }).catch(() => {});
     const taskDir = join(dataDir, 'cache', task.taskId); await mkdir(join(taskDir, 'parts'), { recursive: true });
+    let currentFile = null;
     try {
       for (const file of task.files) {
-        const outputPath = join(dataDir, 'cache', file.sha256);
-        try { const cached = await stat(outputPath); if (cached.size === file.sizeBytes && createHash('sha256').update(await readFile(outputPath)).digest('hex') === file.sha256) continue; } catch { /* cache miss */ }
-        const count = Math.ceil(file.sizeBytes / CHUNK_SIZE); const pending = [];
-        for (let index = 0; index < count; index += 1) { const partPath = join(taskDir, 'parts', `${file.sha256}.${index}`); try { const saved = await stat(partPath); const expected = Math.min(CHUNK_SIZE, file.sizeBytes - index * CHUNK_SIZE); if (saved.size === expected) continue; } catch { /* missing chunk */ } pending.push(index); }
+        currentFile = file;
+        const outputPath = cachePath(file.sha256);
+        try {
+          const cached = await stat(outputPath);
+          if (cached.size === file.sizeBytes && createHash('sha256').update(await readFile(outputPath)).digest('hex') === file.sha256) {
+            const count = Math.ceil(file.sizeBytes / CHUNK_SIZE); updateTaskFile(task.taskId, file, { status: 'COMPLETED', reused: 1, completedParts: count, totalParts: count, bytesDownloaded: file.sizeBytes });
+            continue;
+          }
+        } catch { /* cache miss */ }
+        const count = Math.ceil(file.sizeBytes / CHUNK_SIZE); const pending = []; let completedBytes = 0;
+        for (let index = 0; index < count; index += 1) {
+          const partPath = join(taskDir, 'parts', `${file.sha256}.${index}`); const expected = Math.min(CHUNK_SIZE, file.sizeBytes - index * CHUNK_SIZE);
+          try { const saved = await stat(partPath); if (saved.size === expected) { completedBytes += saved.size; continue; } } catch { /* missing chunk */ }
+          pending.push(index);
+        }
         let cursor = 0; let completedParts = count - pending.length;
-        const worker = async () => { while (cursor < pending.length) { const index = pending[cursor++]; const start = index * CHUNK_SIZE; const end = Math.min(file.sizeBytes - 1, start + CHUNK_SIZE - 1); const response = await core(`/api/v1/agent/tasks/${encodeURIComponent(task.taskId)}/files/${file.sha256}/parts/${index}`, { headers: { 'x-cam-chunk-size': String(CHUNK_SIZE) } }); const bytes = Buffer.from(await response.arrayBuffer()); if (bytes.length !== end - start + 1) throw new Error(`分块 ${index} 大小不正确`); const partPath = join(taskDir, 'parts', `${file.sha256}.${index}`); await new Promise((resolve, reject) => { const output = createWriteStream(partPath, { flags: 'w', mode: 0o600 }); output.on('error', reject); output.end(bytes, resolve); }); completedParts += 1; const progress = { state: 'downloading', fileName: file.fileName, sha256: file.sha256, completedParts, totalParts: count }; db.prepare('UPDATE agent_tasks SET progress_json = ?, updated_at = ? WHERE task_id = ?').run(JSON.stringify(progress), new Date().toISOString(), task.taskId); await update(task.taskId, { status: 'RUNNING', progress }).catch(() => {}); } };
+        updateTaskFile(task.taskId, file, { status: 'RUNNING', reused: 0, completedParts, totalParts: count, bytesDownloaded: completedBytes, lastError: null });
+        const worker = async () => { while (cursor < pending.length) { const index = pending[cursor++]; const start = index * CHUNK_SIZE; const end = Math.min(file.sizeBytes - 1, start + CHUNK_SIZE - 1); const response = await core(`/api/v1/agent/tasks/${encodeURIComponent(task.taskId)}/files/${file.sha256}/parts/${index}`, { headers: { 'x-cam-chunk-size': String(CHUNK_SIZE) } }); const bytes = Buffer.from(await response.arrayBuffer()); if (bytes.length !== end - start + 1) throw new Error(`分块 ${index} 大小不正确`); const partPath = join(taskDir, 'parts', `${file.sha256}.${index}`); await new Promise((resolve, reject) => { const output = createWriteStream(partPath, { flags: 'w', mode: 0o600 }); output.on('error', reject); output.end(bytes, resolve); }); completedParts += 1; completedBytes += bytes.length; updateTaskFile(task.taskId, file, { status: 'RUNNING', completedParts, totalParts: count, bytesDownloaded: completedBytes }); const progress = { state: 'downloading', fileName: file.fileName, sha256: file.sha256, completedParts, totalParts: count, bytesDownloaded: completedBytes, totalBytes: file.sizeBytes }; db.prepare('UPDATE agent_tasks SET progress_json = ?, updated_at = ? WHERE task_id = ?').run(JSON.stringify(progress), nowIso(), task.taskId); await update(task.taskId, { status: 'RUNNING', progress }).catch(() => {}); } };
         const results = await Promise.allSettled(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker));
         const failedWorker = results.find((result) => result.status === 'rejected'); if (failedWorker) throw failedWorker.reason;
         const temp = `${outputPath}.tmp`; const output = createWriteStream(temp, { flags: 'w', mode: 0o600 }); const fullHash = createHash('sha256'); let total = 0;
         for (let index = 0; index < count; index += 1) { const bytes = await readFile(join(taskDir, 'parts', `${file.sha256}.${index}`)); fullHash.update(bytes); total += bytes.length; if (!output.write(bytes)) await once(output, 'drain'); }
-        output.end(); await once(output, 'close'); if (total !== file.sizeBytes || fullHash.digest('hex') !== file.sha256) { for (let index = 0; index < count; index += 1) await rm(join(taskDir, 'parts', `${file.sha256}.${index}`), { force: true }); throw new Error(`文件 ${file.fileName} 完整性校验失败`); } await rename(temp, outputPath);
+        output.end(); await once(output, 'close'); if (total !== file.sizeBytes || fullHash.digest('hex') !== file.sha256) { for (let index = 0; index < count; index += 1) await rm(join(taskDir, 'parts', `${file.sha256}.${index}`), { force: true }); throw new Error(`文件 ${file.fileName} 完整性校验失败`); } await rename(temp, outputPath); updateTaskFile(task.taskId, file, { status: 'COMPLETED', completedParts: count, totalParts: count, bytesDownloaded: file.sizeBytes, lastError: null });
       }
-      const ready = join(dataDir, 'cache', task.artifactId); await writeFile(ready, JSON.stringify({ taskId: task.taskId, artifactId: task.artifactId, files: task.files, readyAt: new Date().toISOString() }));
-      db.prepare('UPDATE agent_tasks SET status = ?, progress_json = ?, updated_at = ?, last_error = NULL WHERE task_id = ?').run('COMPLETED', JSON.stringify({ state: 'ready' }), new Date().toISOString(), task.taskId); await update(task.taskId, { status: 'COMPLETED', progress: { state: 'ready' } });
-    } catch (err) { db.prepare('UPDATE agent_tasks SET status = ?, last_error = ?, updated_at = ? WHERE task_id = ?').run('QUEUED', String(err.message).slice(0, 1000), new Date().toISOString(), task.taskId); await update(task.taskId, { status: 'FAILED', error: err.message }).catch(() => {}); }
+      const ready = cachePath(task.artifactId); await writeFile(ready, JSON.stringify({ taskId: task.taskId, artifactId: task.artifactId, files: task.files, readyAt: nowIso() }));
+      db.prepare('UPDATE agent_tasks SET status = ?, progress_json = ?, updated_at = ?, last_error = NULL WHERE task_id = ?').run('COMPLETED', JSON.stringify({ state: 'ready', completedFiles: task.files.length, totalFiles: task.files.length }), nowIso(), task.taskId); await update(task.taskId, { status: 'COMPLETED', progress: { state: 'ready' } });
+    } catch (err) { if (currentFile) updateTaskFile(task.taskId, currentFile, { status: 'FAILED', lastError: String(err.message).slice(0, 1000) }); db.prepare('UPDATE agent_tasks SET status = ?, last_error = ?, updated_at = ? WHERE task_id = ?').run('QUEUED', String(err.message).slice(0, 1000), nowIso(), task.taskId); await update(task.taskId, { status: 'FAILED', error: err.message }).catch(() => {}); }
   }
-  const poll = async () => { if (running || configuring || testing) return; running = true; try { await rotation.sync(); const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST', body: '' })).json()).items ?? []; for (const task of tasks) if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
+  const poll = async () => { if (running || configuring || testing) return; running = true; try { await rotation.sync(); const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST', body: '' })).json()).items ?? []; for (const task of tasks) { localTask(task); if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
   app.get('/api/v1/identity', async () => ({ agentId: rotation.status().agentId ?? null, publicKey: identity.publicKeyPem, fingerprint: identity.fingerprint, registered: Boolean(rotation.status().agentId), rotation: rotation.status() }));
   app.post('/api/v1/tasks/pull', async (_request, reply) => { if (running) return reply.code(202).send({ queued: false, running: true }); queueMicrotask(() => { void poll(); }); return reply.code(202).send({ queued: true }); });
   app.get('/api/v1/available-artifacts', async (_request, reply) => {
-    try { return reply.send({ items: await listAvailableArtifacts() }); }
+    try { const items = await listAvailableArtifacts(); return reply.send({ items, cacheSummary: await cacheSummary(items) }); }
     catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'artifact_list_failed', err.message); }
+  });
+  app.get('/api/v1/cache/summary', async (_request, reply) => {
+    try { const items = await listAvailableArtifacts(); return reply.send({ item: await cacheSummary(items) }); }
+    catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'cache_summary_failed', err.message); }
+  });
+  app.get('/api/v1/tasks', async (_request, reply) => {
+    try { const rows = db.prepare('SELECT * FROM agent_tasks ORDER BY updated_at DESC').all(); return reply.send({ items: await Promise.all(rows.map(serializeTask)) }); }
+    catch (err) { return fail(reply, 500, 'task_list_failed', err.message); }
+  });
+  app.get('/api/v1/tasks/:taskId', async (request, reply) => {
+    const row = db.prepare('SELECT * FROM agent_tasks WHERE task_id = ?').get(request.params.taskId);
+    if (!row) return fail(reply, 404, 'task_not_found', '分发任务不存在');
+    return reply.send({ item: await serializeTask(row) });
+  });
+  app.post('/api/v1/tasks/:taskId/retry', { bodyLimit: 4096 }, async (request, reply) => {
+    if (running) return fail(reply, 409, 'task_busy', 'Agent 正在传输，请稍后再试');
+    const row = db.prepare('SELECT * FROM agent_tasks WHERE task_id = ?').get(request.params.taskId);
+    if (!row) return fail(reply, 404, 'task_not_found', '分发任务不存在');
+    if (row.status === 'COMPLETED') return fail(reply, 409, 'task_completed', '已完成的分发任务不能重试');
+    try {
+      const response = await core(`/api/v1/agent/tasks/${encodeURIComponent(request.params.taskId)}/retry`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      const result = await response.json(); localTask(result.item ?? result);
+      queueMicrotask(() => { void poll(); });
+      return reply.send({ item: await serializeTask(db.prepare('SELECT * FROM agent_tasks WHERE task_id = ?').get(request.params.taskId)) });
+    } catch (err) { return fail(reply, err.status ?? 409, err.code ?? 'task_retry_failed', err.message); }
   });
 
   const deliveryPrincipal = (request, grant) => request.principal?.id ? request.principal.id : `TOKEN:${grant.grantId}`;
@@ -281,7 +400,6 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     }
   });
   app.post('/api/v1/tasks/request', { bodyLimit: 8192 }, async (request, reply) => { try { const response = await core('/api/v1/agent/distribution-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifactId: request.body?.artifactId }) }); const result = await response.json(); queueMicrotask(() => { void poll(); }); return reply.code(201).send(result); } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'distribution_request_failed', err.message); } });
-  app.get('/api/v1/tasks', async () => ({ items: db.prepare('SELECT * FROM agent_tasks ORDER BY updated_at DESC').all().map((row) => ({ taskId: row.task_id, artifactId: row.artifact_id, status: row.status, progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, lastError: row.last_error, updatedAt: row.updated_at })) }));
   app.get('/api/v1/cache/:artifactId', async (request, reply) => { if (typeof request.params.artifactId !== 'string' || !/^[A-Za-z0-9._-]{1,255}$/.test(request.params.artifactId)) return reply.code(400).send({ ready: false }); const path = join(dataDir, 'cache', request.params.artifactId); try { const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch { return reply.code(404).send({ ready: false }); } });
   if (startWorker) { const timer = setInterval(() => { void poll(); }, Number(process.env.CAM_AGENT_POLL_MS ?? 5000)); timer.unref?.(); app.addHook('onClose', async () => clearInterval(timer)); queueMicrotask(() => { void poll(); }); }
   delivery.setLogger(app.log);

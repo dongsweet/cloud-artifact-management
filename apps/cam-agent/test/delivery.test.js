@@ -26,6 +26,15 @@ test('Agent creates human delivery grants for cached formal artifacts and record
   const coreUrl = await core.listen({ host: '127.0.0.1', port: 0 }); const app = await buildAgentApp({ dataDir: agentDir, agentId: registered.agentId, coreUrl, corePublicKey: core.agentServiceIdentity.publicKeyPem, startWorker: false });
   try {
     const headers = await login(app); const artifactId = 'BASELINE-REQ-DELIVERY';
+    const available = await app.inject({ method: 'GET', url: '/api/v1/available-artifacts', headers });
+    assert.equal(available.statusCode, 200, available.body); assert.equal(available.json().cacheSummary.cachedFileCount, 1); assert.equal(available.json().items[0].files[0].cacheState, 'READY'); assert.equal(available.json().items[0].agentStatus, 'CACHED');
+    const summary = await app.inject({ method: 'GET', url: '/api/v1/cache/summary', headers });
+    assert.equal(summary.statusCode, 200, summary.body); assert.equal(summary.json().item.cachedVersionCount, 1); assert.equal(summary.json().item.objectCount, 1);
+    const taskId = 'DIST-DETAIL-DELIVERY'; const taskDb = app.agentAuthStore.db;
+    taskDb.prepare(`INSERT INTO agent_tasks (task_id, artifact_id, status, progress_json, attempts, retry_at, last_error, updated_at) VALUES (?, ?, 'QUEUED', ?, 2, ?, ?, ?)`).run(taskId, artifactId, JSON.stringify({ state: 'downloading' }), new Date(Date.now() + 60_000).toISOString(), '模拟链路中断', new Date().toISOString());
+    taskDb.prepare(`INSERT INTO agent_task_files (task_id, sha256, package_key, file_name, size_bytes, status, reused, completed_parts, total_parts, bytes_downloaded, last_error, updated_at) VALUES (?, ?, 'control-node', 'control-node.tar.gz', ?, 'COMPLETED', 1, 1, 1, ?, NULL, ?)`).run(taskId, sha256, payload.length, payload.length, new Date().toISOString());
+    const taskDetail = await app.inject({ method: 'GET', url: `/api/v1/tasks/${taskId}`, headers });
+    assert.equal(taskDetail.statusCode, 200, taskDetail.body); assert.equal(taskDetail.json().item.displayStatus, 'RETRY_WAIT'); assert.equal(taskDetail.json().item.files[0].reused, true); assert.equal(taskDetail.json().item.files[0].completedParts, 1);
     const created = await app.inject({ method: 'POST', url: '/api/v1/delivery-grants', headers, payload: { artifactId, expiresAt: new Date(Date.now() + 60_000).toISOString(), maxTotalSessions: 2, maxSessionsPerFile: 2 } });
     assert.equal(created.statusCode, 201, created.body); const grant = created.json(); assert.equal(grant.items.length, 1); assert.match(grant.items[0].downloadUrl, /token=/);
     const first = await app.inject({ method: 'GET', url: grant.items[0].downloadUrl, headers: { range: 'bytes=0-5' } }); assert.equal(first.statusCode, 206, first.body); assert.deepEqual(first.rawPayload, payload.subarray(0, 6)); const sessionId = first.headers['x-cam-download-session'];
