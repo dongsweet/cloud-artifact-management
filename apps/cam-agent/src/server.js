@@ -230,7 +230,11 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     } catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_grant_query_failed', err.message); }
   });
   app.get('/api/v1/delivery-grants/:grantId/manifest', async (request, reply) => {
-    try { const { token, grant } = deliveryTokenGrant(request, request.params.grantId); return reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer').send(deliveryGrantResponse(grant, token)); }
+    try {
+      const { token, grant } = deliveryTokenGrant(request, request.params.grantId);
+      const manifest = deliveryGrantResponse(grant, token);
+      return reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer').send({ grantId: manifest.grantId, artifactId: manifest.artifactId, expiresAt: manifest.expiresAt, remainingTotalSessions: manifest.remainingTotalSessions, items: manifest.items });
+    }
     catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_manifest_failed', err.message); }
   });
   app.delete('/api/v1/delivery-grants/:grantId', async (request, reply) => {
