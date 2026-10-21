@@ -91,13 +91,33 @@ GET /api/v1/artifacts/:sha256/content
 
 文件下载地址由清单的 `downloadUrl` 给出。客户端必须自行校验下载字节的长度和 SHA-256，并且只有校验通过后才可将文件标记为本地可用。
 
+### Agent 本地人工交付
+
+Core 的正式制品下载接口只服务于已签名的 Agent 分发任务；云中心部署人员不直接从 Core 或 Edge 取包。Agent 将完成校验的对象按 SHA-256 保存在本地缓存后，登录 Agent 页面，在“正式制品库”中选择版本并创建“部署交付”授权。这个授权面向当前人工部署流程，限制正式版本、文件范围、有效期、总会话次数和单文件会话次数。
+
+创建授权响应只返回一次随机下载 Token。Agent 数据库只保存 Token 的 SHA-256 摘要；部署人员得到的短期链接可通过浏览器或下载工具访问 Agent 的文件接口，也可以使用 `Authorization: Bearer`。接口支持 HTTP Range 和 `X-CAM-Download-Session` 断点续传，同一文件同一会话的续传不重复消耗次数。授权可以撤销，过期或撤销后不再接受新的下载请求。
+
+Agent 页面会显示每个授权的版本、文件数、会话用量和状态，并可打开下载明细查看文件进度、累计字节、下载人、来源地址、开始/更新时间、完成时间和错误。下载完成后仍需按清单中的文件大小和 SHA-256 做人工核对。下载事件和会话记录保存在 Agent 自己的 `agent.sqlite`，不回写 Core；Core→Agent 分发与 Agent→部署人员交付是两个独立的授权边界。
+
+Agent 交付接口如下：
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/v1/delivery-grants` | 登录后查询本 Agent 创建的交付授权 |
+| `POST /api/v1/delivery-grants` | 从已缓存正式版本创建有范围、有期限和次数上限的交付授权；Token 只在响应中返回一次 |
+| `GET /api/v1/delivery-grants/:grantId` | 查询授权及下载会话明细 |
+| `DELETE /api/v1/delivery-grants/:grantId` | 撤销授权，阻止后续下载 |
+| `GET /api/v1/delivery-grants/:grantId/manifest?token=...` | 用短期 Token 获取带下载链接的文件清单 |
+| `POST /api/v1/delivery-grants/:grantId/files/:sha256/session` | 用 Token 创建或恢复一个文件下载会话 |
+| `GET /api/v1/delivery-grants/:grantId/files/:sha256/content` | 用 Token 下载 Agent 本地缓存文件，支持 Range 和断点续传 |
+
 ## 身份与后续分发
 
 `cam-agent` 使用首次配对的 Ed25519 设备身份，不使用固定服务令牌。Core 注册 Agent 时保存公钥和指纹；Agent 请求携带 `X-CAM-Agent-Id`、`X-CAM-Agent-Timestamp`、`X-CAM-Agent-Nonce` 和 `X-CAM-Agent-Signature`，签名覆盖 HTTP 方法、路径、时间戳、随机数和请求体摘要。Core 拒绝过期时间戳、重复随机数、禁用 Agent 和无效签名。Agent 可使用旧身份签名提交新公钥，Core 在短暂过渡期接受旧、新公钥后完成轮换。Core 仍根据 Agent 身份、分发任务和目标范围授权版本基线及其文件，不开放匿名目录或摘要下载。
 
 注册接口 `POST /api/v1/agents` 仅要求 `centerId`、`name`、`publicKey`，不再要求或返回 `securityDomain`。已有数据库升级时删除该字段，保留 Agent 编号、公钥、任务和心跳；重复登记同一公钥会被拒绝。中心内多个 Agent 依靠各自设备身份及任务目标区分。
 
-管理目录的单文件下载路由用于登录用户受控查询。Agent 使用独立的任务接口 `/api/v1/agent/tasks/:taskId/files/:sha256/parts/:index`，只允许读取分配给该 Agent 的文件分块；目录查询接口不代表 Agent 已获得文件下载授权。下载审计仍需在正式上线前补齐。
+管理目录的单文件下载路由用于登录用户受控查询。Agent 使用独立的任务接口 `/api/v1/agent/tasks/:taskId/files/:sha256/parts/:index`，只允许读取分配给该 Agent 的文件分块；目录查询接口不代表 Agent 已获得文件下载授权。Agent 本地人工交付使用上面的交付授权接口，不能把正式制品目录查询接口当作匿名下载入口。
 
 Agent 登录后的“Core 身份配对”页面可复制本机公钥、测试签名认证，并查看配对与轮换状态；写操作要求本地会话与 CSRF 校验。Core 管理员为每个 Agent 设置自动轮换周期（默认 90 天，可设 1–365 天）和过渡期（默认 24 小时，可设 1–168 小时），也可请求立即轮换。Core 仅保存策略和请求，不连接 Agent；Agent 通过既有出站轮询读取策略并执行请求。
 

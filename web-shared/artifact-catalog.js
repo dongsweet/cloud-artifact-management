@@ -1,5 +1,6 @@
 export function mountArtifactCatalog(root, initialItems, {
   onPull = null,
+  onDeliver = null,
   onHistory = null,
   statusOptions = [],
   statusFor = (item) => ({ key: 'DEFAULT', label: `${(item.files ?? []).filter((file) => file.stored).length} / ${(item.files ?? []).length} 个包已入库`, color: 'success' }),
@@ -35,10 +36,13 @@ export function mountArtifactCatalog(root, initialItems, {
     rowContainer.innerHTML = filtered.length ? filtered.map((item, index) => {
       const status = statusFor(item); const version = item.displayVersion ?? item.version ?? '未知版本';
       const operation = onPull ? `<button type="button" class="btn btn-outline-primary btn-sm" data-catalog-pull="${index}" ${status.disablePull ? 'disabled' : ''}><i class="bi bi-cloud-download me-1"></i>拉取</button>` : '';
-      return `<tr><td><div class="fw-semibold">${esc(item.productName ?? '历史产品')}</div></td><td><span class="fw-semibold">${esc(version)}</span></td><td>${(item.files ?? []).length}</td><td><span class="badge text-bg-${esc(status.color ?? 'secondary')}">${esc(status.label)}</span>${status.detail ? `<div class="small text-body-secondary mt-1">${esc(status.detail)}</div>` : ''}</td><td>${esc(date(item.receivedAt))}</td><td class="text-end"><div class="d-inline-flex gap-1"><button type="button" class="btn btn-outline-secondary btn-sm" data-catalog-detail="${index}"><i class="bi bi-eye me-1"></i>${esc(actionLabel)}</button>${operation}</div></td></tr>`;
+      const localDelivery = typeof window !== 'undefined' && typeof window.CamAgentDeliveryOpen === 'function' && (item.files ?? []).length > 0 && (item.files ?? []).every((file) => file.cached);
+      const delivery = onDeliver || localDelivery ? `<button type="button" class="btn btn-outline-success btn-sm" data-catalog-deliver="${index}" ${status.disableDeliver ? 'disabled' : ''}><i class="bi bi-box-arrow-up-right me-1"></i>交付</button>` : '';
+      return `<tr><td><div class="fw-semibold">${esc(item.productName ?? '历史产品')}</div></td><td><span class="fw-semibold">${esc(version)}</span></td><td>${(item.files ?? []).length}</td><td><span class="badge text-bg-${esc(status.color ?? 'secondary')}">${esc(status.label)}</span>${status.detail ? `<div class="small text-body-secondary mt-1">${esc(status.detail)}</div>` : ''}</td><td>${esc(date(item.receivedAt))}</td><td class="text-end"><div class="d-inline-flex gap-1"><button type="button" class="btn btn-outline-secondary btn-sm" data-catalog-detail="${index}"><i class="bi bi-eye me-1"></i>${esc(actionLabel)}</button>${operation}${delivery}</div></td></tr>`;
     }).join('') : `<tr><td colspan="6" class="text-center text-body-secondary py-4">${esc(filtered.length === 0 && items.length ? '没有符合筛选条件的正式版本' : emptyLabel)}</td></tr>`;
     root.querySelectorAll('[data-catalog-detail]').forEach((button) => button.addEventListener('click', () => showDetail(filtered[Number(button.dataset.catalogDetail)])));
     root.querySelectorAll('[data-catalog-pull]').forEach((button) => button.addEventListener('click', async () => { const item = filtered[Number(button.dataset.catalogPull)]; button.disabled = true; try { await onPull(item); } finally { button.disabled = false; } }));
+    root.querySelectorAll('[data-catalog-deliver]').forEach((button) => button.addEventListener('click', async () => { const item = filtered[Number(button.dataset.catalogDeliver)]; button.disabled = true; try { if (onDeliver) await onDeliver(item); else await window.CamAgentDeliveryOpen(item); } finally { button.disabled = false; } }));
     window.CamTablePagination?.refresh(root);
   }
   function showDetail(item) {

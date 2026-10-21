@@ -28,4 +28,9 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.ok(html.includes("$('#core-public-key').classList.remove('bg-body-secondary')"));
   assert.ok(html.includes("$('#core-key-cancel').onclick=()=>{renderCoreConfig(coreConfig)"));
   assert.doesNotMatch(html, /立即轮换/);
+  assert.match(html, /部署交付/);
+  assert.match(html, /CamAgentDeliveryOpen/);
+  assert.match(html, /下载明细/);
+  assert.match(html, /下载人/);
+  assert.doesNotMatch(html, /window\.alert\s*\(|window\.confirm\s*\(|\balert\s*\(|\bconfirm\s*\(/);
 });

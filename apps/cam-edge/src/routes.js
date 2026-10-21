@@ -4,6 +4,7 @@ import { mkdir, rm, rename, stat, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 import { assembleChunks } from '../../../libs/cam-transfer/src/transfer.js';
+import { bearerToken, parseRange } from '../../../libs/cam-transfer/src/http.js';
 import { previewCandidateWorkbook } from './candidate-import.js';
 import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
 import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/client.js';
@@ -20,13 +21,6 @@ function principal(request) {
   throw Object.assign(new Error('authenticated principal is required'), { code: 'principal_required' });
 }
 
-function bearerToken(request) {
-  const authorization = request.headers.authorization;
-  if (typeof authorization === 'string' && /^Bearer\s+\S+$/i.test(authorization)) return authorization.replace(/^Bearer\s+/i, '');
-  const queryToken = request.query?.token;
-  return typeof queryToken === 'string' ? queryToken : null;
-}
-
 function downloadActor(request, grant) {
   try {
     return principal(request);
@@ -34,17 +28,6 @@ function downloadActor(request, grant) {
     if (err.code === 'principal_required' && grant) return { principalId: `TOKEN:${grant.grantId}`, principalType: 'DOWNLOAD_TOKEN' };
     throw err;
   }
-}
-
-function parseRange(value, size) {
-  if (!value) return null;
-  const match = /^bytes=(\d*)-(\d*)$/.exec(value);
-  if (!match || (!match[1] && !match[2])) return 'invalid';
-  let start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
-  let end = match[1] && match[2] ? Number(match[2]) : size - 1;
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= size) return 'invalid';
-  end = Math.min(end, size - 1);
-  return { start, end };
 }
 
 async function md5File(path) {

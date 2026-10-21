@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { mkdir, rename, rm, stat, readFile, writeFile } from 'node:fs/promises';
-import { createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { buildServer } from '../../../libs/cam-server/src/server.js';
@@ -11,6 +11,8 @@ import { fingerprint, randomNonce, signRequest, verifyResponse } from '../../../
 import { createIdentityRotation, loadAgentIdentity } from './identity-rotation.js';
 import { agentPage } from './web.js';
 import { CoreConnectionStore } from './core-connection.js';
+import { AgentDeliveryStore } from './delivery-store.js';
+import { bearerToken, parseRange } from '../../../libs/cam-transfer/src/http.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/agent' : join(process.cwd(), 'data', 'agent'));
 const CORE_URL = (process.env.CAM_CORE_URL ?? 'http://127.0.0.1:3102').replace(/\/$/u, '');
@@ -25,6 +27,7 @@ function registerAuth(app, auth) {
   app.addHook('onRequest', async (request, reply) => {
     const path = request.url.split('?')[0]; if (!path.startsWith('/api/')) return;
     if (path.startsWith('/api/v1/auth/')) { request.principal = auth.resolve(cookies(request).cam_agent_session); return; }
+    if (/^\/api\/v1\/delivery-grants\/[^/]+\/(manifest|files\/[^/]+\/(session|content))$/u.test(path)) return;
     request.principal = auth.resolve(cookies(request).cam_agent_session);
     if (!request.principal) return fail(reply, 401, 'login_required', '请先登录');
     if (request.principal.user?.mustChangePassword && !['/api/v1/auth/me', '/api/v1/auth/password', '/api/v1/auth/logout'].includes(path)) return fail(reply, 403, 'password_change_required', '请先修改初始密码');
@@ -46,6 +49,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   let agentId = legacyAgentId;
   const db = await openDatabase(join(dataDir, 'agent.sqlite'));
   const auth = new AuthStore(db);
+  const delivery = new AgentDeliveryStore({ db, dataDir });
   const coreConnection = new CoreConnectionStore(db, { coreUrl, corePublicKey, previousPublicKey: corePreviousPublicKey, previousPublicKeyExpiresAt: corePreviousPublicKeyExpiresAt });
   let running = false;
   let configuring = false;
@@ -114,6 +118,20 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     if (!response.ok) { const body = JSON.parse(responseBody.toString('utf8') || '{}'); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
   };
   const rotation = await createIdentityRotation({ identityPath, identity, request: core, onIdentity: (next) => { identity = next; }, onAgentId: (next) => { agentId = next; }, initialAgentId: legacyAgentId });
+  const listAvailableArtifacts = async () => {
+    const response = await core('/api/v1/agent/available-artifacts'); const catalog = await response.json();
+    return Promise.all((catalog.items ?? []).map(async (item) => {
+      const files = await Promise.all((item.files ?? []).map(async (file) => {
+        try { const info = await stat(join(dataDir, 'cache', file.sha256)); return { ...file, cached: info.size === file.sizeBytes }; }
+        catch { return { ...file, cached: false }; }
+      }));
+      const task = db.prepare('SELECT status, last_error, updated_at FROM agent_tasks WHERE artifact_id = ? ORDER BY updated_at DESC LIMIT 1').get(item.artifactId);
+      const allCached = files.length > 0 && files.every((file) => file.cached);
+      const agentStatus = allCached ? 'CACHED' : task?.last_error ? 'FAILED' : task?.status === 'RUNNING' ? 'RUNNING' : task ? 'QUEUED' : 'NOT_CACHED';
+      const agentStatusLabel = { CACHED: '已缓存', FAILED: '传输失败', RUNNING: '传输中', QUEUED: '排队中', NOT_CACHED: '未拉取' }[agentStatus];
+      return { ...item, files, agentStatus, agentStatusLabel, agentStatusDetail: task?.last_error ?? null };
+    }));
+  };
   const admin = async (request, reply) => {
     if (!request.principal?.user?.roles?.includes('CORE_ADMIN')) return fail(reply, 403, 'admin_required', '仅管理员可管理 Core 对接配置');
   };
@@ -181,27 +199,89 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   app.get('/api/v1/identity', async () => ({ agentId: rotation.status().agentId ?? null, publicKey: identity.publicKeyPem, fingerprint: identity.fingerprint, registered: Boolean(rotation.status().agentId), rotation: rotation.status() }));
   app.post('/api/v1/tasks/pull', async (_request, reply) => { if (running) return reply.code(202).send({ queued: false, running: true }); queueMicrotask(() => { void poll(); }); return reply.code(202).send({ queued: true }); });
   app.get('/api/v1/available-artifacts', async (_request, reply) => {
+    try { return reply.send({ items: await listAvailableArtifacts() }); }
+    catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'artifact_list_failed', err.message); }
+  });
+
+  const deliveryPrincipal = (request, grant) => request.principal?.id ? request.principal.id : `TOKEN:${grant.grantId}`;
+  const deliveryTokenGrant = (request, grantId) => {
+    const token = bearerToken(request); const grant = token ? delivery.getGrantByToken(token) : null;
+    if (!grant || grant.grantId !== grantId || grant.revokedAt || Date.parse(grant.expiresAt) <= Date.now()) throw Object.assign(new Error('交付授权无效、已过期或已撤销'), { statusCode: 403, code: 'delivery_grant_invalid' });
+    return { token, grant };
+  };
+  const deliveryItem = (grant, sha256) => grant.items.find((item) => item.fileSha256 === sha256) ?? null;
+  const deliveryGrantResponse = (grant, token = null) => ({ ...grant, items: grant.items.map((item) => ({ ...item, downloadUrl: token ? `/api/v1/delivery-grants/${encodeURIComponent(grant.grantId)}/files/${encodeURIComponent(item.fileSha256)}/content?token=${encodeURIComponent(token)}` : undefined })) });
+  const deliveryStatus = (err) => err.statusCode ?? (err.code === 'delivery_grant_invalid' ? 403 : 400);
+
+  app.get('/api/v1/delivery-grants', async (request) => ({ items: delivery.listGrants(request.principal.id) }));
+  app.post('/api/v1/delivery-grants', { bodyLimit: 32 * 1024 }, async (request, reply) => {
     try {
-      const response = await core('/api/v1/agent/available-artifacts'); const catalog = await response.json();
-      const items = await Promise.all((catalog.items ?? []).map(async (item) => {
-        const files = await Promise.all((item.files ?? []).map(async (file) => {
-          try { const info = await stat(join(dataDir, 'cache', file.sha256)); return { ...file, cached: info.size === file.sizeBytes }; }
-          catch { return { ...file, cached: false }; }
-        }));
-        const task = db.prepare('SELECT status, last_error, updated_at FROM agent_tasks WHERE artifact_id = ? ORDER BY updated_at DESC LIMIT 1').get(item.artifactId);
-        const allCached = files.length > 0 && files.every((file) => file.cached);
-        const agentStatus = allCached ? 'CACHED' : task?.last_error ? 'FAILED' : task?.status === 'RUNNING' ? 'RUNNING' : task ? 'QUEUED' : 'NOT_CACHED';
-        const agentStatusLabel = { CACHED: '已缓存', FAILED: '传输失败', RUNNING: '传输中', QUEUED: '排队中', NOT_CACHED: '未拉取' }[agentStatus];
-        return { ...item, files, agentStatus, agentStatusLabel, agentStatusDetail: task?.last_error ?? null };
-      }));
-      return reply.send({ items });
-    } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'artifact_list_failed', err.message); }
+      const body = request.body ?? {}; const artifactId = body.artifactId;
+      const artifact = (await listAvailableArtifacts()).find((item) => item.artifactId === artifactId);
+      const grant = delivery.createGrant({ artifactId, artifact, fileSha256s: body.fileSha256s, principalId: request.principal.id, createdBy: request.principal.id, expiresAt: body.expiresAt, maxTotalSessions: body.maxTotalSessions, maxSessionsPerFile: body.maxSessionsPerFile });
+      return reply.code(201).send(deliveryGrantResponse(grant, grant.token));
+    } catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_grant_failed', err.message); }
+  });
+  app.get('/api/v1/delivery-grants/:grantId', async (request, reply) => {
+    try {
+      const grant = delivery.getGrant(request.params.grantId);
+      if (!grant || (grant.createdBy !== request.principal.id && grant.principalId !== request.principal.id)) return fail(reply, 404, 'delivery_grant_not_found', '交付授权不存在');
+      return reply.send({ ...grant, sessions: delivery.getSessions(grant.grantId) });
+    } catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_grant_query_failed', err.message); }
+  });
+  app.get('/api/v1/delivery-grants/:grantId/manifest', async (request, reply) => {
+    try { const { token, grant } = deliveryTokenGrant(request, request.params.grantId); return reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer').send(deliveryGrantResponse(grant, token)); }
+    catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_manifest_failed', err.message); }
+  });
+  app.delete('/api/v1/delivery-grants/:grantId', async (request, reply) => {
+    try {
+      const grant = delivery.getGrant(request.params.grantId);
+      if (!grant || grant.createdBy !== request.principal.id) return fail(reply, 404, 'delivery_grant_not_found', '交付授权不存在');
+      return reply.send(delivery.revokeGrant(grant.grantId, request.principal.id));
+    } catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_grant_revoke_failed', err.message); }
+  });
+  app.post('/api/v1/delivery-grants/:grantId/files/:sha256/session', async (request, reply) => {
+    let release;
+    try {
+      const { token, grant } = deliveryTokenGrant(request, request.params.grantId); const item = deliveryItem(grant, request.params.sha256);
+      if (!item) return fail(reply, 403, 'delivery_file_forbidden', '文件不在交付授权范围内');
+      release = delivery.acquireTransfer(grant.grantId, item.fileSha256);
+      const session = delivery.beginSession({ token, fileSha256: item.fileSha256, sessionId: request.body?.sessionId ?? null, downloadedBy: deliveryPrincipal(request, grant), sourceAddress: request.ip, userAgent: request.headers['user-agent'] ?? null, autoResume: true });
+      release(); return reply.header('Cache-Control', 'no-store').send(session);
+    } catch (err) { release?.(); return fail(reply, deliveryStatus(err), err.code ?? 'delivery_session_failed', err.message); }
+  });
+  app.get('/api/v1/delivery-grants/:grantId/files/:sha256/content', async (request, reply) => {
+    let release; let sessionId = request.headers['x-cam-download-session']; let session; let recorded = false;
+    try {
+      const { token, grant } = deliveryTokenGrant(request, request.params.grantId); const item = deliveryItem(grant, request.params.sha256);
+      if (!item) return fail(reply, 403, 'delivery_file_forbidden', '文件不在交付授权范围内');
+      const path = join(dataDir, 'cache', item.fileSha256); const file = await stat(path); if (file.size !== item.size) return fail(reply, 409, 'delivery_cache_invalid', 'Agent 本地缓存文件大小不匹配');
+      const range = parseRange(request.headers.range, file.size); if (range === 'invalid') return reply.code(416).header('Content-Range', `bytes */${file.size}`).send();
+      const start = range?.start ?? 0; const end = range?.end ?? file.size - 1; const length = end - start + 1;
+      reply.code(range ? 206 : 200).header('Accept-Ranges', 'bytes').header('Content-Length', length).header('Content-Type', 'application/octet-stream').header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.fileName)}`).header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer').header('X-CAM-SHA256', item.fileSha256);
+      if (range) reply.header('Content-Range', `bytes ${start}-${end}/${file.size}`);
+      if (request.method === 'HEAD') return reply.send();
+      release = delivery.acquireTransfer(grant.grantId, item.fileSha256);
+      session = delivery.beginSession({ token, fileSha256: item.fileSha256, sessionId: typeof sessionId === 'string' ? sessionId : null, downloadedBy: deliveryPrincipal(request, grant), sourceAddress: request.ip, userAgent: request.headers['user-agent'] ?? null, autoResume: true, start });
+      sessionId = session.sessionId; const prior = delivery.getSession(sessionId); let responseBytes = 0;
+      const originalWrite = reply.raw.write;
+      reply.raw.write = function (chunk, encoding, callback) { if (typeof encoding === 'function') { callback = encoding; encoding = undefined; } const size = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk, encoding); return originalWrite.call(this, chunk, encoding, (err) => { if (!err && !recorded) responseBytes += size; callback?.(err); }); };
+      const progress = (finished = false) => ({ bytesSent: prior.bytes_sent + (finished ? length : responseBytes), coveredBytes: start <= prior.covered_bytes ? Math.max(prior.covered_bytes, start + (finished ? length : responseBytes)) : prior.covered_bytes });
+      const timer = setInterval(() => { if (!recorded) delivery.recordSessionProgress(sessionId, { ...progress(), status: 'ACTIVE' }); }, 1000); timer.unref?.();
+      const record = (finished, err = null) => { if (recorded) return; recorded = true; clearInterval(timer); reply.raw.write = originalWrite; release?.(); const current = progress(finished); delivery.recordSessionProgress(sessionId, { ...current, responseBytes: finished ? length : responseBytes, status: err?.message ? 'FAILED' : finished && current.coveredBytes >= file.size ? 'COMPLETED' : 'INTERRUPTED', errorMessage: err?.message ?? null, principalId: deliveryPrincipal(request, grant) }); };
+      const stream = createReadStream(path, { start, end }); stream.on('error', (err) => record(false, err)); reply.raw.once('finish', () => record(true)); reply.raw.once('close', () => { record(false); stream.destroy(); });
+      return reply.header('X-CAM-Download-Session', sessionId).send(stream);
+    } catch (err) {
+      release?.(); if (session) { const previous = delivery.getSession(sessionId); if (previous) delivery.recordSessionProgress(sessionId, { bytesSent: previous.bytes_sent, coveredBytes: previous.covered_bytes, status: 'FAILED', errorMessage: err.message }); }
+      return fail(reply, deliveryStatus(err), err.code ?? 'delivery_failed', err.message);
+    }
   });
   app.post('/api/v1/tasks/request', { bodyLimit: 8192 }, async (request, reply) => { try { const response = await core('/api/v1/agent/distribution-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifactId: request.body?.artifactId }) }); const result = await response.json(); queueMicrotask(() => { void poll(); }); return reply.code(201).send(result); } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'distribution_request_failed', err.message); } });
   app.get('/api/v1/tasks', async () => ({ items: db.prepare('SELECT * FROM agent_tasks ORDER BY updated_at DESC').all().map((row) => ({ taskId: row.task_id, artifactId: row.artifact_id, status: row.status, progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, lastError: row.last_error, updatedAt: row.updated_at })) }));
   app.get('/api/v1/cache/:artifactId', async (request, reply) => { if (typeof request.params.artifactId !== 'string' || !/^[A-Za-z0-9._-]{1,255}$/.test(request.params.artifactId)) return reply.code(400).send({ ready: false }); const path = join(dataDir, 'cache', request.params.artifactId); try { const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch { return reply.code(404).send({ ready: false }); } });
   if (startWorker) { const timer = setInterval(() => { void poll(); }, Number(process.env.CAM_AGENT_POLL_MS ?? 5000)); timer.unref?.(); app.addHook('onClose', async () => clearInterval(timer)); queueMicrotask(() => { void poll(); }); }
-  app.decorate('agentAuthStore', auth); app.decorate('agentPoll', poll); app.decorate('agentIdentity', { getter: () => identity }); return app;
+  delivery.setLogger(app.log);
+  app.decorate('agentAuthStore', auth); app.decorate('agentDeliveryStore', delivery); app.decorate('agentPoll', poll); app.decorate('agentIdentity', { getter: () => identity }); return app;
 }
 
 export async function createAgentServer({ port = Number(process.env.PORT ?? 3103), host = process.env.HOST ?? '127.0.0.1', ...options } = {}) { const app = await buildAgentApp(options); await app.listen({ port, host }); return app; }

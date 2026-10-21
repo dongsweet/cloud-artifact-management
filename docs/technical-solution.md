@@ -522,6 +522,10 @@ transfer-bundle/
 | `cam-agent` | `POST /api/v1/identity/rotate` | 使用旧身份向 Core 提交新公钥，并在本地原子保存新身份 |
 | `cam-agent` | `GET /api/v1/tasks` | 查看本地持久化队列及进度 |
 | `cam-agent` | `GET /api/v1/cache/:artifactId` | 查询本中心是否有 READY 制品 |
+| `cam-agent` | `GET /api/v1/delivery-grants`、`POST /api/v1/delivery-grants` | 查询或创建面向人工部署人员的正式制品交付授权 |
+| `cam-agent` | `GET /api/v1/delivery-grants/:grantId`、`DELETE /api/v1/delivery-grants/:grantId` | 查看交付授权及下载会话明细，或撤销授权 |
+| `cam-agent` | `GET /api/v1/delivery-grants/:grantId/manifest` | 使用一次性短期 Token 获取交付清单和文件链接 |
+| `cam-agent` | `POST /api/v1/delivery-grants/:grantId/files/:sha256/session`、`GET /api/v1/delivery-grants/:grantId/files/:sha256/content` | 建立/恢复下载会话并从 Agent 本地缓存按 Range 下载文件 |
 
 ### cam-agent 首期分发详细设计
 
@@ -536,6 +540,12 @@ Core 任务状态为 `QUEUED → RUNNING → COMPLETED`；传输失败会记录�
 配对操作：登录 Agent 的“Core 身份配对”卡片复制本机公钥，在 Core 的“Agent 管理”配对注册。然后从 Core 的 Agent 管理复制 Core 服务公钥，回到 Agent“Core 身份配对”页，填写 Core 地址并在“Core 服务公钥”中粘贴 PEM 公钥，保存并测试配对。Agent 首次请求使用本机公钥指纹进行身份查找；Core 验签后回传其分配的稳定 Agent 编号，Agent 页面回显并本地持久保存该编号，无需编辑部署配置或重启。编号仅供 Core 内部定位 Agent 记录和关联任务使用。页面配置保存到本机 `agent.sqlite`，立即生效且重启保留，优先于环境变量默认值。当前信任公钥只读，显式“更换 Core 身份”后才能修改，保存需明确确认指纹和旧公钥过渡期（默认 24 小时，最长 30 天）；配置更改会清除旧配对确认，传输或身份同步中暂不允许保存。测试验证双方签名并显示结果与时间。Core 换钥先暂存新身份，Agent 只会信任由当前 Core 私钥签名、且在完整响应签名保护下收到的轮换提案；Core 收到所有未禁用 Agent（包括尚未启用的 PENDING Agent）确认后提前切换，最多等待配置的旧身份过渡期；超时后仍启用新身份，并跳过未确认的离线 Agent。在线 Agent 在截止时间前的下次请求自动更新；超时后重新上线的 Agent 需管理员重新配对。轮换期间禁用的 Agent 不计入确认。只有 Agent 使用已登记身份取得策略并签名确认后，Core 与 Agent 页面才显示配对成功。Core 管理员可查看/修改轮换策略或排队立即轮换；Agent 下次主动轮询即执行。旧部署的固定令牌不再用于认证，必须完成公钥配对。
 
 单文件默认 4 MiB 分块、4 路并发，可通过 Agent 环境变量调整，最多 16 路；这是初始配置，不代表 SD-WAN 的最优值，部署后应按链路丢包、RTT 和 CPU/磁盘吞吐观测调参。每块请求绑定 Agent、任务、文件摘要和分块序号；并发只作用于同一个文件的不同字节区间。首期不由 Agent 推送文件、不执行控制节点升级，也不开放匿名缓存读取。Core 侧分发管理目前通过受登录保护的 API 操作，图形化运维页面和 AAA 后续接入。
+
+### cam-agent 人工部署交付
+
+当前没有独立的部署系统，Agent 的正式制品库先面向云中心运维人员。Core 完成正式制品分发后，Agent 只把完整校验通过的文件写入本地内容寻址缓存；部署人员登录 Agent，在“正式制品库”按产品和版本筛选，打开版本包明细确认文件，再创建限定文件范围、有效期和下载次数的交付授权。Agent 生成的短期 Token 链接由部署人员交给现有升级程序或人工下载工具使用，下载完成后按清单核对大小和 SHA-256，再由现有控制节点升级程序执行实际部署。
+
+这个流程不使用 SSH，也不把 Core/Edge 的源文件地址暴露给云中心。Agent 的交付下载复用 Edge 的授权语义：Token 只保存摘要、授权可撤销、请求支持 Range、会话支持断点续传、并发下载受限，下载事件和会话进度写入本地审计表。实现上，`libs/cam-transfer/src/http.js` 提供 Range 和 Bearer Token 的公共 HTTP 解析；Edge 的候选包授权和 Agent 的正式制品授权分别保留各自的存储模型、权限主体和生命周期，页面的版本/包明细使用公共 `web-shared/artifact-catalog.js`。这样后续接入部署系统时可以复用 Agent 的清单、授权、会话和审计 API，而不改变 Core→Agent 的分发边界。
 
 接口必须执行输入大小限制、路径规范化、鉴权、幂等键检查和审计。下载接口只允许访问任务授权的分块，禁止把路径参数直接拼接到文件系统路径。
 
