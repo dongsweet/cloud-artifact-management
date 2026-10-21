@@ -14,7 +14,7 @@ export function registerCoreAuth(app, { auth, keyring, secureCookies = process.e
     if (!path.startsWith('/api/')) return;
     if (path.startsWith('/api/v1/agent/')) return;
     reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer');
-    if (path.startsWith('/api/v1/gate/approval-requests') || path.startsWith('/api/v1/gate/receipts') || path.startsWith('/api/v1/gate/transfers/') || path === '/api/v1/gate/pairing-probe' || path === '/api/v1/gate/identity-rotation/proposals' || path === '/api/v1/gate/authenticate' || path === '/api/v1/gate/users') return;
+    if (path.startsWith('/api/v1/gate/approval-requests') || path.startsWith('/api/v1/gate/receipts') || path.startsWith('/api/v1/gate/transfers/') || path === '/api/v1/gate/pairing-probe' || path === '/api/v1/gate/identity-rotation/proposals' || ['/api/v1/gate/authenticate', '/api/v1/gate/users', '/api/v1/gate/change-password'].includes(path)) return;
     const jar = cookies(request);
     request.principal = auth.resolve(jar.cam_core_session);
     if (path === '/api/v1/auth/login' && request.method === 'POST') return;
@@ -64,6 +64,19 @@ export function registerCoreAuth(app, { auth, keyring, secureCookies = process.e
     const users = auth.listUsers().filter((user) => user.edgeProvisioned).map((user) => ({ id: user.id, username: user.username, displayName: user.displayName, roles: user.edgeRoles, edgeEnabled: user.edgeEnabled, status: user.status, mustChangePassword: user.mustChangePassword, lastLoginAt: user.lastLoginAt, lockedUntil: user.lockedUntil, createdAt: user.createdAt }));
     const payload = { schemaVersion: 1, audience: 'cam-edge', issuedAt, expiresAt: issuedAt + 60_000, nonce: request.headers['x-cam-gate-nonce'], users, roles: EDGE_ROLE_LABELS };
     return { assertion: await keyring.signAssertion(payload) };
+  });
+  app.post('/api/v1/gate/change-password', { bodyLimit: 8192 }, async (request, reply) => {
+    try {
+      const credentials = await keyring.openFromPeer(request.body);
+      const checked = await auth.login(credentials.username, credentials.oldPassword, { address: request.ip, scope: 'EDGE' });
+      if (!checked.user.edgeEnabled || !checked.user.edgeRoles.length) throw Object.assign(new Error('此账号当前未获准登录 CAM Edge'), { statusCode: 403, code: 'edge_access_denied' });
+      await auth.changePassword(checked.user.id, credentials.password, checked.user.id, credentials.oldPassword);
+      const issuedAt = Date.now();
+      const assertion = await keyring.signAssertion({ schemaVersion: 1, audience: 'cam-edge', issuedAt, expiresAt: issuedAt + 60_000, nonce: credentials.nonce, changed: true });
+      return { assertion };
+    } catch (err) {
+      return fail(reply, err.statusCode ?? 400, err.code ?? 'password_change_failed', err.message);
+    }
   });
   app.get('/api/v1/users', async (request, reply) => {
     if (adminOnly(request, reply)) return;

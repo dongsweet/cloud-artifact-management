@@ -100,6 +100,10 @@ export class AuthStore {
       this.event('EDGE_CREDENTIALS_VERIFIED', row.user_id, {}, address);
       return { user: this.getUser(row.user_id) };
     }
+    if (!current.roles_json || JSON.parse(current.roles_json).length === 0) {
+      this.event('CORE_LOGIN_DENIED', row.user_id, { reason: 'CORE_NOT_ASSIGNED' }, address);
+      throw failure('此账号未获准登录 CAM Core', 403, 'core_access_denied');
+    }
     const token = randomBytes(32).toString('base64url');
     const csrfToken = randomBytes(32).toString('base64url');
     const sessionId = randomUUID();
@@ -116,10 +120,6 @@ export class AuthStore {
     if (!user.edgeEnabled || user.edgeRoles.length === 0) {
       this.event('EDGE_LOGIN_DENIED', user.id, { reason: 'EDGE_NOT_ASSIGNED' }, address);
       throw failure('此账号尚未获准登录 CAM Edge，请联系管理员分配 Edge 权限', 403, 'edge_access_denied');
-    }
-    if (user.mustChangePassword) {
-      this.event('EDGE_LOGIN_DENIED', user.id, { reason: 'PASSWORD_CHANGE_REQUIRED' }, address);
-      throw failure('请先登录 CAM Core 修改初始密码，再登录 CAM Edge', 403, 'password_change_required');
     }
     this.event('EDGE_LOGIN_SUCCEEDED', user.id, { edgeRoles: user.edgeRoles }, address);
     return { id: user.id, username: user.username, displayName: user.displayName, roles: user.edgeRoles, mustChangePassword: user.mustChangePassword, edgeEnabled: user.edgeEnabled, status: user.status, lastLoginAt: user.lastLoginAt, lockedUntil: user.lockedUntil, createdAt: user.createdAt };

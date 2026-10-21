@@ -6,7 +6,7 @@ function cookies(request) {
   return Object.fromEntries((request.headers.cookie ?? '').split(';').map((entry) => { const i = entry.indexOf('='); return [entry.slice(0, i).trim(), entry.slice(i + 1).trim()]; }));
 }
 export function registerAuth(app, { auth, principalProvider, allowLocalAuth = false, keyring, gateConfig, fetchImpl = fetch, secureCookies = process.env.CAM_COOKIE_SECURE !== 'false' }) {
-  const coreExchange = async (method, path, payload) => {
+  const coreExchange = async (method, path, payload, { assertionNonce = payload?.nonce } = {}) => {
     const config = gateConfig.get();
     if (!config.coreControlUrl) throw Object.assign(new Error('尚未配置 Edge 外侧访问 Core 的控制地址'), { statusCode: 503, code: 'core_control_unconfigured' });
     const body = payload === undefined ? '' : JSON.stringify(payload);
@@ -20,6 +20,10 @@ export function registerAuth(app, { auth, principalProvider, allowLocalAuth = fa
       result.items = assertion.payload.users;
       result.roles = assertion.payload.roles;
       auth.cacheCoreUsers(result.items);
+    }
+    if (path === '/api/v1/gate/change-password') {
+      const assertion = result.assertion;
+      if (!await keyring.verifyPeerAssertion(assertion) || assertion.payload?.audience !== 'cam-edge' || assertion.payload?.nonce !== assertionNonce || assertion.payload?.expiresAt <= Date.now() || assertion.payload?.issuedAt > Date.now() + 30_000 || assertion.payload?.changed !== true) throw Object.assign(new Error('Core 返回的密码修改结果签名无效或已过期'), { statusCode: 502, code: 'core_password_assertion_invalid' });
     }
     return result;
   };
@@ -90,6 +94,15 @@ export function registerAuth(app, { auth, principalProvider, allowLocalAuth = fa
   app.get('/api/v1/auth/me', async (request) => ({ user: request.principal.user ?? request.principal, csrfToken: cookies(request).cam_csrf, roles: ROLE_LABELS }));
   app.post('/api/v1/auth/logout', async (request, reply) => { if (['LOCAL_USER', 'CORE_USER'].includes(request.principal.type)) auth.logout(request.principal); clear(reply); return { ok: true }; });
   app.post('/api/v1/auth/password', { bodyLimit: 4096 }, async (request, reply) => {
+    if (request.principal.type === 'CORE_USER') {
+      try {
+        const nonce = randomBytes(24).toString('base64url');
+        const sealed = await keyring.sealForPeer({ username: request.principal.user.username, oldPassword: request.body?.oldPassword, password: request.body?.password, nonce });
+        await coreExchange('POST', '/api/v1/gate/change-password', sealed, { assertionNonce: nonce });
+        clear(reply);
+        return { ok: true, loginRequired: true };
+      } catch (err) { return fail(reply, err.statusCode ?? 502, err.code ?? 'password_change_failed', err.message); }
+    }
     if (request.principal.type !== 'LOCAL_USER') return fail(reply, 403, 'local_account_required', '账号密码由 CAM Core 管理，请登录 Core 修改或联系管理员重置');
     try { await auth.changePassword(request.principal.id, request.body?.password, request.principal.id, request.body?.oldPassword); clear(reply); return { ok: true, loginRequired: true }; }
     catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'password_failed', err.message); }

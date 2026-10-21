@@ -33,10 +33,12 @@ export class AuthStore {
       'CREATE TABLE IF NOT EXISTS edge_users (user_id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, password_parameters_json TEXT NOT NULL, roles_json TEXT NOT NULL, status TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 1, failed_attempts INTEGER NOT NULL DEFAULT 0, locked_until INTEGER, password_changed_at TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)',
       'CREATE TABLE IF NOT EXISTS edge_sessions (session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES edge_users(user_id), token_sha256 TEXT NOT NULL UNIQUE, csrf_token_sha256 TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, revoked_at INTEGER, source_address TEXT, user_agent TEXT)',
       'CREATE TABLE IF NOT EXISTS edge_auth_events (event_id TEXT PRIMARY KEY, principal_id TEXT, event_type TEXT NOT NULL, source_address TEXT, details_json TEXT NOT NULL, created_at TEXT NOT NULL)',
-      'CREATE TABLE IF NOT EXISTS edge_core_sessions (session_id TEXT PRIMARY KEY, core_user_id TEXT NOT NULL, username TEXT NOT NULL, display_name TEXT NOT NULL, roles_json TEXT NOT NULL, token_sha256 TEXT NOT NULL UNIQUE, csrf_token_sha256 TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, revoked_at INTEGER)',
+      'CREATE TABLE IF NOT EXISTS edge_core_sessions (session_id TEXT PRIMARY KEY, core_user_id TEXT NOT NULL, username TEXT NOT NULL, display_name TEXT NOT NULL, roles_json TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, token_sha256 TEXT NOT NULL UNIQUE, csrf_token_sha256 TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, revoked_at INTEGER)',
       'CREATE TABLE IF NOT EXISTS edge_core_users (user_id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT NOT NULL, roles_json TEXT NOT NULL, status TEXT NOT NULL, edge_enabled INTEGER NOT NULL DEFAULT 1, must_change_password INTEGER NOT NULL, last_login_at TEXT, locked_until INTEGER, created_at TEXT NOT NULL)',
       'CREATE INDEX IF NOT EXISTS edge_sessions_user_idx ON edge_sessions(user_id)'
     ].join(';'));
+    const coreSessionColumns = new Set(db.prepare('PRAGMA table_info(edge_core_sessions)').all().map((item) => item.name));
+    if (!coreSessionColumns.has('must_change_password')) db.exec('ALTER TABLE edge_core_sessions ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
     this.dummySalt = randomBytes(16).toString('hex');
   }
   event(type, actor = null, details = {}, address = null) {
@@ -105,7 +107,7 @@ export class AuthStore {
     const coreSession = this.db.prepare('SELECT * FROM edge_core_sessions WHERE token_sha256 = ?').get(hash(token));
     if (coreSession) {
       if (coreSession.revoked_at || coreSession.expires_at <= this.clock() || coreSession.last_seen_at + this.idleMs <= this.clock()) return null;
-      const user = { id: coreSession.core_user_id, username: coreSession.username, displayName: coreSession.display_name, roles: JSON.parse(coreSession.roles_json), status: 'ACTIVE', mustChangePassword: false };
+      const user = { id: coreSession.core_user_id, username: coreSession.username, displayName: coreSession.display_name, roles: JSON.parse(coreSession.roles_json), status: 'ACTIVE', mustChangePassword: Boolean(coreSession.must_change_password) };
       this.db.prepare('UPDATE edge_core_sessions SET last_seen_at = ? WHERE session_id = ?').run(this.clock(), coreSession.session_id);
       return { id: user.id, type: 'CORE_USER', domain: 'CORE', roles: user.roles, user, sessionId: coreSession.session_id, csrfHash: coreSession.csrf_token_sha256 };
     }
@@ -122,11 +124,11 @@ export class AuthStore {
     const csrfToken = randomBytes(32).toString('base64url');
     const sessionId = randomUUID();
     const time = this.clock();
-    this.db.prepare('INSERT INTO edge_core_sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)')
-      .run(sessionId, principal.id, principal.username, principal.displayName, JSON.stringify(principal.roles), hash(token), hash(csrfToken), time, time + Math.min(idleMs, absoluteMs), time);
+    this.db.prepare('INSERT INTO edge_core_sessions (session_id, core_user_id, username, display_name, roles_json, must_change_password, token_sha256, csrf_token_sha256, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(sessionId, principal.id, principal.username, principal.displayName, JSON.stringify(principal.roles), principal.mustChangePassword ? 1 : 0, hash(token), hash(csrfToken), time, time + Math.min(idleMs, absoluteMs), time);
     this.cacheCoreUsers([principal]);
     this.event('CORE_LOGIN_SUCCEEDED', principal.id, { sessionId });
-    return { token, csrfToken, user: { id: principal.id, username: principal.username, displayName: principal.displayName, roles: principal.roles, status: 'ACTIVE', mustChangePassword: false } };
+    return { token, csrfToken, user: { id: principal.id, username: principal.username, displayName: principal.displayName, roles: principal.roles, status: 'ACTIVE', mustChangePassword: Boolean(principal.mustChangePassword) } };
   }
   cacheCoreUsers(users) {
     const upsert = this.db.prepare('INSERT INTO edge_core_users (user_id, username, display_name, roles_json, status, edge_enabled, must_change_password, last_login_at, locked_until, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, display_name=excluded.display_name, roles_json=excluded.roles_json, status=excluded.status, edge_enabled=excluded.edge_enabled, must_change_password=excluded.must_change_password, last_login_at=excluded.last_login_at, locked_until=excluded.locked_until');

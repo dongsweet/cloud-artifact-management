@@ -194,7 +194,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   queueMicrotask(() => { void pumpWorkers(); });
   app.addHook('onClose', async () => clearInterval(cloudTimer));
   app.addHook('preHandler', async (request, reply) => {
-    const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/') || request.url.startsWith('/api/v1/gate/pairing-probe') || request.url.startsWith('/api/v1/gate/identity-rotation/') || ['/api/v1/gate/authenticate', '/api/v1/gate/users'].includes(request.url.split('?')[0]);
+    const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/') || request.url.startsWith('/api/v1/gate/pairing-probe') || request.url.startsWith('/api/v1/gate/identity-rotation/') || ['/api/v1/gate/authenticate', '/api/v1/gate/users', '/api/v1/gate/change-password'].includes(request.url.split('?')[0]);
     if (!exchangePath) return;
     const authorization = await gateAuthorized(request, keyring);
     if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Core 尚未完成 Edge 身份配对，暂不能接收跨区业务消息');

@@ -151,6 +151,7 @@ test('Edge delegates login to Core over the signed control channel and enforces 
   try {
     const operator = await core.authStore.createUser({ username: 'shared-user', displayName: 'Shared User', password: 'Shared-Password-2026', roles: [], edgeEnabled: true, edgeRoles: ['EDGE_ADMIN', 'VALIDATOR'] });
     await core.authStore.changePassword(operator.id, 'Permanent-Shared-2026', operator.id, 'Shared-Password-2026');
+    await core.authStore.createUser({ username: 'edge-first-login', displayName: 'Edge First Login', password: 'Initial-Edge-Password-2026', roles: [], edgeEnabled: true, edgeRoles: ['VALIDATOR'] });
     await core.authStore.createUser({ username: 'core-only', displayName: 'Core Only', password: 'Core-Only-Password-2026', roles: ['CORE_ADMIN'] });
     const originalFetch = async (_url, init) => {
       const path = new URL(_url).pathname;
@@ -177,6 +178,18 @@ test('Edge delegates login to Core over the signed control channel and enforces 
     assert.equal(listed.json().items.some((item) => item.username === 'shared-user'), true);
     assert.equal(listed.json().items.some((item) => item.username === 'core-only'), false);
     assert.equal((await edge.inject({ method: 'POST', url: '/api/v1/products', headers: edgeHeaders, payload: { name: 'forbidden' } })).statusCode, 403);
+
+    const initialLogin = await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-first-login', password: 'Initial-Edge-Password-2026' } });
+    assert.equal(initialLogin.statusCode, 200, initialLogin.body);
+    assert.equal(initialLogin.json().user.mustChangePassword, true);
+    const initialHeaders = { cookie: initialLogin.headers['set-cookie'].map((value) => value.split(';', 1)[0]).join('; '), 'x-cam-csrf': initialLogin.json().csrfToken };
+    assert.equal((await edge.inject({ url: '/api/v1/products', headers: initialHeaders })).statusCode, 403);
+    const passwordChange = await edge.inject({ method: 'POST', url: '/api/v1/auth/password', headers: initialHeaders, payload: { oldPassword: 'Initial-Edge-Password-2026', password: 'Permanent-Edge-Password-2026' } });
+    assert.equal(passwordChange.statusCode, 200, passwordChange.body);
+    const changedLogin = await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-first-login', password: 'Permanent-Edge-Password-2026' } });
+    assert.equal(changedLogin.statusCode, 200, changedLogin.body);
+    assert.equal(changedLogin.json().user.mustChangePassword, false);
+    assert.equal((await core.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-first-login', password: 'Permanent-Edge-Password-2026' } })).statusCode, 403, 'Edge-only users cannot open a Core browser session');
 
     const denied = await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'core-only', password: 'Core-Only-Password-2026' } });
     assert.equal(denied.statusCode, 403);
