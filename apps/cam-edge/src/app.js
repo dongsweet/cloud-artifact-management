@@ -17,7 +17,7 @@ import { createArtifactDispatcher } from './artifact-dispatcher.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/edge' : join(process.cwd(), 'data', 'edge'));
 
-export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSize = Number(process.env.CHUNK_SIZE ?? DEFAULT_CHUNK_SIZE), allowlist, principalProvider = null, secureCookies } = {}) {
+export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSize = Number(process.env.CHUNK_SIZE ?? DEFAULT_CHUNK_SIZE), allowlist, principalProvider = null, allowLocalAuth = false, secureCookies, fetchImpl = fetch } = {}) {
   const db = await openDatabase(join(dataDir, 'edge.sqlite'));
   const store = new CandidateStore({ db, dataDir, defaultChunkSize });
   const receiver = createCandidateReceiver({ store, allowlist, finalize: (candidateId) => finalizeCandidate(store, candidateId) });
@@ -33,7 +33,7 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   const app = await buildServer({
     service: 'cam-edge',
     configure: async (server) => {
-      registerAuth(server, { auth, principalProvider, secureCookies });
+      registerAuth(server, { auth, principalProvider, allowLocalAuth, keyring, gateConfig, fetchImpl, secureCookies });
       registerCandidateRoutes(server, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher, artifactDispatcher });
       server.addHook('onClose', async () => { await artifactDispatcher.close(); await approvalDispatcher.close(); await scheduler.close(); await db.close(); });
     }

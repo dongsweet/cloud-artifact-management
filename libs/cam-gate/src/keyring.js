@@ -1,4 +1,4 @@
-import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, sign, verify } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { signGateRequest, verifyGateRequest } from './request-auth.js';
@@ -107,6 +107,41 @@ export class GateKeyring {
       'x-cam-gate-key-id': identity.signingFingerprint,
       ...signGateRequest(this.state.signing.privateKey, method, path, body, options)
     };
+  }
+
+  async sealForPeer(value) {
+    await this.#ready();
+    const peer = this.state.trustedPeer;
+    if (!peer) throw new Error('尚未建立对端身份信任');
+    const ephemeral = pair('x25519');
+    const shared = diffieHellman({ privateKey: createPrivateKey(ephemeral.privateKey), publicKey: createPublicKey(peer.exchangePublicKey) });
+    const key = Buffer.from(hkdfSync('sha256', shared, Buffer.from('CAM-GATE-AUTH-v1'), Buffer.from('cam-core-edge-auth'), 32));
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', key, iv);
+    const ciphertext = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(value))), cipher.final()]);
+    return { schemaVersion: 1, ephemeralPublicKey: ephemeral.publicKey, iv: iv.toString('base64url'), tag: cipher.getAuthTag().toString('base64url'), ciphertext: ciphertext.toString('base64url') };
+  }
+
+  async openFromPeer(envelope) {
+    await this.#ready();
+    const peer = this.state.trustedPeer;
+    if (!peer || envelope?.schemaVersion !== 1) throw new Error('加密认证请求无效');
+    const shared = diffieHellman({ privateKey: createPrivateKey(this.state.exchange.privateKey), publicKey: createPublicKey(envelope.ephemeralPublicKey) });
+    const key = Buffer.from(hkdfSync('sha256', shared, Buffer.from('CAM-GATE-AUTH-v1'), Buffer.from('cam-core-edge-auth'), 32));
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64url'));
+    decipher.setAuthTag(Buffer.from(envelope.tag, 'base64url'));
+    return JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, 'base64url')), decipher.final()]).toString('utf8'));
+  }
+
+  async signAssertion(payload) {
+    await this.#ready();
+    return { payload, signature: sign(null, Buffer.from(canonical(payload)), createPrivateKey(this.state.signing.privateKey)).toString('base64url') };
+  }
+
+  async verifyPeerAssertion(assertion) {
+    await this.#ready();
+    try { return Boolean(this.state.trustedPeer && verify(null, Buffer.from(canonical(assertion.payload)), createPublicKey(this.state.trustedPeer.signingPublicKey), Buffer.from(assertion.signature, 'base64url'))); }
+    catch { return false; }
   }
 
   async verifyRequest({ method, path, headers, body = '', bodyDigest } = {}) {

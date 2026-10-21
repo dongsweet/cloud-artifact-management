@@ -12,7 +12,9 @@ const params = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const now = () => new Date().toISOString();
 export const ROLES = ['CORE_ADMIN'];
+export const EDGE_ROLES = ['EDGE_ADMIN', 'CANDIDATE_RECEIVER', 'VALIDATOR', 'RELEASE_APPLICANT', 'EDGE_AUDITOR'];
 export const ROLE_LABELS = { CORE_ADMIN: '内网发布审批管理员' };
+export const EDGE_ROLE_LABELS = { EDGE_ADMIN: '账号管理员', CANDIDATE_RECEIVER: '候选接收人员', VALIDATOR: '验证人员', RELEASE_APPLICANT: '发布申请人员', EDGE_AUDITOR: '审计人员' };
 function failure(message, statusCode = 400, code = 'invalid_account') {
   return Object.assign(new Error(message), { statusCode, code });
 }
@@ -20,7 +22,10 @@ function passwordValid(value) {
   if (typeof value !== 'string' || value.length < 12 || Buffer.byteLength(value) > 256) throw failure('密码至少 12 个字符，最多 256 字节');
 }
 function validateRoles(roles) {
-  if (!Array.isArray(roles) || roles.length < 1 || roles.some((role) => !ROLES.includes(role)) || new Set(roles).size !== roles.length) throw failure('请选择有效且不重复的角色');
+  if (!Array.isArray(roles) || roles.some((role) => !ROLES.includes(role)) || new Set(roles).size !== roles.length) throw failure('请选择有效且不重复的 Core 角色');
+}
+function validateEdgeRoles(roles) {
+  if (!Array.isArray(roles) || roles.some((role) => !EDGE_ROLES.includes(role)) || new Set(roles).size !== roles.length) throw failure('请选择有效且不重复的 Edge 角色');
 }
 
 export class AuthStore {
@@ -30,11 +35,16 @@ export class AuthStore {
     this.idleMs = idleMs;
     this.absoluteMs = absoluteMs;
     db.exec([
-      'CREATE TABLE IF NOT EXISTS core_users (user_id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, password_parameters_json TEXT NOT NULL, roles_json TEXT NOT NULL, status TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 1, failed_attempts INTEGER NOT NULL DEFAULT 0, locked_until INTEGER, password_changed_at TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)',
+      "CREATE TABLE IF NOT EXISTS core_users (user_id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, password_parameters_json TEXT NOT NULL, roles_json TEXT NOT NULL, status TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 1, failed_attempts INTEGER NOT NULL DEFAULT 0, locked_until INTEGER, password_changed_at TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, edge_enabled INTEGER NOT NULL DEFAULT 0, edge_roles_json TEXT NOT NULL DEFAULT '[]', edge_provisioned INTEGER NOT NULL DEFAULT 0)",
       'CREATE TABLE IF NOT EXISTS core_sessions (session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES core_users(user_id), token_sha256 TEXT NOT NULL UNIQUE, csrf_token_sha256 TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, revoked_at INTEGER, source_address TEXT, user_agent TEXT)',
       'CREATE TABLE IF NOT EXISTS core_auth_events (event_id TEXT PRIMARY KEY, principal_id TEXT, event_type TEXT NOT NULL, source_address TEXT, details_json TEXT NOT NULL, created_at TEXT NOT NULL)',
       'CREATE INDEX IF NOT EXISTS core_sessions_user_idx ON core_sessions(user_id)'
     ].join(';'));
+    const columns = new Set(db.prepare('PRAGMA table_info(core_users)').all().map((item) => item.name));
+    if (!columns.has('edge_enabled')) db.exec('ALTER TABLE core_users ADD COLUMN edge_enabled INTEGER NOT NULL DEFAULT 0');
+    if (!columns.has('edge_roles_json')) db.exec("ALTER TABLE core_users ADD COLUMN edge_roles_json TEXT NOT NULL DEFAULT '[]'");
+    if (!columns.has('edge_provisioned')) db.exec('ALTER TABLE core_users ADD COLUMN edge_provisioned INTEGER NOT NULL DEFAULT 0');
+    db.exec('UPDATE core_users SET edge_provisioned = 1 WHERE edge_enabled = 1');
     this.dummySalt = randomBytes(16).toString('hex');
   }
   event(type, actor = null, details = {}, address = null) {
@@ -48,27 +58,28 @@ export class AuthStore {
   getUser(id) {
     const row = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(id);
     if (!row) return null;
-    return { id: row.user_id, username: row.username, displayName: row.display_name, roles: JSON.parse(row.roles_json), status: row.status, mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at };
+    return { id: row.user_id, username: row.username, displayName: row.display_name, roles: JSON.parse(row.roles_json), edgeEnabled: Boolean(row.edge_enabled), edgeProvisioned: Boolean(row.edge_provisioned), edgeRoles: JSON.parse(row.edge_roles_json ?? '[]'), status: row.status, mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at };
   }
   listUsers() { return this.db.prepare('SELECT user_id FROM core_users ORDER BY username').all().map((row) => this.getUser(row.user_id)); }
-  async createUser({ username, displayName, password, roles }, actor = null, { bootstrap = false } = {}) {
+  async createUser({ username, displayName, password, roles = [], edgeEnabled = false, edgeRoles = [] }, actor = null, { bootstrap = false } = {}) {
     if (typeof username !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$/.test(username)) throw failure('用户名需为 3 至 64 位字母、数字、点、下划线或连字符');
     if (typeof displayName !== 'string' || !displayName.trim() || displayName.length > 100) throw failure('姓名不能为空且最多 100 字');
-    passwordValid(password); validateRoles(roles);
+    passwordValid(password); validateRoles(roles); validateEdgeRoles(edgeRoles);
+    if ((!roles.length && !(edgeEnabled && edgeRoles.length)) || (edgeRoles.length && !edgeEnabled)) throw failure('账号至少需要一个已启用的 CAM 角色');
     const salt = randomBytes(16).toString('hex');
     const digest = await scrypt(password, salt, 64, params);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       if (bootstrap && this.db.prepare('SELECT COUNT(*) AS n FROM core_users').get().n) throw failure('已经初始化，不能再次创建初始管理员');
       const id = 'USR-' + randomUUID();
-      this.db.prepare('INSERT INTO core_users (user_id, username, display_name, password_hash, password_salt, password_parameters_json, roles_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, username.toLowerCase(), displayName.trim(), digest.toString('hex'), salt, JSON.stringify(params), JSON.stringify(roles), 'ACTIVE', now(), now());
-      this.event(bootstrap ? 'ADMIN_BOOTSTRAPPED' : 'USER_CREATED', actor, { userId: id, roles });
+      this.db.prepare('INSERT INTO core_users (user_id, username, display_name, password_hash, password_salt, password_parameters_json, roles_json, status, edge_enabled, edge_roles_json, edge_provisioned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, username.toLowerCase(), displayName.trim(), digest.toString('hex'), salt, JSON.stringify(params), JSON.stringify(roles), 'ACTIVE', edgeEnabled ? 1 : 0, JSON.stringify(edgeRoles), edgeEnabled ? 1 : 0, now(), now());
+      this.event(bootstrap ? 'ADMIN_BOOTSTRAPPED' : 'USER_CREATED', actor, { userId: id, roles, edgeEnabled, edgeRoles });
       this.db.exec('COMMIT');
       return this.getUser(id);
     } catch (err) { this.db.exec('ROLLBACK'); throw err; }
   }
-  async login(username, password, { address = null, userAgent = null } = {}) {
+  async login(username, password, { address = null, userAgent = null, scope = 'CORE' } = {}) {
     if (typeof username !== 'string' || username.length > 64 || typeof password !== 'string' || Buffer.byteLength(password) > 256) throw failure('用户名或密码错误', 401, 'login_failed');
     const row = this.db.prepare('SELECT * FROM core_users WHERE username = ?').get(username.toLowerCase());
     const digest = await scrypt(password, row?.password_salt ?? this.dummySalt, 64, row ? JSON.parse(row.password_parameters_json) : params);
@@ -84,6 +95,11 @@ export class AuthStore {
       this.event('LOGIN_FAILED', row?.user_id, {}, address);
       throw failure('用户名或密码错误，连续失败后需稍后重试', 401, 'login_failed');
     }
+    if (scope === 'EDGE') {
+      this.db.prepare('UPDATE core_users SET failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE user_id = ?').run(now(), row.user_id);
+      this.event('EDGE_CREDENTIALS_VERIFIED', row.user_id, {}, address);
+      return { user: this.getUser(row.user_id) };
+    }
     const token = randomBytes(32).toString('base64url');
     const csrfToken = randomBytes(32).toString('base64url');
     const sessionId = randomUUID();
@@ -93,6 +109,20 @@ export class AuthStore {
     this.db.prepare('UPDATE core_users SET failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE user_id = ?').run(now(), row.user_id);
     this.event('LOGIN_SUCCEEDED', row.user_id, { sessionId }, address);
     return { token, csrfToken, user: this.getUser(row.user_id) };
+  }
+  async authenticateEdge(username, password, { address = null, userAgent = null } = {}) {
+    const result = await this.login(username, password, { address, userAgent, scope: 'EDGE' });
+    const user = result.user;
+    if (!user.edgeEnabled || user.edgeRoles.length === 0) {
+      this.event('EDGE_LOGIN_DENIED', user.id, { reason: 'EDGE_NOT_ASSIGNED' }, address);
+      throw failure('此账号尚未获准登录 CAM Edge，请联系管理员分配 Edge 权限', 403, 'edge_access_denied');
+    }
+    if (user.mustChangePassword) {
+      this.event('EDGE_LOGIN_DENIED', user.id, { reason: 'PASSWORD_CHANGE_REQUIRED' }, address);
+      throw failure('请先登录 CAM Core 修改初始密码，再登录 CAM Edge', 403, 'password_change_required');
+    }
+    this.event('EDGE_LOGIN_SUCCEEDED', user.id, { edgeRoles: user.edgeRoles }, address);
+    return { id: user.id, username: user.username, displayName: user.displayName, roles: user.edgeRoles, mustChangePassword: user.mustChangePassword, edgeEnabled: user.edgeEnabled, status: user.status, lastLoginAt: user.lastLoginAt, lockedUntil: user.lockedUntil, createdAt: user.createdAt };
   }
   resolve(token) {
     if (typeof token !== 'string' || token.length !== 43) return null;
@@ -118,8 +148,11 @@ export class AuthStore {
     const user = this.getUser(id);
     if (!user) throw failure('账号不存在', 404);
     const roles = body.roles ?? user.roles;
+    const edgeEnabled = body.edgeEnabled ?? user.edgeEnabled;
+    const edgeRoles = body.edgeRoles ?? user.edgeRoles;
     const status = body.status ?? user.status;
-    validateRoles(roles);
+    validateRoles(roles); validateEdgeRoles(edgeRoles);
+    if (edgeRoles.length && !edgeEnabled) throw failure('未启用 Edge 时不能分配 Edge 角色');
     if (!['ACTIVE', 'DISABLED'].includes(status)) throw failure('账号状态无效');
     const display = body.displayName ?? user.displayName;
     if (typeof display !== 'string' || !display.trim() || display.length > 100) throw failure('姓名不能为空且最多 100 字');
@@ -127,10 +160,10 @@ export class AuthStore {
     if (id === actor && (status !== 'ACTIVE' || !roles.includes('CORE_ADMIN'))) throw failure('不能禁用自己或移除自己的管理员角色');
     const admins = this.listUsers().filter((u) => u.status === 'ACTIVE' && u.roles.includes('CORE_ADMIN'));
     if (admins.length === 1 && admins[0].id === id && (status !== 'ACTIVE' || !roles.includes('CORE_ADMIN'))) throw failure('至少保留一个有效管理员');
-    this.db.prepare('UPDATE core_users SET roles_json = ?, status = ?, display_name = ?, locked_until = NULL, failed_attempts = 0, updated_at = ? WHERE user_id = ?')
-      .run(JSON.stringify(roles), status, display.trim(), now(), id);
+    this.db.prepare('UPDATE core_users SET roles_json = ?, edge_enabled = ?, edge_roles_json = ?, edge_provisioned = MAX(edge_provisioned, ?), status = ?, display_name = ?, locked_until = NULL, failed_attempts = 0, updated_at = ? WHERE user_id = ?')
+      .run(JSON.stringify(roles), edgeEnabled ? 1 : 0, JSON.stringify(edgeRoles), edgeEnabled ? 1 : 0, status, display.trim(), now(), id);
     this.revoke(id);
-    this.event('USER_UPDATED', actor, { userId: id, roles, status });
+    this.event('USER_UPDATED', actor, { userId: id, roles, edgeEnabled, edgeRoles, status });
     return this.getUser(id);
     });
   }

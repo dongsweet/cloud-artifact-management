@@ -86,7 +86,7 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
         reply.header('x-cam-core-signature', signResponse(identity.privateKeyPem, reply.statusCode, request.method, request.url.split('?')[0], nonce, timestamp, body));
         return body;
       });
-      if (enableAuth) registerCoreAuth(server, { auth });
+      if (enableAuth) registerCoreAuth(server, { auth, keyring });
       server.addHook('onClose', async () => { cancelRotationDeadline?.(); db.close(); });
     }
   });

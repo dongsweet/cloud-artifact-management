@@ -30,13 +30,13 @@ test('password hashing, login lockout and idle/absolute expiry', async () => {
     await assert.rejects(s.login('validator', 'Permanent-password-456'), /用户名或密码错误/);
     clock += 60001;
     const logged = await s.login('validator', 'Permanent-password-456');
-    assert.equal(s.resolve(logged.token).id, u.id);
+    assert.equal(s.resolve(logged.token, { allowLocal: true }).id, u.id);
     assert.ok(!JSON.stringify(db.prepare('SELECT * FROM edge_sessions').get()).includes(logged.token));
-    clock += 900; assert.ok(s.resolve(logged.token));
-    clock += 900; assert.ok(s.resolve(logged.token));
-    clock += 201; assert.equal(s.resolve(logged.token), null);
+    clock += 900; assert.ok(s.resolve(logged.token, { allowLocal: true }));
+    clock += 900; assert.ok(s.resolve(logged.token, { allowLocal: true }));
+    clock += 201; assert.equal(s.resolve(logged.token, { allowLocal: true }), null);
     const another = await s.login('validator', 'Permanent-password-456');
-    clock += 1001; assert.equal(s.resolve(another.token), null);
+    clock += 1001; assert.equal(s.resolve(another.token, { allowLocal: true }), null);
   } finally { db.close(); }
 });
 test('bootstrap is once-only and the last admin cannot be removed', async () => {
@@ -49,14 +49,14 @@ test('bootstrap is once-only and the last admin cannot be removed', async () => 
     const other = await account(s, 'other', ['VALIDATOR']);
     const session = await s.login('other', 'Permanent-password-456');
     s.updateUser(other.id, { status: 'DISABLED' }, admin.id);
-    assert.equal(s.resolve(session.token), null);
+    assert.equal(s.resolve(session.token, { allowLocal: true }), null);
     await s.changePassword(other.id, password, admin.id);
     assert.equal(s.getUser(other.id).mustChangePassword, true);
   } finally { db.close(); }
 });
 test('business APIs enforce login, CSRF, forced password change and independent roles', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-auth-'));
-  const app = await buildEdgeApp({ dataDir, secureCookies: false });
+  const app = await buildEdgeApp({ dataDir, secureCookies: false, allowLocalAuth: true });
   try {
     assert.equal((await app.inject({ url: '/api/v1/products', headers: { 'x-cam-principal-id': 'forged' } })).statusCode, 401);
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { origin: 'https://evil.invalid' }, payload: {} })).statusCode, 403);
@@ -79,17 +79,17 @@ test('business APIs enforce login, CSRF, forced password change and independent 
 });
 test('accounts and session survive reopening the persisted SQLite database', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-auth-persist-'));
-  let app = await buildEdgeApp({ dataDir, secureCookies: false });
+  let app = await buildEdgeApp({ dataDir, secureCookies: false, allowLocalAuth: true });
   try {
     const u = await account(app.authStore, 'validator', ['VALIDATOR']);
     const headers = await login(app, 'validator'); await app.close();
-    app = await buildEdgeApp({ dataDir, secureCookies: false });
+    app = await buildEdgeApp({ dataDir, secureCookies: false, allowLocalAuth: true });
     assert.equal((await app.inject({ url: '/api/v1/auth/me', headers })).json().user.id, u.id);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 test('download ownership, token-only calls, revoked recipient and invalid Range limits', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-auth-download-'));
-  const app = await buildEdgeApp({ dataDir, secureCookies: false });
+  const app = await buildEdgeApp({ dataDir, secureCookies: false, allowLocalAuth: true });
   try {
     const creator = await account(app.authStore, 'creator', ['VALIDATOR']);
     const recipient = await account(app.authStore, 'recipient', ['VALIDATOR']);
@@ -131,7 +131,7 @@ test('download ownership, token-only calls, revoked recipient and invalid Range 
 });
 test('secure session cookies are the default and rapid login attempts are throttled', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-auth-secure-'));
-  const app = await buildEdgeApp({ dataDir });
+  const app = await buildEdgeApp({ dataDir, allowLocalAuth: true });
   try {
     await account(app.authStore, 'validator', ['VALIDATOR']);
     const r = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'validator', password: 'Permanent-password-456' } });
@@ -140,4 +140,48 @@ test('secure session cookies are the default and rapid login attempts are thrott
     for (let i = 1; i < 20; i++) await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: {} });
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: {} })).statusCode, 429);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Edge delegates login to Core over the signed control channel and enforces Core-managed roles', async () => {
+  const coreData = await mkdtemp(join(tmpdir(), 'cam-core-unified-auth-'));
+  const edgeData = await mkdtemp(join(tmpdir(), 'cam-edge-unified-auth-'));
+  const { buildCoreApp } = await import('../../cam-core/src/server.js');
+  const core = await buildCoreApp({ dataDir: coreData, enableAuth: true, cloudAdapter: {} });
+  let edge;
+  try {
+    const operator = await core.authStore.createUser({ username: 'shared-user', displayName: 'Shared User', password: 'Shared-Password-2026', roles: [], edgeEnabled: true, edgeRoles: ['EDGE_ADMIN', 'VALIDATOR'] });
+    await core.authStore.changePassword(operator.id, 'Permanent-Shared-2026', operator.id, 'Shared-Password-2026');
+    await core.authStore.createUser({ username: 'core-only', displayName: 'Core Only', password: 'Core-Only-Password-2026', roles: ['CORE_ADMIN'] });
+    const originalFetch = async (_url, init) => {
+      const path = new URL(_url).pathname;
+      const response = await core.inject({ method: init.method, url: path, headers: init.headers, ...(init.body ? { payload: init.body } : {}) });
+      return new Response(response.body, { status: response.statusCode, headers: response.headers });
+    };
+    edge = await buildEdgeApp({ dataDir: edgeData, secureCookies: false, fetchImpl: originalFetch });
+    await core.gateKeyring.trustPeer(await edge.gateKeyring.identity());
+    await edge.gateKeyring.trustPeer(await core.gateKeyring.identity());
+    await core.gateKeyring.markPeerConfirmed(); await edge.gateKeyring.markPeerConfirmed();
+    edge.gateConfigStore.save({ coreControlUrl: 'http://core.test', coreTransferUrl: 'http://core.test' });
+
+    const loginResponse = await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'shared-user', password: 'Permanent-Shared-2026' } });
+    assert.equal(loginResponse.statusCode, 200, loginResponse.body);
+    const edgeHeaders = { cookie: loginResponse.headers['set-cookie'].map((value) => value.split(';', 1)[0]).join('; '), 'x-cam-csrf': loginResponse.json().csrfToken };
+    assert.ok(edge.authStore.resolve(edgeHeaders.cookie.match(/cam_session=([^;]+)/)[1]));
+    assert.equal(loginResponse.json().user.id, operator.id);
+    assert.deepEqual(loginResponse.json().user.roles, ['EDGE_ADMIN', 'VALIDATOR']);
+    assert.equal(edge.authStore.db.prepare('SELECT COUNT(*) AS n FROM edge_users').get().n, 0, 'production Core identities are not copied into local password accounts');
+    assert.equal(core.authStore.db.prepare('SELECT COUNT(*) AS n FROM core_sessions WHERE revoked_at IS NULL').get().n, 0, 'Edge authentication does not leave a Core browser session behind');
+    const userListResponse = await edge.inject({ url: '/api/v1/users', headers: edgeHeaders });
+    assert.equal(userListResponse.statusCode, 200, userListResponse.body);
+    const listed = await edge.inject({ url: '/api/v1/users', headers: edgeHeaders });
+    assert.equal(listed.json().items.some((item) => item.username === 'shared-user'), true);
+    assert.equal(listed.json().items.some((item) => item.username === 'core-only'), false);
+    assert.equal((await edge.inject({ method: 'POST', url: '/api/v1/products', headers: edgeHeaders, payload: { name: 'forbidden' } })).statusCode, 403);
+
+    const denied = await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'core-only', password: 'Core-Only-Password-2026' } });
+    assert.equal(denied.statusCode, 403);
+    core.authStore.updateUser(operator.id, { edgeEnabled: false, edgeRoles: [] }, (await core.authStore.listUsers()).find((user) => user.roles.includes('CORE_ADMIN')).id);
+    const revoked = await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'shared-user', password: 'Permanent-Shared-2026' } });
+    assert.equal(revoked.statusCode, 403);
+  } finally { await edge?.close(); await core.close(); await rm(coreData, { recursive: true, force: true }); await rm(edgeData, { recursive: true, force: true }); }
 });

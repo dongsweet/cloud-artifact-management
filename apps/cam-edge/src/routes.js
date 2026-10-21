@@ -343,9 +343,9 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
 
   const usableRecipient = (grant) => {
-    if (grant?.principalType !== 'LOCAL_USER') return true;
+    if (!['LOCAL_USER', 'CORE_USER'].includes(grant?.principalType)) return true;
     const user = auth.getUser(grant.principalId);
-    return user?.status === 'ACTIVE' && !user.mustChangePassword && user.roles.includes('VALIDATOR');
+    return user?.source === 'CORE' ? user.edgeEnabled && user.status === 'ACTIVE' && !user.mustChangePassword && !(user.lockedUntil > Date.now()) && user.roles.includes('VALIDATOR') : user?.status === 'ACTIVE' && !user.mustChangePassword && user.roles.includes('VALIDATOR');
   };
   app.get('/api/v1/download-grants', async (request) => {
     const audit = request.principal.roles?.includes('EDGE_AUDITOR');
@@ -357,8 +357,9 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     try {
       const actor = principal(request);
       const body = request.body ?? {};
-      const recipient = request.principal.type === 'LOCAL_USER' ? auth.getUser(body.recipientId ?? actor.principalId) : null;
-      if (request.principal.type === 'LOCAL_USER' && (!recipient || recipient.status !== 'ACTIVE' || recipient.mustChangePassword || !recipient.roles.includes('VALIDATOR'))) throw new Error('下载责任人须为已激活并完成初始密码修改的验证人员');
+      const managedUser = ['LOCAL_USER', 'CORE_USER'].includes(request.principal.type);
+      const recipient = managedUser ? auth.getUser(body.recipientId ?? actor.principalId) : null;
+      if (managedUser && (!recipient || recipient.status !== 'ACTIVE' || recipient.edgeEnabled === false || recipient.mustChangePassword || recipient.lockedUntil > Date.now() || !recipient.roles.includes('VALIDATOR'))) throw new Error('下载责任人须为已获准登录 Edge、完成初始密码修改的验证人员');
       if (body.roundId) {
         const roundCandidateIds = new Set(store.listRoundCandidates(body.roundId).map((candidate) => candidate.candidate_id));
         if (!Array.isArray(body.candidateIds) || body.candidateIds.some((candidateId) => !roundCandidateIds.has(candidateId))) throw new Error('候选包必须属于所选候选轮次');
@@ -368,7 +369,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const grant = downloadGrants.createGrant({
         candidateIds: body.candidateIds,
         principalId: recipient?.id ?? actor.principalId,
-        principalType: recipient ? 'LOCAL_USER' : actor.principalType,
+        principalType: recipient ? (recipient.source === 'CORE' ? 'CORE_USER' : 'LOCAL_USER') : actor.principalType,
         createdBy: actor.principalId,
         expiresAt: body.expiresAt,
         maxTotalSessions: body.maxTotalSessions,
