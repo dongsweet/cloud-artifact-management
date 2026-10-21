@@ -6,19 +6,26 @@
  */
 export const CORE_ROLES = ['CORE_SYSTEM_ADMIN', 'CORE_SECURITY_ADMIN', 'CORE_OPERATOR', 'CORE_AUDITOR'];
 export const EDGE_ROLES = ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_OPERATOR', 'EDGE_AUDITOR'];
+export const AGENT_ROLES = ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN', 'AGENT_OPERATOR', 'AGENT_AUDITOR'];
 
 export const CORE_ROLE_LABELS = Object.freeze({
   CORE_SYSTEM_ADMIN: '系统管理员',
   CORE_SECURITY_ADMIN: '安全管理员',
   CORE_OPERATOR: '操作员',
-  CORE_AUDITOR: '审计员'
+  CORE_AUDITOR: '审计管理员'
 });
 
 export const EDGE_ROLE_LABELS = Object.freeze({
   EDGE_SYSTEM_ADMIN: '系统管理员',
   EDGE_SECURITY_ADMIN: '安全管理员',
   EDGE_OPERATOR: '操作员',
-  EDGE_AUDITOR: '审计员'
+  EDGE_AUDITOR: '审计管理员'
+});
+export const AGENT_ROLE_LABELS = Object.freeze({
+  AGENT_SYSTEM_ADMIN: '系统管理员',
+  AGENT_SECURITY_ADMIN: '安全管理员',
+  AGENT_OPERATOR: '操作员',
+  AGENT_AUDITOR: '审计管理员'
 });
 
 // 业务路由使用的最小权限集合。页面可以据此隐藏入口，服务端仍必须逐请求校验。
@@ -32,6 +39,15 @@ export const EDGE_PERMISSION_ROLES = Object.freeze({
   configRead: ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'],
   userAdminWrite: ['EDGE_SECURITY_ADMIN'],
   userAdminRead: ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR']
+});
+
+export const AGENT_PERMISSION_ROLES = Object.freeze({
+  businessRead: ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN', 'AGENT_OPERATOR', 'AGENT_AUDITOR'],
+  businessWrite: ['AGENT_SYSTEM_ADMIN', 'AGENT_OPERATOR'],
+  configRead: ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN', 'AGENT_AUDITOR'],
+  configWrite: ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN'],
+  deliveryRead: ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN', 'AGENT_OPERATOR', 'AGENT_AUDITOR'],
+  deliveryWrite: ['AGENT_SYSTEM_ADMIN', 'AGENT_OPERATOR']
 });
 
 // 系统管理员负责平台运行和技术配置；账号与角色管理始终只属于安全管理员。
@@ -57,4 +73,9 @@ export function hasCorePermission(roles, permission) {
   if (!Array.isArray(roles)) return false;
   const normalized = normalizeCoreRoles(roles);
   return (CORE_PERMISSION_ROLES[permission] ?? []).some((role) => normalized.includes(role));
+}
+
+export function hasAgentPermission(roles, permission) {
+  if (!Array.isArray(roles)) return false;
+  return (AGENT_PERMISSION_ROLES[permission] ?? []).some((role) => roles.includes(role));
 }

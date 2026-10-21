@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { CORE_ROLES, EDGE_ROLES, CORE_ROLE_LABELS, EDGE_ROLE_LABELS, hasCorePermission, normalizeCoreRoles, normalizeEdgeRoles } from '../../../libs/cam-auth/src/roles.js';
+import { CORE_ROLES, EDGE_ROLES, AGENT_ROLES, CORE_ROLE_LABELS, EDGE_ROLE_LABELS, AGENT_ROLE_LABELS, hasCorePermission, hasAgentPermission, normalizeCoreRoles, normalizeEdgeRoles } from '../../../libs/cam-auth/src/roles.js';
 
 const deriveAsync = promisify(derive);
 let derivations = 0;
@@ -13,7 +13,7 @@ const params = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const now = () => new Date().toISOString();
 export const ROLES = CORE_ROLES;
-export { EDGE_ROLES, CORE_ROLE_LABELS, EDGE_ROLE_LABELS, hasCorePermission };
+export { EDGE_ROLES, AGENT_ROLES, CORE_ROLE_LABELS, EDGE_ROLE_LABELS, AGENT_ROLE_LABELS, hasCorePermission, hasAgentPermission };
 export const ROLE_LABELS = CORE_ROLE_LABELS;
 function failure(message, statusCode = 400, code = 'invalid_account') {
   return Object.assign(new Error(message), { statusCode, code });
@@ -21,9 +21,9 @@ function failure(message, statusCode = 400, code = 'invalid_account') {
 function passwordValid(value) {
   if (typeof value !== 'string' || value.length < 12 || Buffer.byteLength(value) > 256) throw failure('密码至少 12 个字符，最多 256 字节');
 }
-function normalizeAndValidateRoles(roles) {
+function normalizeAndValidateRoles(roles, roleSet = CORE_ROLES) {
   const normalized = normalizeCoreRoles(roles);
-  if (!Array.isArray(normalized) || normalized.some((role) => !ROLES.includes(role)) || new Set(normalized).size !== normalized.length) throw failure('请选择有效且不重复的 Core 角色');
+  if (!Array.isArray(normalized) || normalized.some((role) => !roleSet.includes(role)) || new Set(normalized).size !== normalized.length) throw failure(`请选择有效且不重复的${roleSet === AGENT_ROLES ? ' Agent' : ' Core'} 角色`);
   return normalized;
 }
 function normalizeAndValidateEdgeRoles(roles) {
@@ -33,12 +33,15 @@ function normalizeAndValidateEdgeRoles(roles) {
 }
 
 export class AuthStore {
-  constructor(db, { clock = Date.now, idleMs = 30 * 60_000, absoluteMs = 8 * 60 * 60_000, aaaAdapter = null } = {}) {
+  constructor(db, { clock = Date.now, idleMs = 30 * 60_000, absoluteMs = 8 * 60 * 60_000, aaaAdapter = null, roleSet = 'CORE' } = {}) {
     this.db = db;
     this.clock = clock;
     this.idleMs = idleMs;
     this.absoluteMs = absoluteMs;
     this.aaaAdapter = aaaAdapter;
+    this.roleSet = roleSet === 'AGENT' ? 'AGENT' : 'CORE';
+    this.allowedRoles = this.roleSet === 'AGENT' ? AGENT_ROLES : CORE_ROLES;
+    this.roleLabels = this.roleSet === 'AGENT' ? AGENT_ROLE_LABELS : CORE_ROLE_LABELS;
     db.exec([
       "CREATE TABLE IF NOT EXISTS core_users (user_id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, password_parameters_json TEXT NOT NULL, roles_json TEXT NOT NULL, status TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 1, failed_attempts INTEGER NOT NULL DEFAULT 0, locked_until INTEGER, password_changed_at TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, edge_enabled INTEGER NOT NULL DEFAULT 0, edge_roles_json TEXT NOT NULL DEFAULT '[]', edge_provisioned INTEGER NOT NULL DEFAULT 0)",
       'CREATE TABLE IF NOT EXISTS core_sessions (session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES core_users(user_id), token_sha256 TEXT NOT NULL UNIQUE, csrf_token_sha256 TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, revoked_at INTEGER, source_address TEXT, user_agent TEXT)',
@@ -55,6 +58,7 @@ export class AuthStore {
     for (const row of db.prepare('SELECT user_id, roles_json, edge_roles_json FROM core_users').all()) {
       let roles;
       try { roles = normalizeCoreRoles(JSON.parse(row.roles_json)); } catch { continue; }
+      if (this.roleSet === 'AGENT') roles = roles.map((role) => role.replace(/^CORE_/, 'AGENT_'));
       let edgeRoles;
       try { edgeRoles = normalizeEdgeRoles(JSON.parse(row.edge_roles_json ?? '[]')); } catch { edgeRoles = []; }
       if (JSON.stringify(roles) !== row.roles_json || JSON.stringify(edgeRoles) !== (row.edge_roles_json ?? '[]')) db.prepare('UPDATE core_users SET roles_json = ?, edge_roles_json = ?, updated_at = ? WHERE user_id = ?').run(JSON.stringify(roles), JSON.stringify(edgeRoles), now(), row.user_id);
@@ -72,7 +76,9 @@ export class AuthStore {
   getUser(id) {
     const row = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(id);
     if (!row) return null;
-    return { id: row.user_id, username: row.username, displayName: row.display_name, authSource: row.auth_source ?? 'LOCAL', roles: normalizeCoreRoles(JSON.parse(row.roles_json)), edgeEnabled: Boolean(row.edge_enabled), edgeProvisioned: Boolean(row.edge_provisioned), edgeRoles: normalizeEdgeRoles(JSON.parse(row.edge_roles_json ?? '[]')), status: row.status, mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at };
+    let roles = normalizeCoreRoles(JSON.parse(row.roles_json));
+    if (this.roleSet === 'AGENT') roles = roles.map((role) => role.replace(/^CORE_/, 'AGENT_'));
+    return { id: row.user_id, username: row.username, displayName: row.display_name, authSource: row.auth_source ?? 'LOCAL', roles, edgeEnabled: Boolean(row.edge_enabled), edgeProvisioned: Boolean(row.edge_provisioned), edgeRoles: normalizeEdgeRoles(JSON.parse(row.edge_roles_json ?? '[]')), status: row.status, mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at };
   }
   listUsers() { return this.db.prepare('SELECT user_id FROM core_users ORDER BY username').all().map((row) => this.getUser(row.user_id)); }
   async createUser({ username, displayName, password, authSource = 'LOCAL', roles = [], edgeEnabled = false, edgeRoles = [] }, actor = null, { bootstrap = false } = {}) {
@@ -81,7 +87,8 @@ export class AuthStore {
     if (!['LOCAL', 'AAA'].includes(authSource)) throw failure('认证来源无效');
     if (authSource === 'LOCAL') passwordValid(password);
     if (bootstrap && authSource !== 'LOCAL') throw failure('初始管理员必须使用本地认证');
-    const coreRoles = normalizeAndValidateRoles(roles); const normalizedEdgeRoles = normalizeAndValidateEdgeRoles(edgeRoles);
+    const suppliedRoles = this.roleSet === 'AGENT' ? (roles ?? []).map((role) => role.replace(/^CORE_/, 'AGENT_')) : roles;
+    const coreRoles = normalizeAndValidateRoles(suppliedRoles, this.allowedRoles); const normalizedEdgeRoles = this.roleSet === 'AGENT' ? [] : normalizeAndValidateEdgeRoles(edgeRoles);
     if ((!coreRoles.length && !(edgeEnabled && normalizedEdgeRoles.length)) || (normalizedEdgeRoles.length && !edgeEnabled)) throw failure('账号至少需要一个已启用的 CAM 角色');
     const salt = randomBytes(16).toString('hex');
     // Keep the legacy non-null password hash column populated for AAA users,

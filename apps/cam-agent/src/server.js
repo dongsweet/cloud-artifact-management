@@ -7,6 +7,8 @@ import { createHash } from 'node:crypto';
 import { buildServer } from '../../../libs/cam-server/src/server.js';
 import { openDatabase } from '../../../libs/cam-sqlite/src/database.js';
 import { AuthStore } from '../../cam-core/src/core-auth-store.js';
+import { AGENT_ROLE_LABELS, hasAgentPermission } from '../../../libs/cam-auth/src/roles.js';
+import { DkeyAmAdapter } from '../../cam-core/src/aaa-adapter.js';
 import { fingerprint, randomNonce, signRequest, verifyResponse } from '../../../libs/cam-agent-auth/src/protocol.js';
 import { createIdentityRotation, loadAgentIdentity } from './identity-rotation.js';
 import { agentPage } from './web.js';
@@ -34,21 +36,23 @@ function registerAuth(app, auth) {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !auth.csrf(request.principal, request.headers['x-cam-agent-csrf'])) return fail(reply, 403, 'csrf_invalid', '会话校验失败，请刷新页面后重试');
   });
   app.post('/api/v1/auth/login', { bodyLimit: 4096 }, async (request, reply) => {
-    try { const result = await auth.login(request.body?.username, request.body?.password, { address: request.ip, userAgent: request.headers['user-agent'] ?? null }); reply.header('Set-Cookie', [cookie('cam_agent_session', result.token, true), cookie('cam_agent_csrf', result.csrfToken, false)]); return { user: result.user, csrfToken: result.csrfToken }; }
+    try { const result = await auth.login(request.body?.username, request.body?.password, { address: request.ip, userAgent: request.headers['user-agent'] ?? null }); reply.header('Set-Cookie', [cookie('cam_agent_session', result.token, true), cookie('cam_agent_csrf', result.csrfToken, false)]); return { user: result.user, csrfToken: result.csrfToken, roles: AGENT_ROLE_LABELS }; }
     catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'login_failed', err.message); }
   });
-  app.get('/api/v1/auth/me', async (request) => ({ user: request.principal?.user ?? null, csrfToken: cookies(request).cam_agent_csrf }));
+  app.get('/api/v1/auth/me', async (request) => ({ user: request.principal?.user ?? null, csrfToken: cookies(request).cam_agent_csrf, roles: AGENT_ROLE_LABELS }));
   app.post('/api/v1/auth/logout', async (request, reply) => { if (request.principal && !auth.csrf(request.principal, request.headers['x-cam-agent-csrf'])) return fail(reply, 403, 'csrf_invalid', '会话校验失败，请刷新页面后重试'); if (request.principal) auth.logout(request.principal); reply.header('Set-Cookie', [cookie('cam_agent_session', '', true, true), cookie('cam_agent_csrf', '', false, true)]); return { ok: true }; });
   app.post('/api/v1/auth/password', { bodyLimit: 4096 }, async (request, reply) => { if (request.principal?.type !== 'LOCAL_USER') return fail(reply, 403, 'local_account_required', '本地账号密码由 Agent 管理'); if (!auth.csrf(request.principal, request.headers['x-cam-agent-csrf'])) return fail(reply, 403, 'csrf_invalid', '会话校验失败，请刷新页面后重试'); try { await auth.changePassword(request.principal.id, request.body?.password, request.principal.id, request.body?.oldPassword); reply.header('Set-Cookie', [cookie('cam_agent_session', '', true, true), cookie('cam_agent_csrf', '', false, true)]); return { ok: true, loginRequired: true }; } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'password_failed', err.message); } });
 }
 
-export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE_URL, agentId: legacyAgentId = LEGACY_AGENT_ID, corePublicKey = process.env.CAM_CORE_PUBLIC_KEY ?? (process.env.CAM_CORE_PUBLIC_KEY_B64 ? Buffer.from(process.env.CAM_CORE_PUBLIC_KEY_B64, 'base64').toString('utf8') : ''), corePreviousPublicKey = process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY ?? (process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_B64 ? Buffer.from(process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_B64, 'base64').toString('utf8') : ''), corePreviousPublicKeyExpiresAt = process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_EXPIRES_AT ?? '', fetchImpl = fetch, startWorker = true } = {}) {
+export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE_URL, agentId: legacyAgentId = LEGACY_AGENT_ID, corePublicKey = process.env.CAM_CORE_PUBLIC_KEY ?? (process.env.CAM_CORE_PUBLIC_KEY_B64 ? Buffer.from(process.env.CAM_CORE_PUBLIC_KEY_B64, 'base64').toString('utf8') : ''), corePreviousPublicKey = process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY ?? (process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_B64 ? Buffer.from(process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_B64, 'base64').toString('utf8') : ''), corePreviousPublicKeyExpiresAt = process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_EXPIRES_AT ?? '', fetchImpl = fetch, aaaAdapter = undefined, startWorker = true } = {}) {
   await mkdir(join(dataDir, 'cache'), { recursive: true });
   const identityPath = join(dataDir, 'identity.json');
   let identity = await loadAgentIdentity(identityPath);
   let agentId = legacyAgentId;
   const db = await openDatabase(join(dataDir, 'agent.sqlite'));
-  const auth = new AuthStore(db);
+  // AAA authentication is direct from Agent; Core is only the artifact source.
+  const agentAaaAdapter = aaaAdapter ?? new DkeyAmAdapter({ env: process.env });
+  const auth = new AuthStore(db, { roleSet: 'AGENT', aaaAdapter: agentAaaAdapter });
   const delivery = new AgentDeliveryStore({ db, dataDir });
   const coreConnection = new CoreConnectionStore(db, { coreUrl, corePublicKey, previousPublicKey: corePreviousPublicKey, previousPublicKeyExpiresAt: corePreviousPublicKeyExpiresAt });
   let running = false;
@@ -175,9 +179,10 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     const invalidFileCount = catalog.reduce((sum, item) => sum + (item.files ?? []).filter((file) => file.cacheState === 'INVALID').length, 0);
     return { objectCount, cacheBytes, cachedFileCount: catalog.reduce((sum, item) => sum + Number(item.cachedFileCount || 0), 0), totalVersionCount: catalog.length, cachedVersionCount: cachedVersions, pendingTaskCount: taskCounts.queued + taskCounts.running + taskCounts.retry, taskCounts, referencedFileCount: referenced.size, orphanObjectCount, invalidFileCount, disk, checkedAt: new Date().toISOString() };
   };
-  const admin = async (request, reply) => {
-    if (!request.principal?.user?.roles?.includes('CORE_SYSTEM_ADMIN')) return fail(reply, 403, 'admin_required', '仅系统管理员可管理 Core 对接配置');
+  const requirePermission = (permission, message) => async (request, reply) => {
+    if (!hasAgentPermission(request.principal?.user?.roles, permission)) return fail(reply, 403, 'agent_permission_denied', message);
   };
+  const admin = requirePermission('configWrite', '需要系统管理员或安全管理员权限');
   app.get('/api/v1/core-config', { preHandler: admin }, async () => ({ item: coreConnection.get() }));
   app.put('/api/v1/core-config', { bodyLimit: 16 * 1024, preHandler: admin }, async (request, reply) => {
     if (running || configuring || testing || rotation.status().rotating) return fail(reply, 409, 'core_connection_busy', '正在传输或同步身份，请稍后保存配置');
@@ -201,14 +206,14 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
       return fail(reply, err.status ?? 502, err.code ?? 'core_connection_test_failed', err.message);
     } finally { testing = false; }
   });
-  app.post('/api/v1/identity/test', { bodyLimit: 4096 }, async (_request, reply) => {
+  app.post('/api/v1/identity/test', { bodyLimit: 4096, preHandler: admin }, async (_request, reply) => {
     if (configuring) return fail(reply, 409, 'core_connection_busy', '正在保存 Core 对接配置');
     try {
       await rotation.sync({ ignoreBackoff: true });
       return { ok: true, agentId: rotation.status().agentId, fingerprint: identity.fingerprint, rotation: rotation.status() };
     } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'agent_pairing_failed', err.message); }
   });
-  app.post('/api/v1/identity/rotate', { bodyLimit: 4096 }, async (_request, reply) => {
+  app.post('/api/v1/identity/rotate', { bodyLimit: 4096, preHandler: admin }, async (_request, reply) => {
     if (configuring) return fail(reply, 409, 'core_connection_busy', '正在保存 Core 对接配置');
     try {
       await rotation.sync({ force: true });
@@ -291,26 +296,26 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     } catch (err) { if (currentFile) updateTaskFile(task.taskId, currentFile, { status: 'FAILED', lastError: String(err.message).slice(0, 1000) }); db.prepare('UPDATE agent_tasks SET status = ?, last_error = ?, updated_at = ? WHERE task_id = ?').run('QUEUED', String(err.message).slice(0, 1000), nowIso(), task.taskId); await update(task.taskId, { status: 'FAILED', error: err.message }).catch(() => {}); }
   }
   const poll = async () => { if (running || configuring || testing) return; running = true; try { await rotation.sync(); const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST', body: '' })).json()).items ?? []; for (const task of tasks) { localTask(task); if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
-  app.get('/api/v1/identity', async () => ({ agentId: rotation.status().agentId ?? null, publicKey: identity.publicKeyPem, fingerprint: identity.fingerprint, registered: Boolean(rotation.status().agentId), rotation: rotation.status() }));
-  app.post('/api/v1/tasks/pull', async (_request, reply) => { if (running) return reply.code(202).send({ queued: false, running: true }); queueMicrotask(() => { void poll(); }); return reply.code(202).send({ queued: true }); });
-  app.get('/api/v1/available-artifacts', async (_request, reply) => {
+  app.get('/api/v1/identity', { preHandler: requirePermission('configRead', '需要配置查看权限') }, async () => ({ agentId: rotation.status().agentId ?? null, publicKey: identity.publicKeyPem, fingerprint: identity.fingerprint, registered: Boolean(rotation.status().agentId), rotation: rotation.status() }));
+  app.post('/api/v1/tasks/pull', { preHandler: requirePermission('businessWrite', '需要系统管理员或操作员权限') }, async (_request, reply) => { if (running) return reply.code(202).send({ queued: false, running: true }); queueMicrotask(() => { void poll(); }); return reply.code(202).send({ queued: true }); });
+  app.get('/api/v1/available-artifacts', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (_request, reply) => {
     try { const items = await listAvailableArtifacts(); return reply.send({ items, cacheSummary: await cacheSummary(items) }); }
     catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'artifact_list_failed', err.message); }
   });
-  app.get('/api/v1/cache/summary', async (_request, reply) => {
+  app.get('/api/v1/cache/summary', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (_request, reply) => {
     try { const items = await listAvailableArtifacts(); return reply.send({ item: await cacheSummary(items) }); }
     catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'cache_summary_failed', err.message); }
   });
-  app.get('/api/v1/tasks', async (_request, reply) => {
+  app.get('/api/v1/tasks', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (_request, reply) => {
     try { const rows = db.prepare('SELECT * FROM agent_tasks ORDER BY updated_at DESC').all(); return reply.send({ items: await Promise.all(rows.map(serializeTask)) }); }
     catch (err) { return fail(reply, 500, 'task_list_failed', err.message); }
   });
-  app.get('/api/v1/tasks/:taskId', async (request, reply) => {
+  app.get('/api/v1/tasks/:taskId', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (request, reply) => {
     const row = db.prepare('SELECT * FROM agent_tasks WHERE task_id = ?').get(request.params.taskId);
     if (!row) return fail(reply, 404, 'task_not_found', '分发任务不存在');
     return reply.send({ item: await serializeTask(row) });
   });
-  app.post('/api/v1/tasks/:taskId/retry', { bodyLimit: 4096 }, async (request, reply) => {
+  app.post('/api/v1/tasks/:taskId/retry', { bodyLimit: 4096, preHandler: requirePermission('businessWrite', '需要系统管理员或操作员权限') }, async (request, reply) => {
     if (running) return fail(reply, 409, 'task_busy', 'Agent 正在传输，请稍后再试');
     const row = db.prepare('SELECT * FROM agent_tasks WHERE task_id = ?').get(request.params.taskId);
     if (!row) return fail(reply, 404, 'task_not_found', '分发任务不存在');
@@ -333,8 +338,8 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   const deliveryGrantResponse = (grant, token = null) => ({ ...grant, items: grant.items.map((item) => ({ ...item, downloadUrl: token ? `/api/v1/delivery-grants/${encodeURIComponent(grant.grantId)}/files/${encodeURIComponent(item.fileSha256)}/content?token=${encodeURIComponent(token)}` : undefined })) });
   const deliveryStatus = (err) => err.statusCode ?? (err.code === 'delivery_grant_invalid' ? 403 : 400);
 
-  app.get('/api/v1/delivery-grants', async (request) => ({ items: delivery.listGrants(request.principal.id) }));
-  app.post('/api/v1/delivery-grants', { bodyLimit: 32 * 1024 }, async (request, reply) => {
+  app.get('/api/v1/delivery-grants', { preHandler: requirePermission('deliveryRead', '需要部署交付查看权限') }, async (request) => ({ items: delivery.listGrants(request.principal.id) }));
+  app.post('/api/v1/delivery-grants', { bodyLimit: 32 * 1024, preHandler: requirePermission('deliveryWrite', '需要系统管理员或操作员权限') }, async (request, reply) => {
     try {
       const body = request.body ?? {}; const artifactId = body.artifactId;
       const artifact = (await listAvailableArtifacts()).find((item) => item.artifactId === artifactId);
@@ -342,7 +347,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
       return reply.code(201).send(deliveryGrantResponse(grant, grant.token));
     } catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_grant_failed', err.message); }
   });
-  app.get('/api/v1/delivery-grants/:grantId', async (request, reply) => {
+  app.get('/api/v1/delivery-grants/:grantId', { preHandler: requirePermission('deliveryRead', '需要部署交付查看权限') }, async (request, reply) => {
     try {
       const grant = delivery.getGrant(request.params.grantId);
       if (!grant || (grant.createdBy !== request.principal.id && grant.principalId !== request.principal.id)) return fail(reply, 404, 'delivery_grant_not_found', '交付授权不存在');
@@ -357,7 +362,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     }
     catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_manifest_failed', err.message); }
   });
-  app.delete('/api/v1/delivery-grants/:grantId', async (request, reply) => {
+  app.delete('/api/v1/delivery-grants/:grantId', { preHandler: requirePermission('deliveryWrite', '需要系统管理员或操作员权限') }, async (request, reply) => {
     try {
       const grant = delivery.getGrant(request.params.grantId);
       if (!grant || grant.createdBy !== request.principal.id) return fail(reply, 404, 'delivery_grant_not_found', '交付授权不存在');
@@ -400,8 +405,8 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
       return fail(reply, deliveryStatus(err), err.code ?? 'delivery_failed', err.message);
     }
   });
-  app.post('/api/v1/tasks/request', { bodyLimit: 8192 }, async (request, reply) => { try { const response = await core('/api/v1/agent/distribution-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifactId: request.body?.artifactId }) }); const result = await response.json(); queueMicrotask(() => { void poll(); }); return reply.code(201).send(result); } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'distribution_request_failed', err.message); } });
-  app.get('/api/v1/cache/:artifactId', async (request, reply) => { if (typeof request.params.artifactId !== 'string' || !/^[A-Za-z0-9._-]{1,255}$/.test(request.params.artifactId)) return reply.code(400).send({ ready: false }); const path = join(dataDir, 'cache', request.params.artifactId); try { const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch { return reply.code(404).send({ ready: false }); } });
+  app.post('/api/v1/tasks/request', { bodyLimit: 8192, preHandler: requirePermission('businessWrite', '需要系统管理员或操作员权限') }, async (request, reply) => { try { const response = await core('/api/v1/agent/distribution-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifactId: request.body?.artifactId }) }); const result = await response.json(); queueMicrotask(() => { void poll(); }); return reply.code(201).send(result); } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'distribution_request_failed', err.message); } });
+  app.get('/api/v1/cache/:artifactId', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (request, reply) => { if (typeof request.params.artifactId !== 'string' || !/^[A-Za-z0-9._-]{1,255}$/.test(request.params.artifactId)) return reply.code(400).send({ ready: false }); const path = join(dataDir, 'cache', request.params.artifactId); try { const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch { return reply.code(404).send({ ready: false }); } });
   if (startWorker) { const timer = setInterval(() => { void poll(); }, Number(process.env.CAM_AGENT_POLL_MS ?? 5000)); timer.unref?.(); app.addHook('onClose', async () => clearInterval(timer)); queueMicrotask(() => { void poll(); }); }
   delivery.setLogger(app.log);
   app.decorate('agentAuthStore', auth); app.decorate('agentDeliveryStore', delivery); app.decorate('agentPoll', poll); app.decorate('agentIdentity', { getter: () => identity }); return app;
