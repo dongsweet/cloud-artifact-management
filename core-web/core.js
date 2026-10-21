@@ -16,10 +16,45 @@ let cloudMappings = null;
 let requestPollTimer = null;
 let gatePeerTrusted = false;
 const $ = (selector) => document.querySelector(selector);
+const pagePermissions = Object.freeze({
+  requests: 'businessRead',
+  artifacts: 'businessRead',
+  distribution: 'businessRead',
+  agents: 'configRead',
+  'cloud-config': 'configRead',
+  'aaa-config': 'configRead',
+  'gate-config': 'configRead',
+  users: 'userAdmin'
+});
+function canCore(permission) {
+  const roles = currentUser?.roles ?? [];
+  return roles.includes('CORE_ADMIN') || {
+    businessRead: ['CORE_OPERATOR', 'CORE_AUDITOR'],
+    businessWrite: ['CORE_OPERATOR'],
+    configRead: ['CORE_CONFIG_ADMIN'],
+    configWrite: ['CORE_CONFIG_ADMIN'],
+    userAdmin: ['CORE_USER_ADMIN']
+  }[permission]?.some((role) => roles.includes(role));
+}
+function applyRoleMenu() {
+  document.querySelectorAll('[data-menu-group-item]').forEach((item) => {
+    const page = item.querySelector('[data-page]')?.dataset.page;
+    item.classList.toggle('d-none', !canCore(pagePermissions[page]));
+  });
+  document.querySelectorAll('[data-menu-group]').forEach((header) => {
+    const group = header.dataset.menuGroup;
+    const items = [...document.querySelectorAll(`[data-menu-group-item="${group}"]`)];
+    header.classList.toggle('d-none', !items.some((item) => !item.classList.contains('d-none')));
+  });
+  $('#distribution-form')?.classList.toggle('d-none', !canCore('businessWrite'));
+}
+function firstAllowedPage() {
+  return Object.keys(pagePermissions).find((page) => canCore(pagePermissions[page])) ?? 'requests';
+}
 function mountAaaConfigPage() {
   const cloudLink = document.querySelector('[data-page="cloud-config"]');
   if (!cloudLink || document.querySelector('[data-page="aaa-config"]')) return;
-  cloudLink.parentElement.insertAdjacentHTML('beforebegin', '<li class="nav-item"><a href="#aaa-config" class="nav-link" data-page="aaa-config"><span class="nav-icon bi bi-person-badge"></span><p>AAA 对接配置</p></a></li>');
+  cloudLink.parentElement.insertAdjacentHTML('beforebegin', '<li class="nav-item" data-menu-group-item="management"><a href="#aaa-config" class="nav-link" data-page="aaa-config"><span class="nav-icon bi bi-person-badge"></span><p>AAA 对接配置</p></a></li>');
   $('#page-cloud-config').insertAdjacentHTML('beforebegin', '<section id="page-aaa-config" class="d-none"><div class="card"><div class="card-header cam-action-header"><h3 class="card-title">AAA 对接配置</h3><span id="aaa-config-badge" class="badge text-bg-secondary">未配置</span></div><form id="aaa-config-form"><div class="card-body"><div class="alert alert-info"><i class="bi bi-info-circle me-1"></i>这里维护 DKEY AM 的连接参数。共享密钥只在提交时写入 Core 数据库，页面刷新后不回显，仅显示是否已配置。</div><div id="aaa-config-error" class="alert alert-danger d-none"></div><div class="row g-3"><div class="col-md-6"><label class="form-label" for="aaa-base-url">AAA 服务地址</label><input id="aaa-base-url" name="baseUrl" class="form-control" type="url" placeholder="https://aaa.example.cn:8443" required></div><div class="col-md-6"><label class="form-label" for="aaa-timeout">请求超时（毫秒）</label><input id="aaa-timeout" name="timeoutMs" class="form-control" type="number" min="1000" max="120000" required></div><div class="col-md-6"><label class="form-label" for="aaa-tenant">租户名称</label><input id="aaa-tenant" name="tenantName" class="form-control" maxlength="128" required></div><div class="col-md-6"><label class="form-label" for="aaa-access-server">认证设备名称</label><input id="aaa-access-server" name="accessServerName" class="form-control" maxlength="128" required></div><div class="col-md-8"><label class="form-label" for="aaa-shared-secret">API 共享密钥</label><input id="aaa-shared-secret" name="sharedSecret" class="form-control" type="password" autocomplete="new-password" placeholder="留空表示保持当前密钥"></div><div class="col-md-4"><label class="form-label" for="aaa-secret-status">当前状态</label><input id="aaa-secret-status" class="form-control bg-body-secondary" readonly></div><div id="aaa-config-status" class="col-12 small text-body-secondary" role="status"></div></div></div><div class="card-footer d-flex justify-content-end gap-2"><button id="aaa-test" type="button" class="btn btn-outline-primary"><i class="bi bi-plug me-1"></i>测试连接</button><button class="btn btn-primary" type="submit"><i class="bi bi-check-lg me-1"></i>保存配置</button></div></form></div></section>');
 }
 mountAaaConfigPage();
@@ -35,7 +70,7 @@ async function api(path, options = {}) { const response = await fetch(path, { ..
 function clearMessage() { const el = $('#alert'); el.className = 'alert d-none'; el.textContent = ''; }
 function showLogin() { forcedPasswordChange = false; $('#app').classList.add('d-none'); $('#password-change').classList.add('d-none'); $('#login').classList.remove('d-none'); clearMessage(); }
 function showPasswordChange(forced) { forcedPasswordChange = forced; $('#password-title').textContent = forced ? '修改初始密码' : '修改密码'; $('#password-help').textContent = forced ? '首次登录必须修改初始密码。' : '修改密码后需要重新登录。'; $('#password-cancel').classList.toggle('d-none', forced); $('#password-error').classList.add('d-none'); $('#password-change').classList.remove('d-none'); }
-function showApp(user) { currentUser = user; forcedPasswordChange = Boolean(user.mustChangePassword); $('#login').classList.add('d-none'); $('#app').classList.remove('d-none'); $('#change-password').classList.toggle('d-none', user.authSource === 'AAA'); clearMessage(); $('#user-label').textContent = `${user.displayName}（${user.username}）`; if (user.mustChangePassword) showPasswordChange(true); else { $('#password-change').classList.add('d-none'); startRequestPolling(); } return user; }
+function showApp(user) { currentUser = user; forcedPasswordChange = Boolean(user.mustChangePassword); $('#login').classList.add('d-none'); $('#app').classList.remove('d-none'); $('#change-password').classList.toggle('d-none', user.authSource === 'AAA'); clearMessage(); $('#user-label').textContent = `${user.displayName}（${user.username}）`; applyRoleMenu(); if (user.mustChangePassword) showPasswordChange(true); else { $('#password-change').classList.add('d-none'); startRequestPolling(); } return user; }
 function statusBadge(value) { const kind = value === 'APPROVED' ? 'success' : value === 'REJECTED' ? 'danger' : 'warning'; return `<span class="badge text-bg-${kind}">${escapeHtml(statusLabels[value] ?? value)}</span>`; }
 function message(text, type = 'success') { const el = $('#alert'); el.className = `alert alert-${type}`; el.textContent = text; }
 function confirmDialog({ title, text, confirmLabel = '确认', confirmClass = 'btn-primary' }) {
@@ -234,13 +269,13 @@ async function showDetail(id) {
     </div></section>
     <section class="cam-detail-section"><h4><i class="bi bi-archive me-2"></i>正式制品 <span class="small text-body-secondary fw-normal">${files.length ? `${files.filter((file) => file.stored).length} / ${files.length} 个已入库` : ''}</span></h4>${fileList}</section>`;
   const actions = [];
-  if (item.status === 'CLOUD_PENDING' && currentUser?.roles?.includes('CORE_ADMIN')) {
+  if (item.status === 'CLOUD_PENDING' && canCore('businessWrite')) {
     const busy = ['QUEUED', 'SUBMITTING'].includes(item.cloudSubmissionState);
     actions.push(`<button id="retry-cloud-button" class="btn btn-warning" ${busy ? 'disabled' : ''}>${busy ? '正在提交…' : '立即重试云管提交'}</button>`);
   }
-  if (item.status === 'CLOUD_SUBMITTED') actions.push('<button id="sync-button" class="btn btn-primary">查询云管结果</button>');
-  if (item.status === 'APPROVED' && !item.transferTaskId && item.cloudTransferTaskId && currentUser?.roles?.includes('CORE_ADMIN')) actions.push('<button id="prepare-transfer-button" class="btn btn-primary"><i class="bi bi-send-check me-1"></i>准备正式制品传输</button>');
-  if (item.status === 'APPROVED' && item.transferStatus === 'RECEIVED') actions.push('<button id="close-button" class="btn btn-success">确认关单</button>');
+  if (item.status === 'CLOUD_SUBMITTED' && canCore('businessWrite')) actions.push('<button id="sync-button" class="btn btn-primary">查询云管结果</button>');
+  if (item.status === 'APPROVED' && !item.transferTaskId && item.cloudTransferTaskId && canCore('businessWrite')) actions.push('<button id="prepare-transfer-button" class="btn btn-primary"><i class="bi bi-send-check me-1"></i>准备正式制品传输</button>');
+  if (item.status === 'APPROVED' && item.transferStatus === 'RECEIVED' && canCore('businessWrite')) actions.push('<button id="close-button" class="btn btn-success">确认关单</button>');
   $('#actions').innerHTML = actions.join('');
   if (!dialog.open) dialog.showModal();
   $('#retry-cloud-button')?.addEventListener('click', async (event) => {
@@ -350,6 +385,8 @@ async function loadGateKeys({ preserveInputs = false } = {}) {
 function showPage(page) {
   const validPages = new Set(['requests', 'artifacts', 'distribution', 'cloud-config', 'aaa-config', 'gate-config', 'agents', 'users']);
   if (!validPages.has(page)) page = 'requests';
+  if (!canCore(pagePermissions[page])) page = firstAllowedPage();
+  if (window.location.hash.slice(1).split('?')[0] !== page) history.replaceState(null, '', `#${page}`);
   const artifacts = page === 'artifacts'; const distribution = page === 'distribution'; const cloud = page === 'cloud-config'; const aaa = page === 'aaa-config'; const gate = page === 'gate-config'; const agents = page === 'agents'; const users = page === 'users';
   $('#page-requests').classList.toggle('d-none', artifacts || distribution || cloud || aaa || gate || agents || users); $('#page-artifacts').classList.toggle('d-none', !artifacts); $('#page-distribution').classList.toggle('d-none', !distribution); $('#page-cloud-config').classList.toggle('d-none', !cloud); $('#page-aaa-config').classList.toggle('d-none', !aaa); $('#page-gate-config').classList.toggle('d-none', !gate); $('#page-agents').classList.toggle('d-none', !agents); $('#page-users').classList.toggle('d-none', !users);
   $('#page-title').textContent = artifacts ? '正式制品' : distribution ? 'Agent 分发' : cloud ? '云管对接配置' : aaa ? 'AAA 对接配置' : gate ? '网闸对接配置' : agents ? 'Agent 管理' : users ? '账号管理' : '审批请求';
@@ -420,7 +457,7 @@ function openUserEditor(userId = null) {
   $('#user-error').classList.add('d-none'); $('#user-editor').classList.remove('d-none'); $('#user-reset').classList.add('d-none'); if (!dialog.open) dialog.showModal();
 }
 function openUserReset(userId) { const dialog = ensureUserDialog(); const user = coreUsers.find((item) => item.id === userId); if (!user) return; resetUserId = userId; $('#reset-form').reset(); $('#reset-user-label').textContent = `账号：${user.displayName}（${user.username}）`; $('#reset-error').classList.add('d-none'); $('#user-editor').classList.add('d-none'); $('#user-reset').classList.remove('d-none'); if (!dialog.open) dialog.showModal(); }
-$('#login-form').addEventListener('submit', async (event) => { event.preventDefault(); $('#login-error').classList.add('d-none'); try { const result = await api('/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: $('#username').value, password: $('#password').value }) }); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) await load(); } catch (error) { $('#login-error').textContent = error.message; $('#login-error').classList.remove('d-none'); } });
+$('#login-form').addEventListener('submit', async (event) => { event.preventDefault(); $('#login-error').classList.add('d-none'); try { const result = await api('/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: $('#username').value, password: $('#password').value }) }); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) { showPage(pageFromHash()); if (pageFromHash() === 'requests' && canCore('businessRead')) await load(); } } catch (error) { $('#login-error').textContent = error.message; $('#login-error').classList.remove('d-none'); } });
 $('#password-form').addEventListener('submit', async (event) => { event.preventDefault(); $('#password-error').classList.add('d-none'); if ($('#new-password').value !== $('#repeat-password').value) { $('#password-error').textContent = '两次新密码不一致'; $('#password-error').classList.remove('d-none'); return; } try { await api('/api/v1/auth/password', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ oldPassword: $('#old-password').value, password: $('#new-password').value }) }); $('#password-form').reset(); showLogin(); } catch (error) { $('#password-error').textContent = error.message; $('#password-error').classList.remove('d-none'); } });
 $('#change-password').addEventListener('click', () => showPasswordChange(false));
 $('#password-cancel').addEventListener('click', () => { if (!forcedPasswordChange) { $('#password-form').reset(); $('#password-change').classList.add('d-none'); } });
@@ -511,7 +548,7 @@ $('#gate-pairing-test').addEventListener('click', async (event) => {
 });
 $('#gate-schedule').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/keys/schedule', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rotationIntervalDays: Number($('#gate-rotation-days').value), gracePeriodHours: Number($('#gate-grace-hours').value) }) }); await loadGateKeys(); message('自动轮换策略已保存'); } catch (error) { message(error.message, 'danger'); } });
 $('#gate-rotate-now').addEventListener('click', async () => { const button = $('#gate-rotate-now'); button.disabled = true; try { await api('/api/v1/gate/keys/rotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); await loadGateKeys(); message('本端身份公私钥已完成轮换'); } catch (error) { message(error.message, 'danger'); } finally { button.disabled = false; } });
-try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) { showPage(pageFromHash()); if (pageFromHash() === 'requests') await load(); } } catch { showLogin(); }
+try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) { showPage(pageFromHash()); if (pageFromHash() === 'requests' && canCore('businessRead')) await load(); } } catch { showLogin(); }
 
 setInterval(() => { if (!document.hidden && !$('#page-gate-config').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadGateKeys({ preserveInputs: true }).catch(() => {}); }, 5000);
 setInterval(() => { if (!document.hidden && !$('#page-agents').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadAgents(); }, 5000);

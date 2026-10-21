@@ -633,11 +633,15 @@ Core 与 Edge 各自的 Ed25519/X25519 身份密钥可按本端策略自动轮�
 
 页面和 API 使用统一身份源时只保留 CAM 所需角色映射，不在 SQLite 保存明文密码。服务间使用 mTLS 或受控短期令牌，令牌不写入日志。
 
-当前角色边界固定如下。Core 只有一个 `CORE_ADMIN` 角色，是因为 Core 页面全部位于统一运维内网，负责审批、正式制品、Agent、云管、网闸和账号等管理操作；后续如果 AAA 要求职责拆分，再增加 Core 角色并保持接口兼容。Edge 的角色只授予明确的业务 API 权限：
+当前角色边界固定如下。Core 菜单按“业务”和“系统管理”分组，业务入口位于前面，配置和账号入口位于后面；`CORE_ADMIN` 保留为全量管理员，其他 Core 角色按最小权限拆分。Edge 的角色只授予明确的业务 API 权限：
 
 | 角色 | 允许的操作 |
 |---|---|
 | `CORE_ADMIN` | Core 全部内网管理操作、Core/Edge 账号与角色授权 |
+| `CORE_OPERATOR` | 查看审批请求和正式制品，执行云管同步、失败重试、传输准备、关单和 Agent 分发 |
+| `CORE_AUDITOR` | 只读查看审批、正式制品、分发任务和相关报告 |
+| `CORE_CONFIG_ADMIN` | Agent 接入与轮换、AAA、云管、网闸和身份配置 |
+| `CORE_USER_ADMIN` | Core 账号、Core/Edge 角色和账号状态管理 |
 | `EDGE_ADMIN` | Edge 网闸及控制通道配置；只读查看 Edge 授权人员和认证审计 |
 | `CANDIDATE_RECEIVER` | 软件产品、发布版本、候选轮次、候选包的接收和维护 |
 | `VALIDATOR` | 查看候选包、提交验证报告和固化申请、创建验证下载授权、触发正式传输 |
@@ -692,8 +696,8 @@ sequenceDiagram
 
 | 能力 | 当前实现 | 目标方案 | 差异与待实现工作 |
 |---|---|---|---|
-| Core 人员认证 | core_users 保存本地密码哈希、盐及 core_sessions；本地登录、改密和账号管理已实现 | Core 使用 AAA 认证，SQLite 只保留稳定身份标识和 CAM 授权 | AAA 认证和身份映射尚未实现；现有本地账号是过渡实现 |
-| Core 角色授权 | Core 使用 `CORE_ADMIN` 作为内网管理角色；账号同时保存 Edge 登录资格和 Edge 角色 | Core 统一维护人员账号、Core 登录资格、Edge 登录资格和两端授权 | 当前 Core 页面全部属于内网管理边界，后续接入 AAA 时保留角色映射扩展点 |
+| Core 人员认证 | Core 支持本地应急账号和 Core 预登记 AAA 账号实时认证；本地账号保存密码哈希、盐及 core_sessions | Core 使用 AAA 认证，SQLite 只保留稳定身份标识和 CAM 授权 | 首期不做 AAA 用户目录同步；本地应急账号继续保留 |
+| Core 角色授权 | Core 使用 `CORE_ADMIN` 及业务、审计、配置、账号管理角色；账号同时保存 Edge 登录资格和 Edge 角色 | Core 统一维护人员账号、Core 登录资格、Edge 登录资格和两端授权 | Core 页面按角色隐藏菜单，服务端按相同权限边界校验接口 |
 | Edge 人员认证 | Edge 只保存 Core 下发的授权缓存和短期会话，不保存密码或本地账号 | Edge 登录委托 Core/AAA；每个受保护请求通过既有控制地址刷新当前授权 | 已移除 `edge_users`、`edge_sessions`、`allowLocalAuth` 和 Edge 本地账号管理 API |
 | Core 管理 Edge 权限 | Core 用户模型保存 Edge 登录开关和 Edge 角色 | Core 账号管理统一配置 Edge 可登录资格和 CAM 角色 | Edge 页面只读展示 Core 下发的人员和角色，不提供账号编辑入口 |
 | Core/Edge 通道 | 已配置控制地址并用于已配对的签名控制消息、配对及状态交换 | 在现有控制地址上增加认证请求/响应 | 无需额外通道；当前控制 API 不含人员认证协议，需补充凭据脱敏、认证限流、防重放、短时凭证和撤销检查 |

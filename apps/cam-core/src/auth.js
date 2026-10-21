@@ -1,4 +1,4 @@
-import { EDGE_ROLE_LABELS, ROLE_LABELS, AuthStore } from './core-auth-store.js';
+import { EDGE_ROLE_LABELS, ROLE_LABELS, AuthStore, hasCorePermission } from './core-auth-store.js';
 
 const fail = (reply, status, code, message) => reply.code(status).send({ error: { code, message } });
 function cookies(request) {
@@ -44,8 +44,8 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
     try { await auth.changePassword(request.principal.id, request.body?.password, request.principal.id, request.body?.oldPassword); clear(reply); return { ok: true, loginRequired: true }; }
     catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'password_failed', err.message); }
   });
-  const adminOnly = (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return fail(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+  const requirePermission = (request, reply, permission, message) => {
+    if (!hasCorePermission(request.principal?.roles, permission)) return fail(reply, 403, 'core_permission_denied', message);
   };
   app.post('/api/v1/gate/authenticate', { bodyLimit: 8192 }, async (request, reply) => {
     try {
@@ -79,15 +79,15 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
     }
   });
   app.get('/api/v1/users', async (request, reply) => {
-    if (adminOnly(request, reply)) return;
+    if (requirePermission(request, reply, 'userAdmin', '需要账号与角色管理权限')) return;
     return { items: auth.listUsers(), roles: ROLE_LABELS, edgeRoles: EDGE_ROLE_LABELS };
   });
   app.get('/api/v1/aaa/config', async (request, reply) => {
-    if (adminOnly(request, reply)) return;
+    if (requirePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     return { item: aaaConfigStore?.publicValue() ?? { configured: false, secretConfigured: false } };
   });
   app.put('/api/v1/aaa/config', { bodyLimit: 4096 }, async (request, reply) => {
-    if (adminOnly(request, reply)) return;
+    if (requirePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
     try {
       const saved = aaaConfigStore.save(request.body ?? {}, request.principal.id);
       aaaAdapter?.updateConfig?.(saved.config);
@@ -95,7 +95,7 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
     } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'aaa_config_invalid', err.message); }
   });
   app.post('/api/v1/aaa/test', { bodyLimit: 4096 }, async (request, reply) => {
-    if (adminOnly(request, reply)) return;
+    if (requirePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     try {
       const current = aaaConfigStore.get().config;
       const candidate = { ...current, ...(request.body ?? {}), sharedSecret: String(request.body?.sharedSecret ?? '').trim() || current.sharedSecret };
@@ -106,19 +106,19 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
     } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'aaa_test_failed', err.message); }
   });
   app.post('/api/v1/users', { bodyLimit: 8192 }, async (request, reply) => {
-    if (adminOnly(request, reply)) return;
+    if (requirePermission(request, reply, 'userAdmin', '需要账号与角色管理权限')) return;
     try {
       const user = await auth.createUser(request.body ?? {}, request.principal.id);
       return reply.code(201).send({ user });
     } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'user_create_failed', err.message); }
   });
   app.patch('/api/v1/users/:id', { bodyLimit: 8192 }, async (request, reply) => {
-    if (adminOnly(request, reply)) return;
+    if (requirePermission(request, reply, 'userAdmin', '需要账号与角色管理权限')) return;
     try { return { user: auth.updateUser(request.params.id, request.body ?? {}, request.principal.id) }; }
     catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'user_update_failed', err.message); }
   });
   app.post('/api/v1/users/:id/password', { bodyLimit: 4096 }, async (request, reply) => {
-    if (adminOnly(request, reply)) return;
+    if (requirePermission(request, reply, 'userAdmin', '需要账号与角色管理权限')) return;
     try {
       await auth.changePassword(request.params.id, request.body?.password, request.principal.id);
       return { ok: true, mustChangePassword: true };

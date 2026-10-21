@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { CORE_ROLES, EDGE_ROLES, CORE_ROLE_LABELS, EDGE_ROLE_LABELS } from '../../../libs/cam-auth/src/roles.js';
+import { CORE_ROLES, EDGE_ROLES, CORE_ROLE_LABELS, EDGE_ROLE_LABELS, hasCorePermission } from '../../../libs/cam-auth/src/roles.js';
 
 const deriveAsync = promisify(derive);
 let derivations = 0;
@@ -13,7 +13,7 @@ const params = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const now = () => new Date().toISOString();
 export const ROLES = CORE_ROLES;
-export { EDGE_ROLES, CORE_ROLE_LABELS, EDGE_ROLE_LABELS };
+export { EDGE_ROLES, CORE_ROLE_LABELS, EDGE_ROLE_LABELS, hasCorePermission };
 export const ROLE_LABELS = CORE_ROLE_LABELS;
 function failure(message, statusCode = 400, code = 'invalid_account') {
   return Object.assign(new Error(message), { statusCode, code });

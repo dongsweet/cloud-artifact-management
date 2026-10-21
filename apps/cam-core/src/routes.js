@@ -7,8 +7,16 @@ import { attachmentContentType } from '../../../libs/cam-server/src/attachment-t
 import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
 import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/client.js';
 import { verifyRequest } from '../../../libs/cam-agent-auth/src/protocol.js';
+import { hasCorePermission } from '../../../libs/cam-auth/src/roles.js';
 
 function error(reply, status, code, message) { return reply.code(status).send({ error: { code, message } }); }
+function requireCorePermission(request, reply, permission, message) {
+  // Auth-disabled application instances are used by internal protocol tests;
+  // production requests always have a principal from Core auth middleware.
+  if (!request.principal) return null;
+  if (!hasCorePermission(request.principal?.roles, permission)) return error(reply, 403, 'core_permission_denied', message);
+  return null;
+}
 
 async function gateAuthorized(request, keyring) {
   const status = await keyring.status();
@@ -215,37 +223,37 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
 
   app.get('/api/v1/agents', async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     return { items: store.listAgents() };
   });
   app.get('/api/v1/agent-service-identity', async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     const pendingIdentity = agentServiceIdentity?.pendingIdentity;
     return { publicKey: agentServiceIdentity?.publicKeyPem ?? null, fingerprint: agentServiceIdentity?.fingerprint ?? null, previousPublicKey: agentServiceIdentity?.previousPublicKeyPem ?? null, previousFingerprint: agentServiceIdentity?.previousFingerprint ?? null, previousKeyExpiresAt: agentServiceIdentity?.previousKeyExpiresAt ?? null, lastRotationSkippedAgentCount: agentServiceIdentity?.lastRotationSkippedAgentCount ?? 0, agentRotationPolicy: store.getAgentRotationPolicy(), pendingRotation: pendingIdentity ? { rotationId: pendingIdentity.rotationId, publicKey: pendingIdentity.publicKeyPem, fingerprint: pendingIdentity.fingerprint, activationDeadlineAt: pendingIdentity.activationDeadlineAt ?? null, graceHours: pendingIdentity.graceHours ?? store.getAgentRotationPolicy().graceHours, ...store.getCoreIdentityRotationStatus(pendingIdentity.rotationId) } : null };
   });
   app.put('/api/v1/agent-rotation-policy', { bodyLimit: 4096 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
     try { return { item: store.setAgentRotationPolicy(request.body ?? {}) }; }
     catch (err) { return error(reply, 400, err.code ?? 'agent_policy_invalid', err.message); }
   });
   app.post('/api/v1/agent-service-identity/rotate', { bodyLimit: 4096 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
     if (typeof stageAgentServiceIdentityRotation !== 'function') return error(reply, 503, 'service_identity_unavailable', 'Core 服务身份轮换不可用');
     try { return reply.code(202).send(await stageAgentServiceIdentityRotation()); }
     catch (err) { return error(reply, 500, 'service_identity_rotation_failed', err.message); }
   });
   app.post('/api/v1/agents', { bodyLimit: 8192 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
     try { return reply.code(201).send({ item: store.registerAgent(request.body ?? {}) }); }
     catch (err) { return error(reply, 400, err.code ?? 'agent_invalid', err.message); }
   });
   app.post('/api/v1/agents/:agentId/rotate', { bodyLimit: 8192 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
     try { return reply.code(202).send({ item: store.requestAgentRotation(request.params.agentId) }); }
     catch (err) { return error(reply, 400, err.code ?? 'agent_rotation_failed', err.message); }
   });
   app.patch('/api/v1/agents/:agentId', { bodyLimit: 4096 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
     try {
       if (!store.setAgentStatus(request.params.agentId, request.body?.status)) return error(reply, 404, 'agent_not_found', 'Agent 不存在');
       return { ok: true, item: store.getAgentIdentity(request.params.agentId) };
@@ -283,11 +291,11 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     catch (err) { return error(reply, 400, err.code ?? 'agent_rotation_report_invalid', err.message); }
   });
   app.get('/api/v1/distribution-tasks', async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
     return { items: store.listDistributionTasks() };
   });
   app.post('/api/v1/distribution-tasks', { bodyLimit: 8192 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
     try { return reply.code(201).send({ item: store.createDistributionTask(request.body ?? {}) }); }
     catch (err) { return error(reply, err.code === 'artifact_not_found' ? 404 : 409, err.code ?? 'distribution_task_invalid', err.message); }
   });
@@ -332,18 +340,18 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
 
   app.get('/api/v1/gate/config', async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置权限');
+    if (requireCorePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     const item = gateConfig.get();
     const keys = await keyring.status();
     return reply.send({ item, identityConfigured: keys.keyConfigured, previousIdentityConfigured: Boolean(keys.previousKeyExpiresAt) });
   });
   app.put('/api/v1/gate/config', { bodyLimit: 8192 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置管理员权限');
+    if (requireCorePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
     try { const item = gateConfig.save(request.body ?? {}, request.principal.id); const keys = await keyring.status(); return reply.send({ item, identityConfigured: keys.keyConfigured, previousIdentityConfigured: Boolean(keys.previousKeyExpiresAt) }); }
     catch (err) { return error(reply, 400, err.code ?? 'gate_config_invalid', err.message); }
   });
   app.post('/api/v1/gate/config/test', { bodyLimit: 8192 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置管理员权限');
+    if (requireCorePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     try {
       const config = normalizeGateConfig(Object.keys(request.body ?? {}).length ? request.body : gateConfig.get(), { requireUrls: true, requiredUrlFields: ['edgeControlUrl', 'edgeTransferUrl'] });
       const checks = {};
@@ -355,11 +363,11 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
 
   app.get('/api/v1/gate/keys', async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置权限');
+    if (requireCorePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     return { item: await keyring.status(), identityBundle: await keyring.identity() };
   });
   app.post('/api/v1/gate/keys/test', async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置管理员权限');
+    if (requireCorePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     const status = await keyring.status();
     if (!status.peerTrusted) return error(reply, 409, 'gate_pairing_required', '请先导入 Edge 身份包');
     const config = gateConfig.get();
@@ -383,7 +391,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     catch (err) { return error(reply, 409, err.code ?? 'gate_identity_rotation_rejected', err.message); }
   });
   app.put('/api/v1/gate/keys/trusted-peer', { bodyLimit: 16 * 1024 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置管理员权限');
+    if (requireCorePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
     if (rotationInFlight) return error(reply, 409, 'gate_rotation_in_progress', '密钥正在协商，请完成后再更换对端身份');
     try {
       await keyring.trustPeer(request.body?.identityBundle);
@@ -392,13 +400,13 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     catch (err) { return error(reply, 400, err.code ?? 'gate_peer_invalid', err.message); }
   });
   app.put('/api/v1/gate/keys/schedule', { bodyLimit: 4096 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置管理员权限');
+    if (requireCorePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
     if (rotationInFlight) return error(reply, 409, 'gate_rotation_in_progress', '密钥正在协商，请完成后再修改轮换策略');
     try { return { item: await keyring.configure(request.body ?? {}) }; }
     catch (err) { return error(reply, 400, err.code ?? 'gate_rotation_config_invalid', err.message); }
   });
   app.post('/api/v1/gate/keys/rotate', async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网网闸配置管理员权限');
+    if (requireCorePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
     try { return { item: await rotateKey() }; }
     catch (err) { return error(reply, 502, err.code ?? 'gate_rotation_failed', err.message); }
   });
@@ -428,13 +436,13 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
 
   app.get('/api/v1/cloud/config', async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     const item = store.getCloudConfig();
     return reply.send({ item: item ?? cloud.businessConfig(), source: item ? 'database' : 'environment', secretConfigured: cloud.enabled() });
   });
 
   app.put('/api/v1/cloud/config', { bodyLimit: 8192 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
     try {
       const config = request.body ?? {};
       const mappings = await cloud.resolveMappings(config);
@@ -443,15 +451,22 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
 
   app.post('/api/v1/cloud/test', { bodyLimit: 8192 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     try { return reply.send({ mappings: await cloud.resolveMappings(request.body && Object.keys(request.body).length ? request.body : store.getCloudConfig()) }); }
     catch (err) { return error(reply, err.code === 'cloud_not_configured' ? 503 : 502, err.code ?? 'cloud_test_failed', err.message); }
   });
 
-  app.get('/api/v1/approval-requests', async (_request, reply) => reply.send({ items: store.list() }));
+  app.get('/api/v1/approval-requests', async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
+    return reply.send({ items: store.list() });
+  });
 
-  app.get('/api/v1/artifacts', async (_request, reply) => reply.send({ items: store.listArtifacts() }));
+  app.get('/api/v1/artifacts', async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
+    return reply.send({ items: store.listArtifacts() });
+  });
   app.get('/api/v1/artifacts/:artifactId', async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
     const item = store.getArtifact(request.params.artifactId);
     return item ? reply.send({ item }) : error(reply, 404, 'artifact_baseline_not_found', '正式发布基线不存在');
   });
@@ -550,18 +565,20 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
 
   app.get('/api/v1/artifacts/:sha256/content', async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
     const path = store.artifactPath(String(request.params.sha256 ?? '').toLowerCase());
     if (!path) return error(reply, 404, 'artifact_not_found', '正式制品文件不存在');
     return reply.type('application/octet-stream').header('Content-Disposition', `attachment; filename="${request.params.sha256}"`).send(createReadStream(path));
   });
 
   app.get('/api/v1/approval-requests/:requestId', async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
     const item = store.get(request.params.requestId);
     return item ? reply.send({ item }) : error(reply, 404, 'request_not_found', 'approval request not found');
   });
 
   app.post('/api/v1/approval-requests/:requestId/retry', async (request, reply) => {
-    if (!request.principal?.roles?.includes('CORE_ADMIN')) return error(reply, 403, 'admin_required', '需要内网发布审批管理员权限');
+    if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
     const item = store.get(request.params.requestId);
     if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
     if (item.status !== 'CLOUD_PENDING' || item.cloudApprovalId) return error(reply, 409, 'cloud_retry_not_available', '只有尚未创建云管工单的请求可以重试提交');
@@ -572,6 +589,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
 
   app.get('/api/v1/approval-requests/:requestId/report-file', async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
     const item = store.get(request.params.requestId);
     const path = store.reportPath(request.params.requestId);
     if (!item || !path || !item.reportReceived) return error(reply, 404, 'report_not_found', 'verification report not found');
@@ -579,6 +597,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
 
   app.post('/api/v1/approval-requests/:requestId/sync', async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
     try {
       const item = store.get(request.params.requestId);
       if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
@@ -590,6 +609,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
 
   app.post('/api/v1/approval-requests/:requestId/transfer-authorize', { bodyLimit: 8192 }, async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
     try {
       const item = store.authorizeTransfer(request.params.requestId, request.body ?? {});
       store.enqueueTransferReady(request.params.requestId);
@@ -610,6 +630,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
 
   app.post('/api/v1/approval-requests/:requestId/close', { bodyLimit: 8192 }, async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
     try {
       const item = store.get(request.params.requestId);
       if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');

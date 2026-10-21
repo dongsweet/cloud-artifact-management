@@ -120,6 +120,37 @@ test('AAA accounts authenticate in real time but receive CAM roles from Core acc
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Core roles separate business operations, platform configuration, and account administration', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-role-auth-'));
+  const app = await buildCoreApp({ dataDir, enableAuth: true });
+  async function login(username, password) {
+    const response = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username, password } });
+    assert.equal(response.statusCode, 200, response.body);
+    return { cookie: cookies(response), csrf: response.json().csrfToken };
+  }
+  try {
+    await app.authStore.createUser({ username: 'bootstrap-admin', displayName: '初始化管理员', password: 'Bootstrap-admin-123', roles: ['CORE_ADMIN'] }, null, { bootstrap: true });
+    app.authStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE username = ?').run('bootstrap-admin');
+    for (const [username, displayName, role] of [['business-operator', '业务操作员', 'CORE_OPERATOR'], ['platform-config', '平台配置管理员', 'CORE_CONFIG_ADMIN'], ['account-admin', '账号管理员', 'CORE_USER_ADMIN'], ['business-auditor', '业务审计员', 'CORE_AUDITOR']]) {
+      await app.authStore.createUser({ username, displayName, password: 'Role-account-123', roles: [role] });
+      app.authStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE username = ?').run(username);
+    }
+    const operator = await login('business-operator', 'Role-account-123');
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests', headers: { cookie: operator.cookie } })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/cloud/config', headers: { cookie: operator.cookie } })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/users', headers: { cookie: operator.cookie } })).statusCode, 403);
+    const config = await login('platform-config', 'Role-account-123');
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/agents', headers: { cookie: config.cookie } })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests', headers: { cookie: config.cookie } })).statusCode, 403);
+    const accounts = await login('account-admin', 'Role-account-123');
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/users', headers: { cookie: accounts.cookie } })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/aaa/config', headers: { cookie: accounts.cookie } })).statusCode, 403);
+    const auditor = await login('business-auditor', 'Role-account-123');
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/artifacts', headers: { cookie: auditor.cookie } })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/approval-requests/unknown/retry', headers: { cookie: auditor.cookie }, payload: {} })).statusCode, 403);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('gate request authentication requires a fresh signature from the trusted Edge identity', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-gate-rotation-'));
   const app = await buildCoreApp({ dataDir, enableAuth: false, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) } });
