@@ -343,7 +343,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
 
   const usableRecipient = (grant) => {
-    if (!['LOCAL_USER', 'CORE_USER'].includes(grant?.principalType)) return true;
+    if (grant?.principalType !== 'CORE_USER') return true;
     const user = auth.getUser(grant.principalId);
     return user?.source === 'CORE' ? user.edgeEnabled && user.status === 'ACTIVE' && !user.mustChangePassword && !(user.lockedUntil > Date.now()) && user.roles.includes('VALIDATOR') : user?.status === 'ACTIVE' && !user.mustChangePassword && user.roles.includes('VALIDATOR');
   };
@@ -357,7 +357,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     try {
       const actor = principal(request);
       const body = request.body ?? {};
-      const managedUser = ['LOCAL_USER', 'CORE_USER'].includes(request.principal.type);
+      const managedUser = request.principal.type === 'CORE_USER';
       const recipient = managedUser ? auth.getUser(body.recipientId ?? actor.principalId) : null;
       if (managedUser && (!recipient || recipient.status !== 'ACTIVE' || recipient.edgeEnabled === false || recipient.mustChangePassword || recipient.lockedUntil > Date.now() || !recipient.roles.includes('VALIDATOR'))) throw new Error('下载责任人须为已获准登录 Edge、完成初始密码修改的验证人员');
       if (body.roundId) {
@@ -369,7 +369,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const grant = downloadGrants.createGrant({
         candidateIds: body.candidateIds,
         principalId: recipient?.id ?? actor.principalId,
-        principalType: recipient ? (recipient.source === 'CORE' ? 'CORE_USER' : 'LOCAL_USER') : actor.principalType,
+        principalType: recipient ? 'CORE_USER' : actor.principalType,
         createdBy: actor.principalId,
         expiresAt: body.expiresAt,
         maxTotalSessions: body.maxTotalSessions,

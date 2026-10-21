@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
+import { CORE_ROLES, EDGE_ROLES, CORE_ROLE_LABELS, EDGE_ROLE_LABELS } from '../../../libs/cam-auth/src/roles.js';
 
 const deriveAsync = promisify(derive);
 let derivations = 0;
@@ -11,10 +12,9 @@ async function scrypt(...args) {
 const params = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const now = () => new Date().toISOString();
-export const ROLES = ['CORE_ADMIN'];
-export const EDGE_ROLES = ['EDGE_ADMIN', 'CANDIDATE_RECEIVER', 'VALIDATOR', 'RELEASE_APPLICANT', 'EDGE_AUDITOR'];
-export const ROLE_LABELS = { CORE_ADMIN: '内网发布审批管理员' };
-export const EDGE_ROLE_LABELS = { EDGE_ADMIN: '账号管理员', CANDIDATE_RECEIVER: '候选接收人员', VALIDATOR: '验证人员', RELEASE_APPLICANT: '发布申请人员', EDGE_AUDITOR: '审计人员' };
+export const ROLES = CORE_ROLES;
+export { EDGE_ROLES, CORE_ROLE_LABELS, EDGE_ROLE_LABELS };
+export const ROLE_LABELS = CORE_ROLE_LABELS;
 function failure(message, statusCode = 400, code = 'invalid_account') {
   return Object.assign(new Error(message), { statusCode, code });
 }

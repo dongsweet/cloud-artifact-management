@@ -1,14 +1,14 @@
 # 外部交换区账号及下载交付
 
-> **认证架构更新：** 本文后续章节描述早期 Edge 独立账号实现，仅保留作旧数据和下载授权表结构参考。当前生产登录由 CAM Core 统一管理；Edge 通过已配对的 Core 控制地址认证并获取短期会话。不要在生产环境执行本文的 Edge 初始管理员创建步骤。当前设计以 [技术方案中的账号体系落地模型](technical-solution.md#1114-账号体系落地模型) 为准。
+> **认证架构更新：** 本文早期的 Edge 独立账号内容已经退役，仅保留历史背景和下载授权说明。当前生产登录由 CAM Core 统一管理；Edge 通过已配对的 Core 控制地址认证并获取短期会话。不要执行本文旧版初始化步骤。当前设计以 [技术方案中的账号体系落地模型](technical-solution.md#1114-账号体系落地模型) 为准。
 
 ## 身份与权限
 
-`cam-edge` 使用独立本地账号，不连接统一云管密码库或 AAA。本轮实现只包含外部交换区；`cam-core` 的 AAA 登录、云管审批适配器和 `cam-agent` 设备证书仍待后续接入，不能将服务骨架作为已具备正式身份接入的部署。
+`cam-edge` 不维护独立本地账号，不保存人员密码。人员账号、Core/Edge 角色和 Edge 登录资格由 Core 统一维护；Edge 只通过控制地址读取当前授权并建立短期会话。
 
 | 角色 | 页面与 API 权限 |
 |---|---|
-| `EDGE_ADMIN` | 创建账号、编辑角色和状态、解锁、重置他人密码、查看认证审计 |
+| `EDGE_ADMIN` | 配置 Edge 网闸及控制通道、只读查看授权人员和认证审计 |
 | `CANDIDATE_RECEIVER` | 查看并维护产品、版本、轮次、候选包，导入及接收 |
 | `VALIDATOR` | 只读查看候选、创建及撤销本人创建的下载授权、查看本人创建或作为责任人的授权 |
 | `RELEASE_APPLICANT` | 只读查看候选；预留审批申请角色，尚无审批提交实现 |
@@ -18,17 +18,9 @@
 
 ## 初始化与部署
 
-先确保宿主机数据目录及权限已配置，使用现有直连部署。初始化命令只在空账号库上可运行，无 HTTP 初始化入口、默认密码或环境变量密码。
+Edge 不执行账号初始化命令。首次账号创建、密码设置和角色授权均在 Core 完成；只分配 Edge 角色的人员可以登录 Edge，但不能建立 Core 页面会话。
 
-```bash
-docker compose --env-file deploy/.env -f compose.direct.yaml up -d --build cam-edge cam-edge-web
-docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-edge \
-  node apps/cam-edge/src/bootstrap-admin.js
-```
-
-按提示输入用户名、姓名、初始密码及确认密码。密码隐藏输入、不进入命令参数或日志。密码至少 12 个字符，最多 256 字节。第一次登录须修改密码，修改后重新登录。
-
-账号、会话及认证审计表与现有候选表共用外部区 SQLite 数据库：`${CAM_EDGE_DATA_DIR}/edge/edge.sqlite`，由宿主机本地目录绑定进入容器；重建镜像和容器不会丢失账号。数据库未加密，备份及文件权限按部署规范保护；禁止清空数据目录。SQLite WAL 在线备份应使用 SQLite 备份机制，或停服后复制数据库及对应 WAL 文件，不能只复制运行中的主文件。
+Core 用户授权缓存、Edge 短期会话及认证审计表与现有候选表共用外部区 SQLite 数据库：`${CAM_EDGE_DATA_DIR}/edge/edge.sqlite`，由宿主机本地目录绑定进入容器；重建镜像和容器不会丢失会话审计数据。Edge 不保存密码。数据库未加密，备份及文件权限按部署规范保护；禁止清空数据目录。SQLite WAL 在线备份应使用 SQLite 备份机制，或停服后复制数据库及对应 WAL 文件，不能只复制运行中的主文件。
 
 配置在项目 `.env`（Compose 默认读取）中设置；如果使用 `deploy/.env`，执行 Compose 时显式加 `--env-file deploy/.env`：
 
@@ -43,21 +35,20 @@ CAM_TRUST_PROXY=192.168.240.0/24
 
 Fastify `onRequest` 钩子在业务处理之前读取 Cookie、校验会话并生成 `request.principal`，随后检查初始密码状态及角色。拒绝客户端自报账号的请求头。可信身份适配器的 `principalProvider` 是服务构造参数，测试可以注入，部署服务没有启用。
 
-- 密码使用 Node.js 内置 `crypto.scrypt`：随机 16 字节盐、64 字节结果、`N=32768/r=8/p=1`，记录参数以支持后续迁移。
-- 会话使用 32 字节随机值；SQLite 保存 SHA-256 摘要；Cookie 使用 `HttpOnly`、`SameSite=Strict`，默认 `Secure`。
-- 闲置 30 分钟或绝对 8 小时失效。退出、修改/重置密码、保存角色或账号状态时撤销相关会话。
+- 密码只在 Core 侧按统一账号策略处理，Edge 不接收或保存密码。
+- Edge 会话使用 32 字节随机值；SQLite 保存 SHA-256 摘要；Cookie 使用 `HttpOnly`、`SameSite=Strict`，默认 `Secure`。
+- Edge 会话最长 15 分钟；每个受保护请求通过 Core 控制地址刷新当前授权。退出、密码变更、角色变更或账号停用会使相关会话失效或降权。
 - 修改请求须携带 `X-CAM-CSRF`，与当前会话绑定的随机摘要匹配；浏览器从 `cam_csrf` Cookie 获取。跨站 Origin 被拒绝。
-- 连续 5 次失败锁定账号 1 分钟，后续失败递增，最长 60 分钟；同来源每分钟最多 20 次登录请求；进程最多并行处理 4 次密码派生，限制 CPU/内存压力。
-- 锁定可由管理员在编辑账号中保存解除。不能禁用自己的管理员账号或移除自己的管理员角色，也不能移除最后一个有效管理员。账号采用禁用而非删除，以保留审计关联。
+- 登录失败限制、密码策略和账号停用由 Core 统一执行；Edge 只接收 Core 返回的短期签名断言。
 
-认证事件记录登录成功/失败、退出、账号创建及修改、密码修改或重置。业务修改请求额外记录操作者、方法和路由模板，表示操作尝试，不能当作业务成功的证明。页面提供最新 200 条只读事件；完整业务结果审计及外部日志归档后续补充。
+认证事件记录 Core 委托登录、退出、授权刷新和业务操作尝试。页面提供最新 200 条只读事件；完整业务结果审计及外部日志归档后续补充。
 
 SQLite 表：
 
 | 表 | 内容 |
 |---|---|
-| `edge_users` | 用户 ID、用户名、姓名、密码结果/盐/参数、角色 JSON、状态、初始改密标记、锁定及时间 |
-| `edge_sessions` | 会话 ID、用户 ID、会话/CSRF 摘要、绝对到期和最近活动、撤销、来源及 User-Agent |
+| `edge_core_users` | Core 下发的用户显示信息、Edge 角色、登录资格、状态和最近认证时间缓存 |
+| `edge_core_sessions` | Edge 短期会话 ID、Core 用户 ID、角色快照、会话/CSRF 摘要、到期和撤销状态 |
 | `edge_auth_events` | 事件 ID、操作者、类型、来源、详情及时间 |
 
 角色采用固定枚举，用户角色保存在 `roles_json`；目前不允许页面自定义权限。未引入认证依赖、ORM、Redis 或外部会话服务。
@@ -72,9 +63,8 @@ SQLite 表：
 | `GET /api/v1/auth/me` | 当前账号及角色标签 |
 | `POST /api/v1/auth/logout` | 撤销当前会话 |
 | `POST /api/v1/auth/password` | 提供旧密码修改本人密码，撤销所有会话 |
-| `GET/POST /api/v1/users` | 查看/创建账号 |
-| `PATCH /api/v1/users/:id` | 编辑角色、姓名、状态并解锁，撤销该用户所有会话 |
-| `POST /api/v1/users/:id/password` | 管理员重置他人密码，下次登录强制改密 |
+| `GET /api/v1/users` | 只读查看 Core 下发的 Edge 授权人员 |
+| `POST/PATCH /api/v1/users*` | 明确拒绝；账号和角色必须在 Core 管理 |
 | `GET /api/v1/auth-events` | 最新 200 条认证与操作尝试事件 |
 | `GET /api/v1/validators` | 可关联的验证人员 ID、用户名和姓名 |
 | `GET/POST /api/v1/download-grants` | 授权列表/创建授权 |
