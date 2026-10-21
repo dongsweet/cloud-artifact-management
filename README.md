@@ -69,6 +69,12 @@ docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-core n
 
 该命令只允许在当前没有有效安全管理员时执行，并要求在容器交互终端中输入初始密码。
 
+如果测试数据库是在角色拆分前创建的，旧的 `CORE_ADMIN` 不会自动获得新角色。确认数据库中确实存在旧角色后，执行以下一次性修复命令；它只会把 `CORE_ADMIN` 映射为 `CORE_SYSTEM_ADMIN`，不会授予账号管理权限：
+
+```bash
+docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-core node apps/cam-core/src/repair-legacy-roles.js
+```
+
 Core 账号和会话保存在内网 Core 自己的 SQLite 文件；Edge 不保存本地账号，只缓存 Core 下发的 Edge 授权和短期会话。AAA 接入由 Core 实时认证适配器负责，不改变审批业务页面。
 
 `CAM_EDGE_DATA_DIR`、`CAM_CORE_DATA_DIR`、`CAM_AGENT_1_DATA_DIR` 和 `CAM_AGENT_2_DATA_DIR` 是宿主机本地目录，分别保存
