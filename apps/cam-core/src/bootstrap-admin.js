@@ -11,4 +11,8 @@ async function secret(prompt) { process.stdout.write(prompt); process.stdin.setR
 const password = await secret('初始密码（至少 12 个字符）：'); if (password !== await secret('再次输入：')) throw new Error('两次密码不一致');
 const dataDir = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/core' : join(process.cwd(), 'data', 'core'));
 const db = await openDatabase(join(dataDir, 'core.sqlite'));
-try { const user = await new AuthStore(db).createUser({ username, displayName, password, roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true }); console.log(`已创建 Core 系统管理员 ${user.username}；首次登录须修改密码。`); } finally { db.close(); }
+try {
+  const user = await new AuthStore(db).createUser({ username, displayName, password, roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true });
+  console.log(`已创建 Core 系统管理员 ${user.username}；首次登录须修改密码。`);
+  console.log('系统管理员不能管理账号；请继续执行 bootstrap-security-admin.js 创建独立的安全管理员。');
+} finally { db.close(); }

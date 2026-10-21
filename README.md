@@ -61,6 +61,14 @@ Caddyfile，并保留其全局 DNS Challenge 配置。浏览器入口为
 docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-core node apps/cam-core/src/bootstrap-admin.js
 ```
 
+系统管理员负责业务和平台运行，不能管理账号。初始化完成后继续执行以下命令创建独立的安全管理员；账号创建、角色分配、禁用和密码重置由安全管理员在 Core 页面完成：
+
+```bash
+docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-core node apps/cam-core/src/bootstrap-security-admin.js
+```
+
+该命令只允许在当前没有有效安全管理员时执行，并要求在容器交互终端中输入初始密码。
+
 Core 账号和会话保存在内网 Core 自己的 SQLite 文件；Edge 不保存本地账号，只缓存 Core 下发的 Edge 授权和短期会话。AAA 接入由 Core 实时认证适配器负责，不改变审批业务页面。
 
 `CAM_EDGE_DATA_DIR`、`CAM_CORE_DATA_DIR`、`CAM_AGENT_1_DATA_DIR` 和 `CAM_AGENT_2_DATA_DIR` 是宿主机本地目录，分别保存
