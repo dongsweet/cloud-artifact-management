@@ -73,6 +73,40 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('AAA accounts authenticate in real time but receive CAM roles from Core account management', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-aaa-auth-'));
+  const calls = [];
+  let aaaEnabled = true;
+  const app = await buildCoreApp({ dataDir, aaaAdapter: {
+    enabled: () => aaaEnabled,
+    authenticate: async (credentials) => { calls.push(credentials); if (credentials.password !== 'AAA-password-123') throw Object.assign(new Error('rejected'), { statusCode: 401, code: 'aaa_rejected' }); return { username: credentials.loginName }; }
+  } });
+  try {
+    await app.authStore.createUser({ username: 'local-admin', displayName: '本地管理员', password: 'Local-admin-123', roles: ['CORE_ADMIN'] }, null, { bootstrap: true });
+    app.authStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE username = ?').run('local-admin');
+    const adminLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'local-admin', password: 'Local-admin-123' } });
+    assert.equal(adminLogin.statusCode, 200);
+    const accountResponse = await app.inject({ method: 'POST', url: '/api/v1/users', headers: { cookie: cookies(adminLogin), 'x-cam-core-csrf': adminLogin.json().csrfToken }, payload: { username: 'aaa-operator', displayName: 'AAA 操作员', authSource: 'AAA', roles: ['CORE_ADMIN'] } });
+    assert.equal(accountResponse.statusCode, 201, accountResponse.body);
+    const account = accountResponse.json().user;
+    assert.equal(account.authSource, 'AAA');
+    assert.equal(account.mustChangePassword, false);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'aaa-operator', password: 'AAA-password-123' } });
+    assert.equal(login.statusCode, 200, login.body);
+    assert.deepEqual(calls, [{ loginName: 'aaa-operator', password: 'AAA-password-123' }]);
+    const noRole = await app.authStore.createUser({ username: 'aaa-no-role', displayName: '无 Core 角色 AAA', authSource: 'AAA', roles: [], edgeEnabled: true, edgeRoles: ['EDGE_ADMIN'] });
+    assert.equal(noRole.authSource, 'AAA');
+    const denied = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'aaa-no-role', password: 'AAA-password-123' } });
+    assert.equal(denied.statusCode, 403);
+    const rejected = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'aaa-operator', password: 'wrong-password' } });
+    assert.equal(rejected.statusCode, 401);
+    aaaEnabled = false;
+    const unconfigured = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'aaa-operator', password: 'AAA-password-123' } });
+    assert.equal(unconfigured.statusCode, 503);
+    await assert.rejects(() => app.authStore.changePassword(account.id, 'Local-should-not-work-123', null), (error) => error.statusCode === 403 && error.code === 'external_password_managed');
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('gate request authentication requires a fresh signature from the trusted Edge identity', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-gate-rotation-'));
   const app = await buildCoreApp({ dataDir, enableAuth: false, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) } });

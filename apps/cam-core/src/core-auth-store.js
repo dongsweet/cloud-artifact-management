@@ -29,11 +29,12 @@ function validateEdgeRoles(roles) {
 }
 
 export class AuthStore {
-  constructor(db, { clock = Date.now, idleMs = 30 * 60_000, absoluteMs = 8 * 60 * 60_000 } = {}) {
+  constructor(db, { clock = Date.now, idleMs = 30 * 60_000, absoluteMs = 8 * 60 * 60_000, aaaAdapter = null } = {}) {
     this.db = db;
     this.clock = clock;
     this.idleMs = idleMs;
     this.absoluteMs = absoluteMs;
+    this.aaaAdapter = aaaAdapter;
     db.exec([
       "CREATE TABLE IF NOT EXISTS core_users (user_id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, password_parameters_json TEXT NOT NULL, roles_json TEXT NOT NULL, status TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 1, failed_attempts INTEGER NOT NULL DEFAULT 0, locked_until INTEGER, password_changed_at TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, edge_enabled INTEGER NOT NULL DEFAULT 0, edge_roles_json TEXT NOT NULL DEFAULT '[]', edge_provisioned INTEGER NOT NULL DEFAULT 0)",
       'CREATE TABLE IF NOT EXISTS core_sessions (session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES core_users(user_id), token_sha256 TEXT NOT NULL UNIQUE, csrf_token_sha256 TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, revoked_at INTEGER, source_address TEXT, user_agent TEXT)',
@@ -44,6 +45,7 @@ export class AuthStore {
     if (!columns.has('edge_enabled')) db.exec('ALTER TABLE core_users ADD COLUMN edge_enabled INTEGER NOT NULL DEFAULT 0');
     if (!columns.has('edge_roles_json')) db.exec("ALTER TABLE core_users ADD COLUMN edge_roles_json TEXT NOT NULL DEFAULT '[]'");
     if (!columns.has('edge_provisioned')) db.exec('ALTER TABLE core_users ADD COLUMN edge_provisioned INTEGER NOT NULL DEFAULT 0');
+    if (!columns.has('auth_source')) db.exec("ALTER TABLE core_users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'LOCAL'");
     db.exec('UPDATE core_users SET edge_provisioned = 1 WHERE edge_enabled = 1');
     this.dummySalt = randomBytes(16).toString('hex');
   }
@@ -58,23 +60,29 @@ export class AuthStore {
   getUser(id) {
     const row = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(id);
     if (!row) return null;
-    return { id: row.user_id, username: row.username, displayName: row.display_name, roles: JSON.parse(row.roles_json), edgeEnabled: Boolean(row.edge_enabled), edgeProvisioned: Boolean(row.edge_provisioned), edgeRoles: JSON.parse(row.edge_roles_json ?? '[]'), status: row.status, mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at };
+    return { id: row.user_id, username: row.username, displayName: row.display_name, authSource: row.auth_source ?? 'LOCAL', roles: JSON.parse(row.roles_json), edgeEnabled: Boolean(row.edge_enabled), edgeProvisioned: Boolean(row.edge_provisioned), edgeRoles: JSON.parse(row.edge_roles_json ?? '[]'), status: row.status, mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at };
   }
   listUsers() { return this.db.prepare('SELECT user_id FROM core_users ORDER BY username').all().map((row) => this.getUser(row.user_id)); }
-  async createUser({ username, displayName, password, roles = [], edgeEnabled = false, edgeRoles = [] }, actor = null, { bootstrap = false } = {}) {
+  async createUser({ username, displayName, password, authSource = 'LOCAL', roles = [], edgeEnabled = false, edgeRoles = [] }, actor = null, { bootstrap = false } = {}) {
     if (typeof username !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$/.test(username)) throw failure('用户名需为 3 至 64 位字母、数字、点、下划线或连字符');
     if (typeof displayName !== 'string' || !displayName.trim() || displayName.length > 100) throw failure('姓名不能为空且最多 100 字');
-    passwordValid(password); validateRoles(roles); validateEdgeRoles(edgeRoles);
+    if (!['LOCAL', 'AAA'].includes(authSource)) throw failure('认证来源无效');
+    if (authSource === 'LOCAL') passwordValid(password);
+    if (bootstrap && authSource !== 'LOCAL') throw failure('初始管理员必须使用本地认证');
+    validateRoles(roles); validateEdgeRoles(edgeRoles);
     if ((!roles.length && !(edgeEnabled && edgeRoles.length)) || (edgeRoles.length && !edgeEnabled)) throw failure('账号至少需要一个已启用的 CAM 角色');
     const salt = randomBytes(16).toString('hex');
-    const digest = await scrypt(password, salt, 64, params);
+    // Keep the legacy non-null password hash column populated for AAA users,
+    // but never use this random, undisclosed value for AAA-backed logins.
+    const passwordMaterial = authSource === 'LOCAL' ? password : randomBytes(32).toString('hex');
+    const digest = await scrypt(passwordMaterial, salt, 64, params);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       if (bootstrap && this.db.prepare('SELECT COUNT(*) AS n FROM core_users').get().n) throw failure('已经初始化，不能再次创建初始管理员');
       const id = 'USR-' + randomUUID();
-      this.db.prepare('INSERT INTO core_users (user_id, username, display_name, password_hash, password_salt, password_parameters_json, roles_json, status, edge_enabled, edge_roles_json, edge_provisioned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, username.toLowerCase(), displayName.trim(), digest.toString('hex'), salt, JSON.stringify(params), JSON.stringify(roles), 'ACTIVE', edgeEnabled ? 1 : 0, JSON.stringify(edgeRoles), edgeEnabled ? 1 : 0, now(), now());
-      this.event(bootstrap ? 'ADMIN_BOOTSTRAPPED' : 'USER_CREATED', actor, { userId: id, roles, edgeEnabled, edgeRoles });
+      this.db.prepare('INSERT INTO core_users (user_id, username, display_name, password_hash, password_salt, password_parameters_json, roles_json, status, edge_enabled, edge_roles_json, edge_provisioned, auth_source, must_change_password, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, username.toLowerCase(), displayName.trim(), digest.toString('hex'), salt, JSON.stringify(params), JSON.stringify(roles), 'ACTIVE', edgeEnabled ? 1 : 0, JSON.stringify(edgeRoles), edgeEnabled ? 1 : 0, authSource, authSource === 'LOCAL' ? 1 : 0, now(), now());
+      this.event(bootstrap ? 'ADMIN_BOOTSTRAPPED' : 'USER_CREATED', actor, { userId: id, authSource, roles, edgeEnabled, edgeRoles });
       this.db.exec('COMMIT');
       return this.getUser(id);
     } catch (err) { this.db.exec('ROLLBACK'); throw err; }
@@ -82,6 +90,35 @@ export class AuthStore {
   async login(username, password, { address = null, userAgent = null, scope = 'CORE' } = {}) {
     if (typeof username !== 'string' || username.length > 64 || typeof password !== 'string' || Buffer.byteLength(password) > 256) throw failure('用户名或密码错误', 401, 'login_failed');
     const row = this.db.prepare('SELECT * FROM core_users WHERE username = ?').get(username.toLowerCase());
+    if (row?.auth_source === 'AAA') {
+      const current = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(row.user_id);
+      if (!current || current.status !== 'ACTIVE' || current.locked_until > this.clock()) {
+        this.event('AAA_LOGIN_FAILED', row.user_id, { reason: 'CAM_ACCOUNT_UNAVAILABLE' }, address);
+        throw failure('用户名或密码错误，连续失败后需稍后重试', 401, 'login_failed');
+      }
+      if (!this.aaaAdapter?.enabled()) {
+        this.event('AAA_LOGIN_FAILED', row.user_id, { reason: 'AAA_NOT_CONFIGURED' }, address);
+        throw failure('AAA 实时认证尚未配置，请联系 Core 管理员', 503, 'aaa_not_configured');
+      }
+      try { await this.aaaAdapter.authenticate({ loginName: current.username, password }); }
+      catch (error) {
+        const latest = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(row.user_id);
+        if (error.statusCode === 401 && latest?.status === 'ACTIVE') {
+          const failedAttempts = latest.failed_attempts + 1;
+          const lock = failedAttempts >= 5 ? this.clock() + Math.min(60, 2 ** (failedAttempts - 5)) * 60_000 : null;
+          this.db.prepare('UPDATE core_users SET failed_attempts = ?, locked_until = ? WHERE user_id = ?').run(failedAttempts, lock, row.user_id);
+        }
+        this.event('AAA_LOGIN_FAILED', row.user_id, { reason: error.code ?? 'AAA_REJECTED' }, address);
+        if (error.statusCode !== 401) throw error;
+        throw failure('AAA 用户名或密码错误', 401, 'login_failed');
+      }
+      const latest = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(row.user_id);
+      if (!latest || latest.status !== 'ACTIVE' || latest.auth_source !== 'AAA') {
+        this.event('AAA_LOGIN_FAILED', row.user_id, { reason: 'CAM_ACCOUNT_CHANGED' }, address);
+        throw failure('账号已禁用或认证来源已变更', 401, 'login_failed');
+      }
+      return this.finishLogin(latest, { address, userAgent, scope });
+    }
     const digest = await scrypt(password, row?.password_salt ?? this.dummySalt, 64, row ? JSON.parse(row.password_parameters_json) : params);
     const valid = row && timingSafeEqual(digest, Buffer.from(row.password_hash, 'hex'));
     // Re-read after asynchronous password derivation to avoid bypassing concurrent lockout/disable.
@@ -95,12 +132,15 @@ export class AuthStore {
       this.event('LOGIN_FAILED', row?.user_id, {}, address);
       throw failure('用户名或密码错误，连续失败后需稍后重试', 401, 'login_failed');
     }
+    return this.finishLogin(current, { address, userAgent, scope });
+  }
+  finishLogin(row, { address = null, userAgent = null, scope = 'CORE' } = {}) {
     if (scope === 'EDGE') {
       this.db.prepare('UPDATE core_users SET failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE user_id = ?').run(now(), row.user_id);
-      this.event('EDGE_CREDENTIALS_VERIFIED', row.user_id, {}, address);
+      this.event('EDGE_CREDENTIALS_VERIFIED', row.user_id, { authSource: row.auth_source ?? 'LOCAL' }, address);
       return { user: this.getUser(row.user_id) };
     }
-    if (!current.roles_json || JSON.parse(current.roles_json).length === 0) {
+    if (!row.roles_json || JSON.parse(row.roles_json).length === 0) {
       this.event('CORE_LOGIN_DENIED', row.user_id, { reason: 'CORE_NOT_ASSIGNED' }, address);
       throw failure('此账号未获准登录 CAM Core', 403, 'core_access_denied');
     }
@@ -131,7 +171,7 @@ export class AuthStore {
     const user = this.getUser(session.user_id);
     if (!user || user.status !== 'ACTIVE') return null;
     this.db.prepare('UPDATE core_sessions SET last_seen_at = ? WHERE session_id = ?').run(this.clock(), session.session_id);
-    return { id: user.id, type: 'LOCAL_USER', domain: 'CORE_LOCAL', roles: user.roles, user, sessionId: session.session_id, csrfHash: session.csrf_token_sha256 };
+    return { id: user.id, type: user.authSource === 'AAA' ? 'AAA_USER' : 'LOCAL_USER', domain: user.authSource === 'AAA' ? 'AAA' : 'CORE_LOCAL', roles: user.roles, user, sessionId: session.session_id, csrfHash: session.csrf_token_sha256 };
   }
   csrf(principal, value) { return typeof value === 'string' && value.length === 43 && hash(value) === principal.csrfHash; }
   refreshCsrf(principal) {
@@ -171,6 +211,7 @@ export class AuthStore {
     passwordValid(password);
     const row = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(id);
     if (!row) throw failure('账号不存在', 404);
+    if (row.auth_source === 'AAA') throw failure('AAA 账号密码由身份源管理，请到 AAA 修改', 403, 'external_password_managed');
     if (actor === id) {
       if (typeof oldPassword !== 'string' || Buffer.byteLength(oldPassword) > 256) throw failure('原密码不正确');
       const oldHash = await scrypt(oldPassword, row.password_salt, 64, JSON.parse(row.password_parameters_json));

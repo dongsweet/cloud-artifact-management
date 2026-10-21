@@ -10,10 +10,11 @@ import { GateConfigStore } from '../../../libs/cam-gate/src/config.js';
 import { GateKeyring } from '../../../libs/cam-gate/src/keyring.js';
 import { signResponse } from '../../../libs/cam-agent-auth/src/protocol.js';
 import { activateStagedAgentServiceIdentity, loadAgentServiceIdentity, rotateAgentServiceIdentity, scheduleAgentServiceIdentityActivation, stageAgentServiceIdentityRotation } from './agent-service-identity.js';
+import { DkeyAmAdapter } from './aaa-adapter.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/core' : join(process.cwd(), 'data', 'core'));
 
-export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = new CloudAdapter(), enableAuth = true, enableKeyRotation = process.env.NODE_ENV === 'production', cloudRetryDelayMs, cloudStatusPollMs, approvalResultRetryBaseMs, workerIntervalMs, fetchImpl = fetch } = {}) {
+export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = new CloudAdapter(), enableAuth = true, enableKeyRotation = process.env.NODE_ENV === 'production', cloudRetryDelayMs, cloudStatusPollMs, approvalResultRetryBaseMs, workerIntervalMs, fetchImpl = fetch, aaaAdapter = undefined } = {}) {
   const db = await openDatabase(join(dataDir, 'core.sqlite'));
   const agentServiceIdentity = await loadAgentServiceIdentity(join(dataDir, 'core-agent-identity.json'));
   const agentServiceIdentityPath = join(dataDir, 'core-agent-identity.json');
@@ -49,7 +50,8 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
   if (agentServiceIdentity.pendingIdentity && pendingDeadline(agentServiceIdentity.pendingIdentity) <= Date.now()) {
     await activatePendingIdentity(store.getCoreIdentityRotationStatus(agentServiceIdentity.pendingIdentity.rotationId));
   }
-  const auth = new AuthStore(db);
+  const resolvedAaaAdapter = aaaAdapter ?? new DkeyAmAdapter({ fetchImpl });
+  const auth = new AuthStore(db, { aaaAdapter: resolvedAaaAdapter });
   const gateConfig = new GateConfigStore(db, { table: 'core_gate_config', eventsTable: 'core_gate_config_events', requiredUrlFields: ['edgeControlUrl', 'edgeTransferUrl'] });
   const keyring = new GateKeyring({ filePath: join(dataDir, 'gate-keyring.json'), role: 'core' });
   await keyring.ready;
