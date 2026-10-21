@@ -31,9 +31,9 @@ function canCore(permission) {
   return roles.includes('CORE_ADMIN') || {
     businessRead: ['CORE_OPERATOR', 'CORE_AUDITOR'],
     businessWrite: ['CORE_OPERATOR'],
-    configRead: ['CORE_CONFIG_ADMIN'],
-    configWrite: ['CORE_CONFIG_ADMIN'],
-    userAdmin: ['CORE_USER_ADMIN']
+    configRead: ['CORE_SECURITY_ADMIN'],
+    configWrite: ['CORE_SECURITY_ADMIN'],
+    userAdmin: ['CORE_SECURITY_ADMIN']
   }[permission]?.some((role) => roles.includes(role));
 }
 function applyRoleMenu() {

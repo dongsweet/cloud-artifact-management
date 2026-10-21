@@ -637,16 +637,17 @@ Core 与 Edge 各自的 Ed25519/X25519 身份密钥可按本端策略自动轮�
 
 | 角色 | 允许的操作 |
 |---|---|
-| `CORE_ADMIN` | Core 全部内网管理操作、Core/Edge 账号与角色授权 |
-| `CORE_OPERATOR` | 查看审批请求和正式制品，执行云管同步、失败重试、传输准备、关单和 Agent 分发 |
-| `CORE_AUDITOR` | 只读查看审批、正式制品、分发任务和相关报告 |
-| `CORE_CONFIG_ADMIN` | Agent 接入与轮换、AAA、云管、网闸和身份配置 |
-| `CORE_USER_ADMIN` | Core 账号、Core/Edge 角色和账号状态管理 |
+| `CORE_ADMIN` | Core 全部内网管理操作、Core/Edge 账号与角色授权；保留为初始化和应急兼容角色 |
+| `CORE_OPERATOR` | 操作员：查看审批请求和正式制品，执行云管同步、失败重试、传输准备、关单和 Agent 分发 |
+| `CORE_SECURITY_ADMIN` | 安全员：管理 Agent 接入与轮换、AAA、云管、网闸、身份密钥以及 Core/Edge 账号角色授权 |
+| `CORE_AUDITOR` | 审计员：只读查看审批、正式制品、分发任务和相关报告 |
 | `EDGE_ADMIN` | Edge 网闸及控制通道配置；只读查看 Edge 授权人员和认证审计 |
 | `CANDIDATE_RECEIVER` | 软件产品、发布版本、候选轮次、候选包的接收和维护 |
 | `VALIDATOR` | 查看候选包、提交验证报告和固化申请、创建验证下载授权、触发正式传输 |
 | `RELEASE_APPLICANT` | 查看候选轮次和处理发布申请结果 |
 | `EDGE_AUDITOR` | 只读查看候选、固化、下载授权和认证审计 |
+
+早期版本的 `CORE_CONFIG_ADMIN` 和 `CORE_USER_ADMIN` 会在 Core 启动时统一迁移为 `CORE_SECURITY_ADMIN`，不再作为新账号的可选角色。
 
 服务端在 Fastify `onRequest` 阶段按 API 方法和路径检查角色；页面隐藏菜单只是便捷措施，不是安全边界。Edge 每个受保护请求先通过已配对控制地址获取 Core 当前账号授权，再执行上述角色检查，因此角色变更不依赖重新登录。
 
@@ -697,7 +698,7 @@ sequenceDiagram
 | 能力 | 当前实现 | 目标方案 | 差异与待实现工作 |
 |---|---|---|---|
 | Core 人员认证 | Core 支持本地应急账号和 Core 预登记 AAA 账号实时认证；本地账号保存密码哈希、盐及 core_sessions | Core 使用 AAA 认证，SQLite 只保留稳定身份标识和 CAM 授权 | 首期不做 AAA 用户目录同步；本地应急账号继续保留 |
-| Core 角色授权 | Core 使用 `CORE_ADMIN` 及业务、审计、配置、账号管理角色；账号同时保存 Edge 登录资格和 Edge 角色 | Core 统一维护人员账号、Core 登录资格、Edge 登录资格和两端授权 | Core 页面按角色隐藏菜单，服务端按相同权限边界校验接口 |
+| Core 角色授权 | Core 使用 `CORE_ADMIN` 及操作员、安全员、审计员角色；账号同时保存 Edge 登录资格和 Edge 角色 | Core 统一维护人员账号、Core 登录资格、Edge 登录资格和两端授权 | Core 页面按角色隐藏菜单，服务端按相同权限边界校验接口；旧配置/账号管理员角色自动迁移为安全员 |
 | Edge 人员认证 | Edge 只保存 Core 下发的授权缓存和短期会话，不保存密码或本地账号 | Edge 登录委托 Core/AAA；每个受保护请求通过既有控制地址刷新当前授权 | 已移除 `edge_users`、`edge_sessions`、`allowLocalAuth` 和 Edge 本地账号管理 API |
 | Core 管理 Edge 权限 | Core 用户模型保存 Edge 登录开关和 Edge 角色 | Core 账号管理统一配置 Edge 可登录资格和 CAM 角色 | Edge 页面只读展示 Core 下发的人员和角色，不提供账号编辑入口 |
 | Core/Edge 通道 | 已配置控制地址并用于已配对的签名控制消息、配对及状态交换 | 在现有控制地址上增加认证请求/响应 | 无需额外通道；当前控制 API 不含人员认证协议，需补充凭据脱敏、认证限流、防重放、短时凭证和撤销检查 |
