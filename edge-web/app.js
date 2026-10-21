@@ -86,7 +86,7 @@ function renderBreadcrumb() {
     if (state.currentRound || state.roundId) labels.push([state.currentRound ? `第 ${state.currentRound.roundNo} 轮` : '候选轮次', routeHash('candidates', paramsForState())]);
     labels.push([state.view === 'candidates' ? '候选包' : state.currentCandidate?.fileName ?? '候选包']);
   }
-  $('#breadcrumbs').innerHTML = '<li class="breadcrumb-item">CAM</li>' + labels.map(([label, href], index) => {
+  $('#breadcrumbs').innerHTML = '<li class="breadcrumb-item">CAM Edge</li>' + labels.map(([label, href], index) => {
     const active = index === labels.length - 1;
     if (active || !href) return `<li class="breadcrumb-item${active ? ' active' : ''}">${escapeHtml(label)}</li>`;
     return `<li class="breadcrumb-item"><a href="${href}">${escapeHtml(label)}</a></li>`;
