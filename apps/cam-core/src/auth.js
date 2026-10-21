@@ -98,9 +98,9 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
     if (adminOnly(request, reply)) return;
     try {
       const current = aaaConfigStore.get().config;
-      const candidate = { ...current, ...(request.body ?? {}), sharedSecret: current.sharedSecret };
+      const candidate = { ...current, ...(request.body ?? {}), sharedSecret: String(request.body?.sharedSecret ?? '').trim() || current.sharedSecret };
       if (typeof aaaAdapter?.probe !== 'function') return { ok: true, item: aaaConfigStore.publicValue(), probe: { reachable: true, mode: 'injected' } };
-      if (!aaaAdapter?.fetch || !candidate.baseUrl || !candidate.tenantName || !candidate.accessServerName || !candidate.sharedSecret) return fail(reply, 503, 'aaa_not_configured', 'AAA 参数尚未完整配置，请先提供部署环境中的共享密钥');
+      if (!aaaAdapter?.fetch || !candidate.baseUrl || !candidate.tenantName || !candidate.accessServerName || !candidate.sharedSecret) return fail(reply, 503, 'aaa_not_configured', 'AAA 参数尚未完整配置，请先填写 API 共享密钥');
       const result = await aaaAdapter.probe(candidate);
       return { ok: true, item: aaaConfigStore.publicValue(), probe: result };
     } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'aaa_test_failed', err.message); }

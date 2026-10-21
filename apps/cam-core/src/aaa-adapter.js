@@ -63,14 +63,18 @@ export class AaaConfigStore {
   get() {
     const row = this.db.prepare('SELECT * FROM core_aaa_config WHERE config_id = 1').get();
     const stored = row ? JSON.parse(row.config_json) : {};
-    const config = normalizeAaaConfig({ ...this.envConfig, ...stored, sharedSecret: this.envConfig.sharedSecret });
+    // Environment values remain deployment defaults. Once an administrator saves
+    // the secret from the page, the database value takes precedence. The secret
+    // is intentionally never included in publicValue().
+    const config = normalizeAaaConfig({ ...this.envConfig, ...stored, sharedSecret: stored.sharedSecret || this.envConfig.sharedSecret });
     return { config, source: row ? 'database' : 'environment', updatedBy: row?.updated_by ?? null, updatedAt: row?.updated_at ?? null, secretConfigured: Boolean(config.sharedSecret) };
   }
   save(input, actorId = null) {
     const current = this.get().config;
-    const config = normalizeAaaConfig({ ...current, ...input, sharedSecret: current.sharedSecret });
+    const submittedSecret = text(input?.sharedSecret);
+    const config = normalizeAaaConfig({ ...current, ...input, sharedSecret: submittedSecret || current.sharedSecret });
     const timestamp = new Date().toISOString();
-    this.db.prepare('INSERT INTO core_aaa_config (config_id, config_json, updated_by, updated_at) VALUES (1, ?, ?, ?) ON CONFLICT(config_id) DO UPDATE SET config_json = excluded.config_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at').run(JSON.stringify({ baseUrl: config.baseUrl, tenantName: config.tenantName, accessServerName: config.accessServerName, timeoutMs: config.timeoutMs, allowHttp: config.allowHttp }), actorId, timestamp);
+    this.db.prepare('INSERT INTO core_aaa_config (config_id, config_json, updated_by, updated_at) VALUES (1, ?, ?, ?) ON CONFLICT(config_id) DO UPDATE SET config_json = excluded.config_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at').run(JSON.stringify({ baseUrl: config.baseUrl, tenantName: config.tenantName, accessServerName: config.accessServerName, timeoutMs: config.timeoutMs, allowHttp: config.allowHttp, sharedSecret: config.sharedSecret }), actorId, timestamp);
     return this.get();
   }
   publicValue() {
