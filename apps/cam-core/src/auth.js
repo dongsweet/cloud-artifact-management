@@ -5,7 +5,7 @@ function cookies(request) {
   return Object.fromEntries((request.headers.cookie ?? '').split(';').filter(Boolean).map((entry) => { const i = entry.indexOf('='); return [entry.slice(0, i).trim(), entry.slice(i + 1).trim()]; }));
 }
 
-export function registerCoreAuth(app, { auth, keyring, secureCookies = process.env.CAM_COOKIE_SECURE !== 'false' }) {
+export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aaaAdapter = null, secureCookies = process.env.CAM_COOKIE_SECURE !== 'false' }) {
   const cookie = (name, value, httpOnly, expired = false) => `${name}=${value}; Path=/; SameSite=Strict; Max-Age=${expired ? 0 : 28800}${httpOnly ? '; HttpOnly' : ''}${secureCookies ? '; Secure' : ''}`;
   const clear = (reply) => reply.header('Set-Cookie', [cookie('cam_core_session', '', true, true), cookie('cam_core_csrf', '', false, true)]);
   const attempts = new Map();
@@ -81,6 +81,29 @@ export function registerCoreAuth(app, { auth, keyring, secureCookies = process.e
   app.get('/api/v1/users', async (request, reply) => {
     if (adminOnly(request, reply)) return;
     return { items: auth.listUsers(), roles: ROLE_LABELS, edgeRoles: EDGE_ROLE_LABELS };
+  });
+  app.get('/api/v1/aaa/config', async (request, reply) => {
+    if (adminOnly(request, reply)) return;
+    return { item: aaaConfigStore?.publicValue() ?? { configured: false, secretConfigured: false } };
+  });
+  app.put('/api/v1/aaa/config', { bodyLimit: 4096 }, async (request, reply) => {
+    if (adminOnly(request, reply)) return;
+    try {
+      const saved = aaaConfigStore.save(request.body ?? {}, request.principal.id);
+      aaaAdapter?.updateConfig?.(saved.config);
+      return { item: aaaConfigStore.publicValue() };
+    } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'aaa_config_invalid', err.message); }
+  });
+  app.post('/api/v1/aaa/test', { bodyLimit: 4096 }, async (request, reply) => {
+    if (adminOnly(request, reply)) return;
+    try {
+      const current = aaaConfigStore.get().config;
+      const candidate = { ...current, ...(request.body ?? {}), sharedSecret: current.sharedSecret };
+      if (typeof aaaAdapter?.probe !== 'function') return { ok: true, item: aaaConfigStore.publicValue(), probe: { reachable: true, mode: 'injected' } };
+      if (!aaaAdapter?.fetch || !candidate.baseUrl || !candidate.tenantName || !candidate.accessServerName || !candidate.sharedSecret) return fail(reply, 503, 'aaa_not_configured', 'AAA 参数尚未完整配置，请先提供部署环境中的共享密钥');
+      const result = await aaaAdapter.probe(candidate);
+      return { ok: true, item: aaaConfigStore.publicValue(), probe: result };
+    } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'aaa_test_failed', err.message); }
   });
   app.post('/api/v1/users', { bodyLimit: 8192 }, async (request, reply) => {
     if (adminOnly(request, reply)) return;

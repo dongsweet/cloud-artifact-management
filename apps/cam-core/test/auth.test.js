@@ -86,7 +86,15 @@ test('AAA accounts authenticate in real time but receive CAM roles from Core acc
     app.authStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE username = ?').run('local-admin');
     const adminLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'local-admin', password: 'Local-admin-123' } });
     assert.equal(adminLogin.statusCode, 200);
-    const accountResponse = await app.inject({ method: 'POST', url: '/api/v1/users', headers: { cookie: cookies(adminLogin), 'x-cam-core-csrf': adminLogin.json().csrfToken }, payload: { username: 'aaa-operator', displayName: 'AAA 操作员', authSource: 'AAA', roles: ['CORE_ADMIN'] } });
+    const adminHeaders = { cookie: cookies(adminLogin), 'x-cam-core-csrf': adminLogin.json().csrfToken };
+    const initialAaaConfig = await app.inject({ method: 'GET', url: '/api/v1/aaa/config', headers: adminHeaders });
+    assert.equal(initialAaaConfig.statusCode, 200);
+    const savedAaaConfig = await app.inject({ method: 'PUT', url: '/api/v1/aaa/config', headers: adminHeaders, payload: { baseUrl: 'https://aaa.example.test:8443', tenantName: 'CAM', accessServerName: 'CAM API', timeoutMs: 12000 } });
+    assert.equal(savedAaaConfig.statusCode, 200, savedAaaConfig.body);
+    assert.equal(savedAaaConfig.json().item.baseUrl, 'https://aaa.example.test:8443');
+    const aaaTest = await app.inject({ method: 'POST', url: '/api/v1/aaa/test', headers: adminHeaders, payload: { baseUrl: 'https://aaa.example.test:8443', tenantName: 'CAM', accessServerName: 'CAM API', timeoutMs: 12000 } });
+    assert.equal(aaaTest.statusCode, 200, aaaTest.body);
+    const accountResponse = await app.inject({ method: 'POST', url: '/api/v1/users', headers: adminHeaders, payload: { username: 'aaa-operator', displayName: 'AAA 操作员', authSource: 'AAA', roles: ['CORE_ADMIN'] } });
     assert.equal(accountResponse.statusCode, 201, accountResponse.body);
     const account = accountResponse.json().user;
     assert.equal(account.authSource, 'AAA');

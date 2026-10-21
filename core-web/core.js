@@ -16,6 +16,13 @@ let cloudMappings = null;
 let requestPollTimer = null;
 let gatePeerTrusted = false;
 const $ = (selector) => document.querySelector(selector);
+function mountAaaConfigPage() {
+  const cloudLink = document.querySelector('[data-page="cloud-config"]');
+  if (!cloudLink || document.querySelector('[data-page="aaa-config"]')) return;
+  cloudLink.parentElement.insertAdjacentHTML('beforebegin', '<li class="nav-item"><a href="#aaa-config" class="nav-link" data-page="aaa-config"><span class="nav-icon bi bi-person-badge"></span><p>AAA 对接配置</p></a></li>');
+  $('#page-cloud-config').insertAdjacentHTML('beforebegin', '<section id="page-aaa-config" class="d-none"><div class="card"><div class="card-header cam-action-header"><h3 class="card-title">AAA 对接配置</h3><span id="aaa-config-badge" class="badge text-bg-secondary">未配置</span></div><form id="aaa-config-form"><div class="card-body"><div class="alert alert-info"><i class="bi bi-info-circle me-1"></i>这里维护 DKEY AM 的连接参数。AAA API 共享密钥不在页面回显，继续由部署环境的 Secret 配置注入。</div><div id="aaa-config-error" class="alert alert-danger d-none"></div><div class="row g-3"><div class="col-md-6"><label class="form-label" for="aaa-base-url">AAA 服务地址</label><input id="aaa-base-url" name="baseUrl" class="form-control" type="url" placeholder="https://aaa.example.cn:8443" required></div><div class="col-md-6"><label class="form-label" for="aaa-timeout">请求超时（毫秒）</label><input id="aaa-timeout" name="timeoutMs" class="form-control" type="number" min="1000" max="120000" required></div><div class="col-md-6"><label class="form-label" for="aaa-tenant">租户名称</label><input id="aaa-tenant" name="tenantName" class="form-control" maxlength="128" required></div><div class="col-md-6"><label class="form-label" for="aaa-access-server">认证设备名称</label><input id="aaa-access-server" name="accessServerName" class="form-control" maxlength="128" required></div><div class="col-12"><label class="form-label" for="aaa-secret-status">API 共享密钥</label><input id="aaa-secret-status" class="form-control bg-body-secondary" readonly></div><div id="aaa-config-status" class="col-12 small text-body-secondary" role="status"></div></div></div><div class="card-footer d-flex justify-content-end gap-2"><button id="aaa-test" type="button" class="btn btn-outline-primary"><i class="bi bi-plug me-1"></i>测试连接</button><button class="btn btn-primary" type="submit"><i class="bi bi-check-lg me-1"></i>保存配置</button></div></form></div></section>');
+}
+mountAaaConfigPage();
 $('#login .card-title').textContent = 'CAM Core · 内网发布审批';
 $('.sidebar-brand .brand-text').textContent = 'CAM Core';
 $('#page-artifacts .card-title').textContent = '正式制品';
@@ -341,15 +348,16 @@ async function loadGateKeys({ preserveInputs = false } = {}) {
   return item;
 }
 function showPage(page) {
-  const validPages = new Set(['requests', 'artifacts', 'distribution', 'cloud-config', 'gate-config', 'agents', 'users']);
+  const validPages = new Set(['requests', 'artifacts', 'distribution', 'cloud-config', 'aaa-config', 'gate-config', 'agents', 'users']);
   if (!validPages.has(page)) page = 'requests';
-  const artifacts = page === 'artifacts'; const distribution = page === 'distribution'; const cloud = page === 'cloud-config'; const gate = page === 'gate-config'; const agents = page === 'agents'; const users = page === 'users';
-  $('#page-requests').classList.toggle('d-none', artifacts || distribution || cloud || gate || agents || users); $('#page-artifacts').classList.toggle('d-none', !artifacts); $('#page-distribution').classList.toggle('d-none', !distribution); $('#page-cloud-config').classList.toggle('d-none', !cloud); $('#page-gate-config').classList.toggle('d-none', !gate); $('#page-agents').classList.toggle('d-none', !agents); $('#page-users').classList.toggle('d-none', !users);
-  $('#page-title').textContent = artifacts ? '正式制品' : distribution ? 'Agent 分发' : cloud ? '云管对接配置' : gate ? '网闸对接配置' : agents ? 'Agent 管理' : users ? '账号管理' : '审批请求';
+  const artifacts = page === 'artifacts'; const distribution = page === 'distribution'; const cloud = page === 'cloud-config'; const aaa = page === 'aaa-config'; const gate = page === 'gate-config'; const agents = page === 'agents'; const users = page === 'users';
+  $('#page-requests').classList.toggle('d-none', artifacts || distribution || cloud || aaa || gate || agents || users); $('#page-artifacts').classList.toggle('d-none', !artifacts); $('#page-distribution').classList.toggle('d-none', !distribution); $('#page-cloud-config').classList.toggle('d-none', !cloud); $('#page-aaa-config').classList.toggle('d-none', !aaa); $('#page-gate-config').classList.toggle('d-none', !gate); $('#page-agents').classList.toggle('d-none', !agents); $('#page-users').classList.toggle('d-none', !users);
+  $('#page-title').textContent = artifacts ? '正式制品' : distribution ? 'Agent 分发' : cloud ? '云管对接配置' : aaa ? 'AAA 对接配置' : gate ? '网闸对接配置' : agents ? 'Agent 管理' : users ? '账号管理' : '审批请求';
   document.querySelectorAll('[data-page]').forEach((link) => link.classList.toggle('active', link.dataset.page === page));
   if (artifacts) loadArtifacts();
   if (distribution) loadDistribution();
   if (cloud) loadCloudConfig();
+  if (aaa) loadAaaConfig();
   if (gate) loadGateConfig();
   if (agents) loadAgents();
   if (users) loadUsers();
@@ -357,6 +365,23 @@ function showPage(page) {
 function pageFromHash() {
   const value = window.location.hash.slice(1).split('?')[0];
   return value || 'requests';
+}
+async function loadAaaConfig() {
+  try {
+    const result = await api('/api/v1/aaa/config');
+    const item = result.item ?? {};
+    $('#aaa-base-url').value = item.baseUrl ?? '';
+    $('#aaa-tenant').value = item.tenantName ?? '';
+    $('#aaa-access-server').value = item.accessServerName ?? '';
+    $('#aaa-timeout').value = item.timeoutMs ?? 10000;
+    $('#aaa-secret-status').value = item.secretConfigured ? '已由部署环境配置（页面不显示）' : '未配置，请在部署环境注入 CAM_AAA_SHARED_SECRET';
+    $('#aaa-config-badge').className = `badge text-bg-${item.configured ? 'success' : 'warning'}`;
+    $('#aaa-config-badge').textContent = item.configured ? '已配置' : '未配置';
+    $('#aaa-config-status').textContent = item.updatedAt ? `最近保存：${displayTime(item.updatedAt)}；共享密钥仅读取部署环境配置。` : '当前使用部署环境默认配置，尚未保存页面配置。';
+  } catch (error) { message(error.message, 'danger'); }
+}
+function aaaConfigFormBody() {
+  return { baseUrl: $('#aaa-base-url').value.trim(), tenantName: $('#aaa-tenant').value.trim(), accessServerName: $('#aaa-access-server').value.trim(), timeoutMs: Number($('#aaa-timeout').value) };
 }
 async function loadUsers() {
   try {
@@ -367,16 +392,33 @@ async function loadUsers() {
     document.querySelectorAll('[data-user-reset]').forEach((button) => { button.onclick = () => openUserReset(button.dataset.userReset); });
   } catch (error) { message(error.message, 'danger'); }
 }
+let userDialog = null;
+function ensureUserDialog() {
+  if (userDialog) return userDialog;
+  const editor = $('#user-editor');
+  const reset = $('#user-reset');
+  userDialog = document.createElement('dialog');
+  userDialog.id = 'user-editor-dialog';
+  userDialog.className = 'cam-user-modal';
+  editor.parentElement.insertBefore(userDialog, editor);
+  userDialog.append(editor, reset);
+  editor.classList.remove('d-none');
+  reset.classList.add('d-none');
+  userDialog.addEventListener('click', (event) => { if (event.target === userDialog) userDialog.close(); });
+  userDialog.addEventListener('close', () => { editor.classList.add('d-none'); reset.classList.add('d-none'); });
+  return userDialog;
+}
+function closeUserDialog() { if (userDialog?.open) userDialog.close(); }
 function openUserEditor(userId = null) {
-  const user = coreUsers.find((item) => item.id === userId); const form = $('#user-form'); form.reset(); form.dataset.userId = userId ?? '';
+  const dialog = ensureUserDialog(); const user = coreUsers.find((item) => item.id === userId); const form = $('#user-form'); form.reset(); form.dataset.userId = userId ?? '';
   $('#user-editor-title').textContent = user ? '编辑账号与角色' : '创建账号'; $('#user-name').disabled = Boolean(user); $('#user-name').value = user?.username ?? ''; $('#user-display').value = user?.displayName ?? ''; $('#user-status').value = user?.status ?? 'ACTIVE'; $('#user-auth-source').value = user?.authSource ?? 'LOCAL'; $('#user-auth-source').disabled = Boolean(user);
   $('#user-password-field').classList.toggle('d-none', Boolean(user) || $('#user-auth-source').value === 'AAA'); $('#user-password').required = !user && $('#user-auth-source').value === 'LOCAL';
   $('#user-roles').innerHTML = Object.entries(coreRoles).map(([role, label]) => `<label class="form-check form-check-inline"><input class="form-check-input" type="checkbox" value="${escapeHtml(role)}" ${user?.roles.includes(role) ? 'checked' : ''}><span class="form-check-label">${escapeHtml(label)}</span></label>`).join('');
   $('#user-edge-enabled').checked = Boolean(user?.edgeEnabled);
   $('#user-edge-roles').innerHTML = Object.entries(edgeRoles).map(([role, label]) => `<label class="form-check form-check-inline"><input class="form-check-input" type="checkbox" value="${escapeHtml(role)}" ${user?.edgeRoles.includes(role) ? 'checked' : ''}><span class="form-check-label">${escapeHtml(label)}</span></label>`).join('');
-  $('#user-error').classList.add('d-none'); $('#user-editor').classList.remove('d-none'); $('#user-reset').classList.add('d-none'); $('#user-editor').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  $('#user-error').classList.add('d-none'); $('#user-editor').classList.remove('d-none'); $('#user-reset').classList.add('d-none'); if (!dialog.open) dialog.showModal();
 }
-function openUserReset(userId) { const user = coreUsers.find((item) => item.id === userId); if (!user) return; resetUserId = userId; $('#reset-form').reset(); $('#reset-user-label').textContent = `账号：${user.displayName}（${user.username}）`; $('#reset-error').classList.add('d-none'); $('#user-editor').classList.add('d-none'); $('#user-reset').classList.remove('d-none'); $('#user-reset').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+function openUserReset(userId) { const dialog = ensureUserDialog(); const user = coreUsers.find((item) => item.id === userId); if (!user) return; resetUserId = userId; $('#reset-form').reset(); $('#reset-user-label').textContent = `账号：${user.displayName}（${user.username}）`; $('#reset-error').classList.add('d-none'); $('#user-editor').classList.add('d-none'); $('#user-reset').classList.remove('d-none'); if (!dialog.open) dialog.showModal(); }
 $('#login-form').addEventListener('submit', async (event) => { event.preventDefault(); $('#login-error').classList.add('d-none'); try { const result = await api('/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: $('#username').value, password: $('#password').value }) }); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) await load(); } catch (error) { $('#login-error').textContent = error.message; $('#login-error').classList.remove('d-none'); } });
 $('#password-form').addEventListener('submit', async (event) => { event.preventDefault(); $('#password-error').classList.add('d-none'); if ($('#new-password').value !== $('#repeat-password').value) { $('#password-error').textContent = '两次新密码不一致'; $('#password-error').classList.remove('d-none'); return; } try { await api('/api/v1/auth/password', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ oldPassword: $('#old-password').value, password: $('#new-password').value }) }); $('#password-form').reset(); showLogin(); } catch (error) { $('#password-error').textContent = error.message; $('#password-error').classList.remove('d-none'); } });
 $('#change-password').addEventListener('click', () => showPasswordChange(false));
@@ -419,12 +461,14 @@ $('#agent-form').addEventListener('submit', async (event) => {
   } catch (error) { $('#agent-error').textContent = error.message; $('#agent-error').classList.remove('d-none'); }
   finally { button.disabled = false; }
 });
-$('#new-user').addEventListener('click', () => openUserEditor()); $('#user-cancel').addEventListener('click', () => $('#user-editor').classList.add('d-none')); $('#reset-cancel').addEventListener('click', () => $('#user-reset').classList.add('d-none'));
+$('#new-user').addEventListener('click', () => openUserEditor()); $('#user-cancel').addEventListener('click', closeUserDialog); $('#reset-cancel').addEventListener('click', closeUserDialog);
 $('#user-auth-source').addEventListener('change', () => { const aaa = $('#user-auth-source').value === 'AAA'; $('#user-password-field').classList.toggle('d-none', aaa); $('#user-password').required = !aaa; });
-$('#user-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const userId = form.dataset.userId; const roles = [...document.querySelectorAll('#user-roles input:checked')].map((input) => input.value); const edgeRolesSelected = [...document.querySelectorAll('#user-edge-roles input:checked')].map((input) => input.value); const body = { username: $('#user-name').value, displayName: $('#user-display').value, authSource: $('#user-auth-source').value, status: $('#user-status').value, roles, edgeEnabled: $('#user-edge-enabled').checked, edgeRoles: edgeRolesSelected }; if (!userId && body.authSource === 'LOCAL') body.password = $('#user-password').value; try { const result = await api(userId ? `/api/v1/users/${encodeURIComponent(userId)}` : '/api/v1/users', { method: userId ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); message(userId ? '账号信息已保存；该账号需要重新登录' : body.authSource === 'AAA' ? `AAA 账号 ${result.user.username} 已登记并分配 CAM 角色` : `本地账号 ${result.user.username} 已创建，首次登录须修改初始密码`); $('#user-editor').classList.add('d-none'); if (userId === currentUser?.id) { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); } else await loadUsers(); } catch (error) { $('#user-error').textContent = error.message; $('#user-error').classList.remove('d-none'); } });
-$('#reset-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api(`/api/v1/users/${encodeURIComponent(resetUserId)}/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: $('#reset-password').value }) }); $('#user-reset').classList.add('d-none'); message('密码已重置；该账号下次登录须修改初始密码'); await loadUsers(); } catch (error) { $('#reset-error').textContent = error.message; $('#reset-error').classList.remove('d-none'); } });
+$('#user-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const userId = form.dataset.userId; const roles = [...document.querySelectorAll('#user-roles input:checked')].map((input) => input.value); const edgeRolesSelected = [...document.querySelectorAll('#user-edge-roles input:checked')].map((input) => input.value); const body = { username: $('#user-name').value, displayName: $('#user-display').value, authSource: $('#user-auth-source').value, status: $('#user-status').value, roles, edgeEnabled: $('#user-edge-enabled').checked, edgeRoles: edgeRolesSelected }; if (!userId && body.authSource === 'LOCAL') body.password = $('#user-password').value; try { const result = await api(userId ? `/api/v1/users/${encodeURIComponent(userId)}` : '/api/v1/users', { method: userId ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); message(userId ? '账号信息已保存；该账号需要重新登录' : body.authSource === 'AAA' ? `AAA 账号 ${result.user.username} 已登记并分配 CAM 角色` : `本地账号 ${result.user.username} 已创建，首次登录须修改初始密码`); closeUserDialog(); if (userId === currentUser?.id) { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); } else await loadUsers(); } catch (error) { $('#user-error').textContent = error.message; $('#user-error').classList.remove('d-none'); } });
+$('#reset-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api(`/api/v1/users/${encodeURIComponent(resetUserId)}/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: $('#reset-password').value }) }); closeUserDialog(); message('密码已重置；该账号下次登录须修改初始密码'); await loadUsers(); } catch (error) { $('#reset-error').textContent = error.message; $('#reset-error').classList.remove('d-none'); } });
 $('#cloud-config-form').addEventListener('submit', async (event) => { event.preventDefault(); const body = Object.fromEntries(new FormData(event.currentTarget)); try { const result = await api('/api/v1/cloud/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); renderCloudMappings(result.item.resolvedMappings); message('云管业务参数和匹配 ID 已保存；后续工单将复用这些 ID。'); await loadCloudConfig(); } catch (error) { message(error.message, 'danger'); } });
 $('#cloud-test').addEventListener('click', async () => { const button = $('#cloud-test'); button.disabled = true; try { const config = Object.fromEntries(new FormData($('#cloud-config-form'))); const result = await api('/api/v1/cloud/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(config) }); renderCloudMappings(result.mappings); $('#cloud-status').textContent = '连接和参数校验成功；点击“保存配置”后，匹配 ID 将持久化并供后续工单复用。'; message('云管连接正常，全部工单参数校验成功。'); } catch (error) { renderCloudMappings(); $('#cloud-status').textContent = '校验失败，请检查填写项后重新测试。'; message(`连接或字典解析失败：${error.message}`, 'danger'); } finally { button.disabled = false; } });
+$('#aaa-config-form').addEventListener('submit', async (event) => { event.preventDefault(); const button = $('#aaa-config-form button[type="submit"]'); button.disabled = true; $('#aaa-config-error').classList.add('d-none'); try { await api('/api/v1/aaa/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(aaaConfigFormBody()) }); message('AAA 对接配置已保存'); await loadAaaConfig(); } catch (error) { $('#aaa-config-error').textContent = error.message; $('#aaa-config-error').classList.remove('d-none'); } finally { button.disabled = false; } });
+$('#aaa-test').addEventListener('click', async () => { const button = $('#aaa-test'); button.disabled = true; $('#aaa-config-error').classList.add('d-none'); try { const result = await api('/api/v1/aaa/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(aaaConfigFormBody()) }); message(`AAA 服务可达（HTTP ${result.probe.httpStatus ?? '已连接'}）；配置尚未保存，请确认后点击“保存配置”。`); } catch (error) { $('#aaa-config-error').textContent = error.message; $('#aaa-config-error').classList.remove('d-none'); } finally { button.disabled = false; } });
 $('#cloud-config-form').addEventListener('input', () => { renderCloudMappings(); $('#cloud-status').textContent = '参数已修改，需重新测试并保存以更新匹配 ID。'; clearMessage(); });
 $('#gate-config-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); message('网闸映射配置已保存'); await loadGateConfig(); } catch (error) { message(error.message, 'danger'); } });
 $('#gate-test').addEventListener('click', async () => { const button = $('#gate-test'); button.disabled = true; try { const result = await api('/api/v1/gate/config/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData($('#gate-config-form')))) }); $('#gate-config-status').textContent = `控制通道测试成功：${Object.keys(result.checks).map((key) => `${key}=${result.checks[key].service ?? 'ready'}`).join('，')}`; message('网闸映射通道测试成功'); } catch (error) { $('#gate-config-status').textContent = '映射通道测试失败，请检查网闸虚拟地址和策略。'; message(error.message, 'danger'); } finally { button.disabled = false; } });
