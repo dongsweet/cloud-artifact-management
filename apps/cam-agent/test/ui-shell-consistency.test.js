@@ -31,6 +31,7 @@ test('Edge, Core and Agent shell branding and navigation labels are aligned', as
   assert.match(agent, /<title>CAM Agent · 制品缓存<\/title>/);
   assert.match(agent, /CAM Agent · 制品缓存/);
   assert.ok(agent.includes('brand-text">CAM Agent'));
+  assert.doesNotMatch(agent, /私钥只保存在本机<br>任务由 Core 授权后自动拉取/);
   assert.match(agent, /CAM Agent';/);
   assert.match(agent, /Agent 接入与 Core 身份/);
   assert.match(agent, /<p>Agent 接入与 Core 身份<\/p>/);
