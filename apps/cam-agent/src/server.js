@@ -176,7 +176,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     return { objectCount, cacheBytes, cachedFileCount: catalog.reduce((sum, item) => sum + Number(item.cachedFileCount || 0), 0), totalVersionCount: catalog.length, cachedVersionCount: cachedVersions, pendingTaskCount: taskCounts.queued + taskCounts.running + taskCounts.retry, taskCounts, referencedFileCount: referenced.size, orphanObjectCount, invalidFileCount, disk, checkedAt: new Date().toISOString() };
   };
   const admin = async (request, reply) => {
-    if (!request.principal?.user?.roles?.includes('CORE_ADMIN')) return fail(reply, 403, 'admin_required', '仅管理员可管理 Core 对接配置');
+    if (!request.principal?.user?.roles?.includes('CORE_SYSTEM_ADMIN')) return fail(reply, 403, 'admin_required', '仅系统管理员可管理 Core 对接配置');
   };
   app.get('/api/v1/core-config', { preHandler: admin }, async () => ({ item: coreConnection.get() }));
   app.put('/api/v1/core-config', { bodyLimit: 16 * 1024, preHandler: admin }, async (request, reply) => {

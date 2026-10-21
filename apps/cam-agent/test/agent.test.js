@@ -12,7 +12,7 @@ test('cam-agent requires a local login, forces initial password change, and prot
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-local-auth-'));
   const app = await buildAgentApp({ dataDir, startWorker: false });
   try {
-    await app.agentAuthStore.createUser({ username: 'agentadmin', displayName: 'Agent Admin', password: 'Initial-Agent-Password-2026', roles: ['CORE_ADMIN'] }, null, { bootstrap: true });
+    await app.agentAuthStore.createUser({ username: 'agentadmin', displayName: 'Agent Admin', password: 'Initial-Agent-Password-2026', roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true });
     const noLogin = await app.inject({ method: 'GET', url: '/api/v1/tasks' }); assert.equal(noLogin.statusCode, 401);
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'agentadmin', password: 'Initial-Agent-Password-2026' } });
     assert.equal(login.statusCode, 200, login.body);
@@ -42,7 +42,7 @@ test('Agent tests its signed Core pairing and persists a rotated identity', asyn
   try {
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/identity' })).statusCode, 401);
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/identity/rotate', payload: {} })).statusCode, 401);
-    await app.agentAuthStore.createUser({ username: 'admin', displayName: 'Admin', password: 'Agent-Integration-2026', roles: ['CORE_ADMIN'] }, null, { bootstrap: true });
+    await app.agentAuthStore.createUser({ username: 'admin', displayName: 'Admin', password: 'Agent-Integration-2026', roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true });
     await app.agentAuthStore.db.prepare('UPDATE core_users SET must_change_password = 0').run();
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'admin', password: 'Agent-Integration-2026' } });
     assert.equal(login.statusCode, 200, login.body);
@@ -144,7 +144,7 @@ test('Agent rejects Core responses without a trusted key or with a modified body
   const coreUrl = await core.listen({ host: '127.0.0.1', port: 0 });
   const options = { dataDir: agentDir, agentId: registered.agentId, coreUrl, startWorker: false };
   const missing = await buildAgentApp(options);
-  const signIn = async (app) => { await app.agentAuthStore.createUser({ username: 'admin', displayName: 'Admin', password: 'Agent-Integration-2026', roles: ['CORE_ADMIN'] }, null, { bootstrap: true }); await app.agentAuthStore.db.prepare('UPDATE core_users SET must_change_password = 0').run(); const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'admin', password: 'Agent-Integration-2026' } }); return { cookie: login.headers['set-cookie'].map((value) => value.split(';')[0]).join('; '), 'x-cam-agent-csrf': login.json().csrfToken }; };
+  const signIn = async (app) => { await app.agentAuthStore.createUser({ username: 'admin', displayName: 'Admin', password: 'Agent-Integration-2026', roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true }); await app.agentAuthStore.db.prepare('UPDATE core_users SET must_change_password = 0').run(); const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'admin', password: 'Agent-Integration-2026' } }); return { cookie: login.headers['set-cookie'].map((value) => value.split(';')[0]).join('; '), 'x-cam-agent-csrf': login.json().csrfToken }; };
   try { const response = await missing.inject({ method: 'POST', url: '/api/v1/identity/test', headers: await signIn(missing), payload: {} }); assert.equal(response.statusCode, 503); assert.equal(response.json().error.code, 'core_public_key_missing'); } finally { await missing.close(); }
   const tamperedDir = join(dataDir, 'tampered-agent'); await mkdir(tamperedDir); await writeFile(join(tamperedDir, 'identity.json'), JSON.stringify(identity));
   const tampered = await buildAgentApp({ ...options, dataDir: tamperedDir, corePublicKey: core.agentServiceIdentity.publicKeyPem, fetchImpl: async (...args) => { const response = await fetch(...args); const body = await response.arrayBuffer(); const bytes = Buffer.from(body); if (bytes.length) bytes[0] ^= 1; return new Response(bytes, { status: response.status, headers: response.headers }); } });

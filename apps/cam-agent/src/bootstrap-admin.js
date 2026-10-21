@@ -17,4 +17,4 @@ const confirm = await secret('再次输入：');
 if (password !== confirm) throw new Error('两次密码不一致');
 const dataDir = process.env.DATA_DIR ?? join(process.cwd(), 'data', 'agent');
 const db = await openDatabase(join(dataDir, 'agent.sqlite'));
-try { const user = await new AuthStore(db).createUser({ username, displayName, password, roles: ['CORE_ADMIN'] }, null, { bootstrap: true }); console.log(`已创建 ${user.username}，首次登录须修改密码。`); } finally { db.close(); }
+try { const user = await new AuthStore(db).createUser({ username, displayName, password, roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true }); console.log(`已创建 ${user.username}（系统管理员），首次登录须修改密码。`); } finally { db.close(); }

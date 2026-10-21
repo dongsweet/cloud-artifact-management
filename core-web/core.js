@@ -28,11 +28,11 @@ const pagePermissions = Object.freeze({
 });
 function canCore(permission) {
   const roles = currentUser?.roles ?? [];
-  return roles.includes('CORE_ADMIN') || {
-    businessRead: ['CORE_OPERATOR', 'CORE_AUDITOR'],
-    businessWrite: ['CORE_OPERATOR'],
-    configRead: ['CORE_SECURITY_ADMIN'],
-    configWrite: ['CORE_SECURITY_ADMIN'],
+  return {
+    businessRead: ['CORE_SYSTEM_ADMIN', 'CORE_OPERATOR', 'CORE_AUDITOR'],
+    businessWrite: ['CORE_SYSTEM_ADMIN', 'CORE_OPERATOR'],
+    configRead: ['CORE_SYSTEM_ADMIN', 'CORE_SECURITY_ADMIN', 'CORE_AUDITOR'],
+    configWrite: ['CORE_SYSTEM_ADMIN', 'CORE_SECURITY_ADMIN'],
     userAdmin: ['CORE_SECURITY_ADMIN']
   }[permission]?.some((role) => roles.includes(role));
 }

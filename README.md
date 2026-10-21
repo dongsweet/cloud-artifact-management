@@ -19,7 +19,7 @@ npm run start:agent  # 3103
 
 健康检查：`/health/live` 和 `/health/ready`。
 
-外部交换区 API 已启用本地登录及角色权限，不再允许匿名访问业务接口。部署后通过容器交互终端创建初始管理员，再从页面登录；初始化、HTTPS/Cookie 配置、账号及下载交付方式见 [外部交换区账号及下载交付](docs/edge-accounts.md)。
+外部交换区 API 已启用 Core 统一登录及角色权限，不再允许匿名访问业务接口。部署后通过容器交互终端创建初始 Core 系统管理员，再从页面登录；账号创建、角色分配、禁用和密码重置只允许 Core 安全管理员执行。初始化、HTTPS/Cookie 配置及下载交付方式见 [外部交换区账号及下载交付](docs/edge-accounts.md)。
 
 ## Docker 验证
 
@@ -61,9 +61,7 @@ Caddyfile，并保留其全局 DNS Challenge 配置。浏览器入口为
 docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-core node apps/cam-core/src/bootstrap-admin.js
 ```
 
-Core 账号
-和会话保存在内网 Core 自己的 SQLite 文件，与 Edge 本地账号隔离；后续 AAA 接入时替换认证
-适配器，不改变审批业务页面。
+Core 账号和会话保存在内网 Core 自己的 SQLite 文件；Edge 不保存本地账号，只缓存 Core 下发的 Edge 授权和短期会话。AAA 接入由 Core 实时认证适配器负责，不改变审批业务页面。
 
 `CAM_EDGE_DATA_DIR`、`CAM_CORE_DATA_DIR`、`CAM_AGENT_1_DATA_DIR` 和 `CAM_AGENT_2_DATA_DIR` 是宿主机本地目录，分别保存
 各安全区的 SQLite 数据库和制品文件。两个 Agent 使用独立数据目录，容器只把这些目录绑定到 `/data`，业务数据不再存放在

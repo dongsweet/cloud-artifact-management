@@ -1,5 +1,5 @@
 import { ROLE_LABELS } from './auth-store.js';
-import { EDGE_PERMISSION_ROLES } from '../../../libs/cam-auth/src/roles.js';
+import { EDGE_PERMISSION_ROLES, normalizeEdgeRoles } from '../../../libs/cam-auth/src/roles.js';
 import { randomBytes } from 'node:crypto';
 
 const fail = (reply, status, code, message) => reply.code(status).send({ error: { code, message } });
@@ -58,18 +58,20 @@ export function registerAuth(app, { auth, principalProvider, keyring, gateConfig
     if (path === '/api/v1/auth/login' && request.method === 'POST') return;
     const actor = request.principal;
     if (!actor) return fail(reply, 401, 'login_required', '请先登录');
+    const normalizedRoles = normalizeEdgeRoles(actor.roles ?? []);
+    request.principal = { ...actor, roles: normalizedRoles, ...(actor.user ? { user: { ...actor.user, roles: normalizedRoles } } : {}) };
     if (writing && actor.type === 'CORE_USER' && !auth.csrf(actor, request.headers['x-cam-csrf'])) return fail(reply, 403, 'csrf_invalid', '会话校验失败，请刷新页面后重试');
     if (actor.user?.mustChangePassword && !['/api/v1/auth/me', '/api/v1/auth/password', '/api/v1/auth/logout'].includes(path)) return fail(reply, 403, 'password_change_required', '请先修改初始密码');
     if (path.startsWith('/api/v1/auth/')) return;
     let required;
-    if (path.startsWith('/api/v1/users') || path === '/api/v1/auth-events') required = writing ? EDGE_PERMISSION_ROLES.adminWrite : EDGE_PERMISSION_ROLES.adminRead;
-    else if (path === '/api/v1/gate/config' || path === '/api/v1/gate/config/test' || path === '/api/v1/gate/keys' || path === '/api/v1/gate/keys/test' || path === '/api/v1/gate/keys/trusted-peer' || path === '/api/v1/gate/keys/schedule' || path === '/api/v1/gate/keys/rotate') required = writing ? EDGE_PERMISSION_ROLES.adminWrite : EDGE_PERMISSION_ROLES.adminRead;
+    if (path.startsWith('/api/v1/users') || path === '/api/v1/auth-events') required = writing ? EDGE_PERMISSION_ROLES.userAdminWrite : EDGE_PERMISSION_ROLES.userAdminRead;
+    else if (path === '/api/v1/gate/config' || path === '/api/v1/gate/config/test' || path === '/api/v1/gate/keys' || path === '/api/v1/gate/keys/test' || path === '/api/v1/gate/keys/trusted-peer' || path === '/api/v1/gate/keys/schedule' || path === '/api/v1/gate/keys/rotate') required = writing ? EDGE_PERMISSION_ROLES.configWrite : EDGE_PERMISSION_ROLES.configRead;
     else if (path === '/api/v1/validators') required = EDGE_PERMISSION_ROLES.validatorWrite;
     else if (path.startsWith('/api/v1/download-grants')) required = writing ? EDGE_PERMISSION_ROLES.validatorWrite : EDGE_PERMISSION_ROLES.validatorRead;
-    else if (/^\/api\/v1\/rounds\/[^/]+\/freezes$/.test(path)) required = writing ? EDGE_PERMISSION_ROLES.validatorWrite : [...EDGE_PERMISSION_ROLES.validatorRead, 'RELEASE_APPLICANT'];
+    else if (/^\/api\/v1\/rounds\/[^/]+\/freezes$/.test(path)) required = writing ? EDGE_PERMISSION_ROLES.validatorWrite : [...EDGE_PERMISSION_ROLES.validatorRead, 'EDGE_OPERATOR'];
     else if (/^\/api\/v1\/freezes\/[^/]+\/(report|submit|dispatch|transfer\/retry)$/.test(path)) required = EDGE_PERMISSION_ROLES.validatorWrite;
-    else if (/^\/api\/v1\/freezes\/[^/]+\/decision$/.test(path)) required = ['RELEASE_APPLICANT'];
-    else if (/^\/api\/v1\/freezes\/[^/]+\/report-file$/.test(path)) required = [...EDGE_PERMISSION_ROLES.validatorRead, 'RELEASE_APPLICANT'];
+    else if (/^\/api\/v1\/freezes\/[^/]+\/decision$/.test(path)) required = ['EDGE_OPERATOR'];
+    else if (/^\/api\/v1\/freezes\/[^/]+\/report-file$/.test(path)) required = [...EDGE_PERMISSION_ROLES.validatorRead, 'EDGE_OPERATOR'];
     else required = writing ? EDGE_PERMISSION_ROLES.candidateWrite : EDGE_PERMISSION_ROLES.candidateRead;
     if (!required.some((role) => actor.roles?.includes(role))) return fail(reply, 403, 'permission_denied', '当前账号没有此操作权限');
     if (writing) auth.event('API_MUTATION', actor.id, { method: request.method, route: request.routeOptions.url }, request.ip);
@@ -116,7 +118,7 @@ export function registerAuth(app, { auth, principalProvider, keyring, gateConfig
     return fail(reply, 403, 'core_account_required', '账号密码由 CAM Core 管理，请登录 Core 修改或联系管理员重置');
   });
   app.get('/api/v1/validators', async (_request, reply) => {
-    try { return { items: (await coreExchange('GET', '/api/v1/gate/users')).items.filter((user) => user.edgeEnabled && user.status === 'ACTIVE' && !user.mustChangePassword && !(user.lockedUntil > Date.now()) && user.roles.includes('VALIDATOR')) }; }
+    try { return { items: (await coreExchange('GET', '/api/v1/gate/users')).items.filter((user) => user.edgeEnabled && user.status === 'ACTIVE' && !user.mustChangePassword && !(user.lockedUntil > Date.now()) && user.roles.includes('EDGE_OPERATOR')) }; }
     catch (err) { return fail(reply, err.statusCode ?? 502, err.code ?? 'core_request_failed', err.message); }
   });
   app.get('/api/v1/users', async (_request, reply) => {

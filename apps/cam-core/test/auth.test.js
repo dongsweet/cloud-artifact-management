@@ -19,7 +19,7 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
   try {
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests' })).statusCode, 401);
     assert.deepEqual(app.coreStore.list(), []);
-    const account = await app.authStore.createUser({ username: 'core-admin', displayName: 'Core Admin', password: 'Initial-Password-123', roles: ['CORE_ADMIN'] }, null, { bootstrap: true });
+    const account = await app.authStore.createUser({ username: 'core-admin', displayName: 'Core Admin', password: 'Initial-Password-123', roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true });
     assert.equal(account.mustChangePassword, true);
 
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'core-admin', password: 'Initial-Password-123' } });
@@ -50,17 +50,25 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
     assert.deepEqual(configSaved.json().item.resolvedMappings.processUserIds, ['2308']);
     const invalidConfig = await app.inject({ method: 'PUT', url: '/api/v1/cloud/config', headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: { ...cloudConfig, processUserNames: '2308' } });
     assert.equal(invalidConfig.statusCode, 400);
-    const users = await app.inject({ method: 'GET', url: '/api/v1/users', headers: { cookie: coreCookie } });
+    const systemUsers = await app.inject({ method: 'GET', url: '/api/v1/users', headers: { cookie: coreCookie } });
+    assert.equal(systemUsers.statusCode, 403, systemUsers.body);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/users', headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: { username: 'system-must-not-create', displayName: '禁止创建', password: 'System-Forbidden-Password-2026', roles: ['CORE_OPERATOR'] } })).statusCode, 403);
+    await app.authStore.createUser({ username: 'security-admin', displayName: '安全管理员', password: 'Security-Admin-Password-2026', roles: ['CORE_SECURITY_ADMIN'] });
+    app.authStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE username = ?').run('security-admin');
+    const securityLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'security-admin', password: 'Security-Admin-Password-2026' } });
+    const securityCookie = cookies(securityLogin);
+    const securityCsrf = securityLogin.json().csrfToken;
+    const users = await app.inject({ method: 'GET', url: '/api/v1/users', headers: { cookie: securityCookie } });
     assert.equal(users.statusCode, 200, users.body);
-    assert.equal(users.json().items.length, 1);
-    assert.equal(users.json().roles.CORE_ADMIN, '全量管理员（应急兼容）');
-    const created = await app.inject({ method: 'POST', url: '/api/v1/users', headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: { username: 'operator1', displayName: '发布操作员', password: 'Operator-Password-123', roles: ['CORE_ADMIN'] } });
+    assert.equal(users.json().items.length, 2);
+    assert.equal(users.json().roles.CORE_SYSTEM_ADMIN, '系统管理员');
+    const created = await app.inject({ method: 'POST', url: '/api/v1/users', headers: { cookie: securityCookie, 'x-cam-core-csrf': securityCsrf }, payload: { username: 'operator1', displayName: '发布操作员', password: 'Operator-Password-123', roles: ['CORE_OPERATOR'] } });
     assert.equal(created.statusCode, 201, created.body);
     const userId = created.json().user.id;
-    const updated = await app.inject({ method: 'PATCH', url: `/api/v1/users/${encodeURIComponent(userId)}`, headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: { displayName: '云管审批操作员', roles: ['CORE_ADMIN'], status: 'ACTIVE' } });
+    const updated = await app.inject({ method: 'PATCH', url: `/api/v1/users/${encodeURIComponent(userId)}`, headers: { cookie: securityCookie, 'x-cam-core-csrf': securityCsrf }, payload: { displayName: '云管审批操作员', roles: ['CORE_OPERATOR'], status: 'ACTIVE' } });
     assert.equal(updated.statusCode, 200, updated.body);
     assert.equal(updated.json().user.displayName, '云管审批操作员');
-    const reset = await app.inject({ method: 'POST', url: `/api/v1/users/${encodeURIComponent(userId)}/password`, headers: { cookie: coreCookie, 'x-cam-core-csrf': coreCsrf }, payload: { password: 'Reset-Password-789' } });
+    const reset = await app.inject({ method: 'POST', url: `/api/v1/users/${encodeURIComponent(userId)}/password`, headers: { cookie: securityCookie, 'x-cam-core-csrf': securityCsrf }, payload: { password: 'Reset-Password-789' } });
     assert.equal(reset.statusCode, 200, reset.body);
     assert.equal(reset.json().mustChangePassword, true);
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/approval-requests/UNKNOWN/sync', headers: { cookie: coreCookie }, payload: {} })).statusCode, 403);
@@ -82,7 +90,7 @@ test('AAA accounts authenticate in real time but receive CAM roles from Core acc
     authenticate: async (credentials) => { calls.push(credentials); if (credentials.password !== 'AAA-password-123') throw Object.assign(new Error('rejected'), { statusCode: 401, code: 'aaa_rejected' }); return { username: credentials.loginName }; }
   } });
   try {
-    await app.authStore.createUser({ username: 'local-admin', displayName: '本地管理员', password: 'Local-admin-123', roles: ['CORE_ADMIN'] }, null, { bootstrap: true });
+    await app.authStore.createUser({ username: 'local-admin', displayName: '本地管理员', password: 'Local-admin-123', roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true });
     app.authStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE username = ?').run('local-admin');
     const adminLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'local-admin', password: 'Local-admin-123' } });
     assert.equal(adminLogin.statusCode, 200);
@@ -99,7 +107,13 @@ test('AAA accounts authenticate in real time but receive CAM roles from Core acc
     assert.equal(loadedAaaConfig.json().item.sharedSecret, undefined);
     const aaaTest = await app.inject({ method: 'POST', url: '/api/v1/aaa/test', headers: adminHeaders, payload: { baseUrl: 'https://aaa.example.test:8443', tenantName: 'CAM', accessServerName: 'CAM API', timeoutMs: 12000 } });
     assert.equal(aaaTest.statusCode, 200, aaaTest.body);
-    const accountResponse = await app.inject({ method: 'POST', url: '/api/v1/users', headers: adminHeaders, payload: { username: 'aaa-operator', displayName: 'AAA 操作员', authSource: 'AAA', roles: ['CORE_ADMIN'] } });
+    const deniedAccountResponse = await app.inject({ method: 'POST', url: '/api/v1/users', headers: adminHeaders, payload: { username: 'aaa-denied', displayName: '不应创建', authSource: 'AAA', roles: ['CORE_OPERATOR'] } });
+    assert.equal(deniedAccountResponse.statusCode, 403);
+    await app.authStore.createUser({ username: 'aaa-security', displayName: 'AAA 安全管理员', password: 'AAA-Security-Password-2026', roles: ['CORE_SECURITY_ADMIN'] });
+    app.authStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE username = ?').run('aaa-security');
+    const securityLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'aaa-security', password: 'AAA-Security-Password-2026' } });
+    const securityHeaders = { cookie: cookies(securityLogin), 'x-cam-core-csrf': securityLogin.json().csrfToken };
+    const accountResponse = await app.inject({ method: 'POST', url: '/api/v1/users', headers: securityHeaders, payload: { username: 'aaa-operator', displayName: 'AAA 操作员', authSource: 'AAA', roles: ['CORE_OPERATOR'] } });
     assert.equal(accountResponse.statusCode, 201, accountResponse.body);
     const account = accountResponse.json().user;
     assert.equal(account.authSource, 'AAA');
@@ -107,7 +121,7 @@ test('AAA accounts authenticate in real time but receive CAM roles from Core acc
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'aaa-operator', password: 'AAA-password-123' } });
     assert.equal(login.statusCode, 200, login.body);
     assert.deepEqual(calls, [{ loginName: 'aaa-operator', password: 'AAA-password-123' }]);
-    const noRole = await app.authStore.createUser({ username: 'aaa-no-role', displayName: '无 Core 角色 AAA', authSource: 'AAA', roles: [], edgeEnabled: true, edgeRoles: ['EDGE_ADMIN'] });
+    const noRole = await app.authStore.createUser({ username: 'aaa-no-role', displayName: '无 Core 角色 AAA', authSource: 'AAA', roles: [], edgeEnabled: true, edgeRoles: ['EDGE_SYSTEM_ADMIN'] });
     assert.equal(noRole.authSource, 'AAA');
     const denied = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'aaa-no-role', password: 'AAA-password-123' } });
     assert.equal(denied.statusCode, 403);
@@ -129,18 +143,19 @@ test('Core roles separate business operations, platform configuration, and accou
     return { cookie: cookies(response), csrf: response.json().csrfToken };
   }
   try {
-    await app.authStore.createUser({ username: 'bootstrap-admin', displayName: '初始化管理员', password: 'Bootstrap-admin-123', roles: ['CORE_ADMIN'] }, null, { bootstrap: true });
+    await app.authStore.createUser({ username: 'bootstrap-admin', displayName: '初始化管理员', password: 'Bootstrap-admin-123', roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true });
     app.authStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE username = ?').run('bootstrap-admin');
-    for (const [username, displayName, role] of [['business-operator', '业务操作员', 'CORE_OPERATOR'], ['security-admin', '安全员', 'CORE_SECURITY_ADMIN'], ['business-auditor', '业务审计员', 'CORE_AUDITOR']]) {
+    for (const [username, displayName, role] of [['business-operator', '业务操作员', 'CORE_OPERATOR'], ['security-admin', '安全管理员', 'CORE_SECURITY_ADMIN'], ['business-auditor', '业务审计员', 'CORE_AUDITOR']]) {
       await app.authStore.createUser({ username, displayName, password: 'Role-account-123', roles: [role] });
       app.authStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE username = ?').run(username);
     }
-    const legacy = await app.authStore.createUser({ username: 'legacy-config', displayName: '旧版配置管理员', password: 'Role-account-123', roles: ['CORE_CONFIG_ADMIN'] });
-    assert.deepEqual(legacy.roles, ['CORE_SECURITY_ADMIN']);
+    await assert.rejects(() => app.authStore.createUser({ username: 'legacy-config', displayName: '无效角色', password: 'Role-account-123', roles: ['CORE_CONFIG_ADMIN'] }), /有效且不重复/);
     const operator = await login('business-operator', 'Role-account-123');
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests', headers: { cookie: operator.cookie } })).statusCode, 200);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/cloud/config', headers: { cookie: operator.cookie } })).statusCode, 403);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/users', headers: { cookie: operator.cookie } })).statusCode, 403);
+    const system = await login('bootstrap-admin', 'Bootstrap-admin-123');
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/users', headers: { cookie: system.cookie } })).statusCode, 403);
     const config = await login('security-admin', 'Role-account-123');
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/agents', headers: { cookie: config.cookie } })).statusCode, 200);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests', headers: { cookie: config.cookie } })).statusCode, 403);

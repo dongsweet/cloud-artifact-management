@@ -189,11 +189,11 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     } catch (err) { return error(reply, 502, err.code ?? 'gate_test_failed', err.message); }
   });
   app.get('/api/v1/gate/keys', async (request, reply) => {
-    if (!request.principal?.roles?.includes('EDGE_ADMIN')) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置权限');
+    if (!request.principal?.roles?.some((role) => ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN'].includes(role))) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置权限');
     return { item: await keyring.status(), identityBundle: await keyring.identity() };
   });
   app.post('/api/v1/gate/keys/test', async (request, reply) => {
-    if (!request.principal?.roles?.includes('EDGE_ADMIN')) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
+    if (!request.principal?.roles?.some((role) => ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN'].includes(role))) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
     const status = await keyring.status();
     if (!status.peerTrusted) return error(reply, 409, 'gate_pairing_required', '请先导入 Core 身份包');
     const config = gateConfig.get();
@@ -212,17 +212,17 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     return { role: 'edge', peerTrusted: true, keyConfigured: true, businessReady: status.businessReady, activeKeyId: status.identity.signingFingerprint, peerFingerprint: status.peerFingerprint };
   });
   app.put('/api/v1/gate/keys/trusted-peer', { bodyLimit: 16 * 1024 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('EDGE_ADMIN')) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
+    if (!request.principal?.roles?.some((role) => ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN'].includes(role))) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
     try { return { item: await keyring.trustPeer(request.body?.identityBundle) }; }
     catch (err) { return error(reply, 400, err.code ?? 'gate_peer_invalid', err.message); }
   });
   app.put('/api/v1/gate/keys/schedule', { bodyLimit: 4096 }, async (request, reply) => {
-    if (!request.principal?.roles?.includes('EDGE_ADMIN')) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
+    if (!request.principal?.roles?.some((role) => ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN'].includes(role))) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
     try { return { item: await keyring.configure(request.body ?? {}) }; }
     catch (err) { return error(reply, 400, err.code ?? 'gate_rotation_config_invalid', err.message); }
   });
   app.post('/api/v1/gate/keys/rotate', async (request, reply) => {
-    if (!request.principal?.roles?.includes('EDGE_ADMIN')) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
+    if (!request.principal?.roles?.some((role) => ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN'].includes(role))) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
     try { return { item: await rotateIdentity() }; }
     catch (err) { return error(reply, 502, err.code ?? 'gate_identity_rotation_failed', err.message); }
   });
@@ -345,7 +345,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   const usableRecipient = (grant) => {
     if (grant?.principalType !== 'CORE_USER') return true;
     const user = auth.getUser(grant.principalId);
-    return user?.source === 'CORE' ? user.edgeEnabled && user.status === 'ACTIVE' && !user.mustChangePassword && !(user.lockedUntil > Date.now()) && user.roles.includes('VALIDATOR') : user?.status === 'ACTIVE' && !user.mustChangePassword && user.roles.includes('VALIDATOR');
+    return user?.source === 'CORE' ? user.edgeEnabled && user.status === 'ACTIVE' && !user.mustChangePassword && !(user.lockedUntil > Date.now()) && user.roles.includes('EDGE_OPERATOR') : user?.status === 'ACTIVE' && !user.mustChangePassword && user.roles.includes('EDGE_OPERATOR');
   };
   app.get('/api/v1/download-grants', async (request) => {
     const audit = request.principal.roles?.includes('EDGE_AUDITOR');
@@ -359,7 +359,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const body = request.body ?? {};
       const managedUser = request.principal.type === 'CORE_USER';
       const recipient = managedUser ? auth.getUser(body.recipientId ?? actor.principalId) : null;
-      if (managedUser && (!recipient || recipient.status !== 'ACTIVE' || recipient.edgeEnabled === false || recipient.mustChangePassword || recipient.lockedUntil > Date.now() || !recipient.roles.includes('VALIDATOR'))) throw new Error('下载责任人须为已获准登录 Edge、完成初始密码修改的验证人员');
+      if (managedUser && (!recipient || recipient.status !== 'ACTIVE' || recipient.edgeEnabled === false || recipient.mustChangePassword || recipient.lockedUntil > Date.now() || !recipient.roles.includes('EDGE_OPERATOR'))) throw new Error('下载责任人须为已获准登录 Edge、完成初始密码修改的验证人员');
       if (body.roundId) {
         const roundCandidateIds = new Set(store.listRoundCandidates(body.roundId).map((candidate) => candidate.candidate_id));
         if (!Array.isArray(body.candidateIds) || body.candidateIds.some((candidateId) => !roundCandidateIds.has(candidateId))) throw new Error('候选包必须属于所选候选轮次');

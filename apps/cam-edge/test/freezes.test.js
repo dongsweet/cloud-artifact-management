@@ -10,7 +10,7 @@ import { signedTestHeaders, trustTestPeer } from '../../../libs/cam-gate/test-he
 const sha256 = (data) => createHash('sha256').update(data).digest('hex');
 
 test('completed round report stays immutable while approval is pending and Edge rejects local decisions', async () => {
-  let identity = { id: 'validator-1', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER', 'VALIDATOR', 'RELEASE_APPLICANT'] };
+  let identity = { id: 'validator-1', type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] };
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-freeze-'));
   const app = await buildEdgeApp({ principalProvider: () => identity, dataDir, defaultChunkSize: 8 });
   const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Stack' } })).json();
@@ -30,10 +30,10 @@ test('completed round report stays immutable while approval is pending and Edge 
   const approvalEnvelope = app.freezeStore.approvalEnvelope(draft.freezeId);
   assert.deepEqual([approvalEnvelope.productName, approvalEnvelope.version, approvalEnvelope.roundNo, approvalEnvelope.reportTitle], ['Stack', '8.0.6.2', 1, 'Stack 8.0.6.2 验证报告']);
   const pdf = Buffer.from('%PDF-1.4\nreport');
-  identity = { id: 'validator-2', type: 'TEST_IDP', roles: ['VALIDATOR'] };
+  identity = { id: 'validator-2', type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] };
   const otherValidatorUpload = await app.inject({ method: 'PUT', url: `/api/v1/freezes/${draft.freezeId}/report`, headers: { 'content-type': 'application/pdf', 'x-report-filename': 'verification.pdf' }, payload: pdf });
   assert.equal(otherValidatorUpload.statusCode, 403);
-  identity = { id: 'validator-1', type: 'TEST_IDP', roles: ['VALIDATOR', 'CANDIDATE_RECEIVER'] };
+  identity = { id: 'validator-1', type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] };
   for (const [fileName, contentType] of [['verification.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'], ['verification.wps', 'application/vnd.ms-works'], ['verification.txt', 'text/plain'], ['verification.md', 'text/markdown']]) {
     const bytes = Buffer.from(`validation report ${fileName}`);
     const response = await app.inject({ method: 'PUT', url: `/api/v1/freezes/${draft.freezeId}/report`, headers: { 'content-type': contentType, 'x-report-filename': fileName }, payload: bytes });
@@ -54,20 +54,21 @@ test('completed round report stays immutable while approval is pending and Edge 
   const report = await app.inject({ method: 'GET', url: `/api/v1/freezes/${draft.freezeId}/report-file` });
   assert.equal(report.statusCode, 200);
   assert.equal(report.body, pdf.toString());
-  identity = { id: 'validator-1', type: 'TEST_IDP', roles: ['VALIDATOR'] };
-  const unauthorizedApproval = await app.inject({ method: 'POST', url: `/api/v1/freezes/${draft.freezeId}/decision`, payload: { decision: 'APPROVE' } });
-  assert.equal(unauthorizedApproval.statusCode, 403);
-  identity = { id: 'approver-2', type: 'TEST_IDP', roles: ['RELEASE_APPLICANT'] };
+  identity = { id: 'validator-1', type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] };
+  const operatorApproval = await app.inject({ method: 'POST', url: `/api/v1/freezes/${draft.freezeId}/decision`, payload: { decision: 'APPROVE' } });
+  assert.equal(operatorApproval.statusCode, 409);
+  assert.equal(operatorApproval.json().error.code, 'cloud_workflow_required');
+  identity = { id: 'approver-2', type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] };
   const localApproval = await app.inject({ method: 'POST', url: `/api/v1/freezes/${draft.freezeId}/decision`, payload: { decision: 'APPROVE' } });
   assert.equal(localApproval.statusCode, 409);
   assert.equal(localApproval.json().error.code, 'cloud_workflow_required');
-  assert.equal((await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.roundId}/candidates`, payload: { sourceUrl: 'https://example.invalid/next.tar.gz', fileName: 'next.tar.gz', packageKey: 'next', size: 0 } })).statusCode, 403);
+  assert.equal((await app.inject({ method: 'POST', url: `/api/v1/rounds/${round.roundId}/candidates`, payload: { sourceUrl: 'https://example.invalid/next.tar.gz', fileName: 'next.tar.gz', packageKey: 'next', size: 0 } })).statusCode, 409);
   await app.close();
 });
 
 test('freeze requires every candidate to have completed integrity verification', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-freeze-guards-'));
-  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'validator', type: 'TEST_IDP', roles: ['CANDIDATE_RECEIVER', 'VALIDATOR'] }), dataDir });
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'validator', type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] }), dataDir });
   const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Cloud' } })).json();
   const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } })).json();
   const round = release.initialRound;
@@ -81,7 +82,7 @@ test('freeze requires every candidate to have completed integrity verification',
 
 test('Edge accepts only authenticated, idempotent Core approval-result callbacks', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-core-result-'));
-  const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'test-admin', type: 'TEST_IDP', roles: ['EDGE_ADMIN', 'CANDIDATE_RECEIVER', 'VALIDATOR'] }) });
+  const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'test-admin', type: 'TEST_IDP', roles: ['EDGE_SYSTEM_ADMIN', 'EDGE_OPERATOR'] }) });
   await trustTestPeer(app.gateKeyring, dataDir, 'core');
   const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Callback product' } })).json();
   const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } })).json();

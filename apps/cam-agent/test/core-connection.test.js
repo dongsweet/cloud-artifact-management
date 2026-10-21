@@ -10,7 +10,7 @@ import { generateIdentity } from '../../../libs/cam-agent-auth/src/protocol.js';
 
 async function login(app, create = true) {
   if (create) {
-    await app.agentAuthStore.createUser({ username: 'admin', displayName: 'Admin', password: 'Agent-Config-Test-2026', roles: ['CORE_ADMIN'] }, null, { bootstrap: true });
+    await app.agentAuthStore.createUser({ username: 'admin', displayName: 'Admin', password: 'Agent-Config-Test-2026', roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true });
     app.agentAuthStore.db.prepare('UPDATE core_users SET must_change_password = 0').run();
   }
   const response = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'admin', password: 'Agent-Config-Test-2026' } });

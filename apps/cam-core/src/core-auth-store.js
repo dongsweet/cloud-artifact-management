@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { CORE_ROLES, EDGE_ROLES, CORE_ROLE_LABELS, EDGE_ROLE_LABELS, hasCorePermission, normalizeCoreRoles } from '../../../libs/cam-auth/src/roles.js';
+import { CORE_ROLES, EDGE_ROLES, CORE_ROLE_LABELS, EDGE_ROLE_LABELS, hasCorePermission, normalizeCoreRoles, normalizeEdgeRoles } from '../../../libs/cam-auth/src/roles.js';
 
 const deriveAsync = promisify(derive);
 let derivations = 0;
@@ -26,8 +26,10 @@ function normalizeAndValidateRoles(roles) {
   if (!Array.isArray(normalized) || normalized.some((role) => !ROLES.includes(role)) || new Set(normalized).size !== normalized.length) throw failure('请选择有效且不重复的 Core 角色');
   return normalized;
 }
-function validateEdgeRoles(roles) {
-  if (!Array.isArray(roles) || roles.some((role) => !EDGE_ROLES.includes(role)) || new Set(roles).size !== roles.length) throw failure('请选择有效且不重复的 Edge 角色');
+function normalizeAndValidateEdgeRoles(roles) {
+  const normalized = normalizeEdgeRoles(roles);
+  if (!Array.isArray(normalized) || normalized.some((role) => !EDGE_ROLES.includes(role)) || new Set(normalized).size !== normalized.length) throw failure('请选择有效且不重复的 Edge 角色');
+  return normalized;
 }
 
 export class AuthStore {
@@ -49,13 +51,13 @@ export class AuthStore {
     if (!columns.has('edge_provisioned')) db.exec('ALTER TABLE core_users ADD COLUMN edge_provisioned INTEGER NOT NULL DEFAULT 0');
     if (!columns.has('auth_source')) db.exec("ALTER TABLE core_users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'LOCAL'");
     db.exec('UPDATE core_users SET edge_provisioned = 1 WHERE edge_enabled = 1');
-    // Normalize role names introduced before the three-role model. This is
-    // deliberately idempotent so an upgraded Core can keep serving existing
-    // accounts without exposing obsolete role choices in the UI.
-    for (const row of db.prepare('SELECT user_id, roles_json FROM core_users').all()) {
+    // Normalize role arrays so duplicate assignments never affect permission checks.
+    for (const row of db.prepare('SELECT user_id, roles_json, edge_roles_json FROM core_users').all()) {
       let roles;
       try { roles = normalizeCoreRoles(JSON.parse(row.roles_json)); } catch { continue; }
-      if (JSON.stringify(roles) !== row.roles_json) db.prepare('UPDATE core_users SET roles_json = ?, updated_at = ? WHERE user_id = ?').run(JSON.stringify(roles), now(), row.user_id);
+      let edgeRoles;
+      try { edgeRoles = normalizeEdgeRoles(JSON.parse(row.edge_roles_json ?? '[]')); } catch { edgeRoles = []; }
+      if (JSON.stringify(roles) !== row.roles_json || JSON.stringify(edgeRoles) !== (row.edge_roles_json ?? '[]')) db.prepare('UPDATE core_users SET roles_json = ?, edge_roles_json = ?, updated_at = ? WHERE user_id = ?').run(JSON.stringify(roles), JSON.stringify(edgeRoles), now(), row.user_id);
     }
     this.dummySalt = randomBytes(16).toString('hex');
   }
@@ -70,7 +72,7 @@ export class AuthStore {
   getUser(id) {
     const row = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(id);
     if (!row) return null;
-    return { id: row.user_id, username: row.username, displayName: row.display_name, authSource: row.auth_source ?? 'LOCAL', roles: normalizeCoreRoles(JSON.parse(row.roles_json)), edgeEnabled: Boolean(row.edge_enabled), edgeProvisioned: Boolean(row.edge_provisioned), edgeRoles: JSON.parse(row.edge_roles_json ?? '[]'), status: row.status, mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at };
+    return { id: row.user_id, username: row.username, displayName: row.display_name, authSource: row.auth_source ?? 'LOCAL', roles: normalizeCoreRoles(JSON.parse(row.roles_json)), edgeEnabled: Boolean(row.edge_enabled), edgeProvisioned: Boolean(row.edge_provisioned), edgeRoles: normalizeEdgeRoles(JSON.parse(row.edge_roles_json ?? '[]')), status: row.status, mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at };
   }
   listUsers() { return this.db.prepare('SELECT user_id FROM core_users ORDER BY username').all().map((row) => this.getUser(row.user_id)); }
   async createUser({ username, displayName, password, authSource = 'LOCAL', roles = [], edgeEnabled = false, edgeRoles = [] }, actor = null, { bootstrap = false } = {}) {
@@ -79,8 +81,8 @@ export class AuthStore {
     if (!['LOCAL', 'AAA'].includes(authSource)) throw failure('认证来源无效');
     if (authSource === 'LOCAL') passwordValid(password);
     if (bootstrap && authSource !== 'LOCAL') throw failure('初始管理员必须使用本地认证');
-    const coreRoles = normalizeAndValidateRoles(roles); validateEdgeRoles(edgeRoles);
-    if ((!coreRoles.length && !(edgeEnabled && edgeRoles.length)) || (edgeRoles.length && !edgeEnabled)) throw failure('账号至少需要一个已启用的 CAM 角色');
+    const coreRoles = normalizeAndValidateRoles(roles); const normalizedEdgeRoles = normalizeAndValidateEdgeRoles(edgeRoles);
+    if ((!coreRoles.length && !(edgeEnabled && normalizedEdgeRoles.length)) || (normalizedEdgeRoles.length && !edgeEnabled)) throw failure('账号至少需要一个已启用的 CAM 角色');
     const salt = randomBytes(16).toString('hex');
     // Keep the legacy non-null password hash column populated for AAA users,
     // but never use this random, undisclosed value for AAA-backed logins.
@@ -91,8 +93,8 @@ export class AuthStore {
       if (bootstrap && this.db.prepare('SELECT COUNT(*) AS n FROM core_users').get().n) throw failure('已经初始化，不能再次创建初始管理员');
       const id = 'USR-' + randomUUID();
       this.db.prepare('INSERT INTO core_users (user_id, username, display_name, password_hash, password_salt, password_parameters_json, roles_json, status, edge_enabled, edge_roles_json, edge_provisioned, auth_source, must_change_password, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, username.toLowerCase(), displayName.trim(), digest.toString('hex'), salt, JSON.stringify(params), JSON.stringify(coreRoles), 'ACTIVE', edgeEnabled ? 1 : 0, JSON.stringify(edgeRoles), edgeEnabled ? 1 : 0, authSource, authSource === 'LOCAL' ? 1 : 0, now(), now());
-      this.event(bootstrap ? 'ADMIN_BOOTSTRAPPED' : 'USER_CREATED', actor, { userId: id, authSource, roles: coreRoles, edgeEnabled, edgeRoles });
+        .run(id, username.toLowerCase(), displayName.trim(), digest.toString('hex'), salt, JSON.stringify(params), JSON.stringify(coreRoles), 'ACTIVE', edgeEnabled ? 1 : 0, JSON.stringify(normalizedEdgeRoles), edgeEnabled ? 1 : 0, authSource, authSource === 'LOCAL' ? 1 : 0, now(), now());
+      this.event(bootstrap ? 'ADMIN_BOOTSTRAPPED' : 'USER_CREATED', actor, { userId: id, authSource, roles: coreRoles, edgeEnabled, edgeRoles: normalizedEdgeRoles });
       this.db.exec('COMMIT');
       return this.getUser(id);
     } catch (err) { this.db.exec('ROLLBACK'); throw err; }
@@ -201,19 +203,19 @@ export class AuthStore {
     const edgeEnabled = body.edgeEnabled ?? user.edgeEnabled;
     const edgeRoles = body.edgeRoles ?? user.edgeRoles;
     const status = body.status ?? user.status;
-    const coreRoles = normalizeAndValidateRoles(roles); validateEdgeRoles(edgeRoles);
-    if (edgeRoles.length && !edgeEnabled) throw failure('未启用 Edge 时不能分配 Edge 角色');
+    const coreRoles = normalizeAndValidateRoles(roles); const normalizedEdgeRoles = normalizeAndValidateEdgeRoles(edgeRoles);
+    if (normalizedEdgeRoles.length && !edgeEnabled) throw failure('未启用 Edge 时不能分配 Edge 角色');
     if (!['ACTIVE', 'DISABLED'].includes(status)) throw failure('账号状态无效');
     const display = body.displayName ?? user.displayName;
     if (typeof display !== 'string' || !display.trim() || display.length > 100) throw failure('姓名不能为空且最多 100 字');
     return this.transaction(() => {
     if (id === actor && (status !== 'ACTIVE' || !coreRoles.length)) throw failure('不能禁用自己或移除自己的 Core 角色');
-    const admins = this.listUsers().filter((u) => u.status === 'ACTIVE' && u.roles.includes('CORE_ADMIN'));
-    if (admins.length === 1 && admins[0].id === id && (status !== 'ACTIVE' || !roles.includes('CORE_ADMIN'))) throw failure('至少保留一个有效管理员');
+    const systemAdmins = this.listUsers().filter((u) => u.status === 'ACTIVE' && u.roles.includes('CORE_SYSTEM_ADMIN'));
+    if (systemAdmins.length === 1 && systemAdmins[0].id === id && (status !== 'ACTIVE' || !coreRoles.includes('CORE_SYSTEM_ADMIN'))) throw failure('至少保留一个有效系统管理员');
     this.db.prepare('UPDATE core_users SET roles_json = ?, edge_enabled = ?, edge_roles_json = ?, edge_provisioned = MAX(edge_provisioned, ?), status = ?, display_name = ?, locked_until = NULL, failed_attempts = 0, updated_at = ? WHERE user_id = ?')
-      .run(JSON.stringify(coreRoles), edgeEnabled ? 1 : 0, JSON.stringify(edgeRoles), edgeEnabled ? 1 : 0, status, display.trim(), now(), id);
+      .run(JSON.stringify(coreRoles), edgeEnabled ? 1 : 0, JSON.stringify(normalizedEdgeRoles), edgeEnabled ? 1 : 0, status, display.trim(), now(), id);
     this.revoke(id);
-    this.event('USER_UPDATED', actor, { userId: id, roles: coreRoles, edgeEnabled, edgeRoles, status });
+    this.event('USER_UPDATED', actor, { userId: id, roles: coreRoles, edgeEnabled, edgeRoles: normalizedEdgeRoles, status });
     return this.getUser(id);
     });
   }

@@ -41,12 +41,21 @@ test('Edge 数据库不再创建本地账号和本地会话表', async () => {
   } finally { db.close(); }
 });
 
+test('Edge 系统管理员不能通过 Edge 管理账号', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-system-admin-'));
+  const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'system-admin', type: 'TEST_IDP', roles: ['EDGE_SYSTEM_ADMIN'] }) });
+  try {
+    const response = await app.inject({ method: 'POST', url: '/api/v1/users', payload: { username: 'should-deny' } });
+    assert.equal(response.statusCode, 403);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Edge 委托 Core 登录，且角色变更对已有会话立即生效', async () => {
   const { core, edge, coreData, edgeData } = await createPair();
   try {
-    const admin = await core.authStore.createUser({ username: 'core-admin', displayName: 'Core Admin', password: 'Core-Admin-Password-2026', roles: ['CORE_ADMIN'] });
+    const admin = await core.authStore.createUser({ username: 'core-admin', displayName: 'Core Admin', password: 'Core-Admin-Password-2026', roles: ['CORE_SYSTEM_ADMIN'] });
     await core.authStore.changePassword(admin.id, 'Core-Admin-Password-2027', admin.id, 'Core-Admin-Password-2026');
-    const operator = await core.authStore.createUser({ username: 'edge-operator', displayName: 'Edge Operator', password: 'Edge-Operator-Password-2026', roles: [], edgeEnabled: true, edgeRoles: ['CANDIDATE_RECEIVER'] });
+    const operator = await core.authStore.createUser({ username: 'edge-operator', displayName: 'Edge Operator', password: 'Edge-Operator-Password-2026', roles: [], edgeEnabled: true, edgeRoles: ['EDGE_OPERATOR'] });
     await core.authStore.changePassword(operator.id, 'Edge-Operator-Password-2027', operator.id, 'Edge-Operator-Password-2026');
     const loginResponse = await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-operator', password: 'Edge-Operator-Password-2027' } });
     assert.equal(loginResponse.statusCode, 200, loginResponse.body);
@@ -55,7 +64,7 @@ test('Edge 委托 Core 登录，且角色变更对已有会话立即生效', asy
     const products = await edge.inject({ method: 'POST', url: '/api/v1/products', headers: sessionHeaders, payload: { name: 'role-test' } });
     assert.equal(products.statusCode, 201, products.body);
 
-    core.authStore.updateUser(operator.id, { edgeRoles: ['VALIDATOR'] }, admin.id);
+    core.authStore.updateUser(operator.id, { edgeRoles: ['EDGE_AUDITOR'] }, admin.id);
     assert.equal((await edge.inject({ method: 'POST', url: '/api/v1/products', headers: sessionHeaders, payload: { name: 'should-deny' } })).statusCode, 403);
     const productRead = await edge.inject({ url: '/api/v1/products', headers: sessionHeaders });
     assert.equal(productRead.statusCode, 200, productRead.body);
@@ -68,7 +77,7 @@ test('Edge 委托 Core 登录，且角色变更对已有会话立即生效', asy
 test('Edge 账号密码修改仍由 Core 完成', async () => {
   const { core, edge, coreData, edgeData } = await createPair();
   try {
-    const operator = await core.authStore.createUser({ username: 'edge-password', displayName: 'Edge Password', password: 'Initial-Password-2026', roles: [], edgeEnabled: true, edgeRoles: ['VALIDATOR'] });
+    const operator = await core.authStore.createUser({ username: 'edge-password', displayName: 'Edge Password', password: 'Initial-Password-2026', roles: [], edgeEnabled: true, edgeRoles: ['EDGE_OPERATOR'] });
     const response = await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-password', password: 'Initial-Password-2026' } });
     assert.equal(response.statusCode, 200);
     const sessionHeaders = headers(response);

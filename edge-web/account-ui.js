@@ -36,19 +36,19 @@ function markup() {
   $('#candidate-edit-button').insertAdjacentHTML('beforebegin', '<button id="candidate-grant" class="btn btn-outline-success btn-sm"><i class="bi bi-download me-1"></i>下载 / 交付验证</button>');
 }
 function applyPermissions() {
-  document.querySelectorAll('[data-modal], [data-delete-product], [data-delete-release], [data-round-candidate-delete], [data-candidate-delete], #new-round-button, #new-package-button, #import-packages-button, #batch-receive-button, #candidate-edit-button, #candidate-delete-button, #receive-button, #pause-button').forEach((e) => e.classList.toggle('d-none', !hasRole('CANDIDATE_RECEIVER')));
-  $('#users-nav').classList.toggle('d-none', !hasRole('EDGE_ADMIN', 'EDGE_AUDITOR'));
-  $('#gate-config-nav').classList.toggle('d-none', !hasRole('EDGE_ADMIN', 'EDGE_AUDITOR'));
-  $('#grants-nav').classList.toggle('d-none', !hasRole('VALIDATOR', 'EDGE_AUDITOR'));
-  for (const id of ['round-grant', 'candidate-grant', 'new-grant']) $(`#${id}`).classList.toggle('d-none', !hasRole('VALIDATOR'));
-  $('#candidate-grant').classList.toggle('d-none', !hasRole('VALIDATOR') || context().currentCandidate?.status !== 'COMPLETED');
+  document.querySelectorAll('[data-modal], [data-delete-product], [data-delete-release], [data-round-candidate-delete], [data-candidate-delete], #new-round-button, #new-package-button, #import-packages-button, #batch-receive-button, #candidate-edit-button, #candidate-delete-button, #receive-button, #pause-button').forEach((e) => e.classList.toggle('d-none', !hasRole('EDGE_OPERATOR')));
+  $('#users-nav').classList.toggle('d-none', !hasRole('EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'));
+  $('#gate-config-nav').classList.toggle('d-none', !hasRole('EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'));
+  $('#grants-nav').classList.toggle('d-none', !hasRole('EDGE_OPERATOR', 'EDGE_AUDITOR'));
+  for (const id of ['round-grant', 'candidate-grant', 'new-grant']) $(`#${id}`).classList.toggle('d-none', !hasRole('EDGE_OPERATOR'));
+  $('#candidate-grant').classList.toggle('d-none', !hasRole('EDGE_OPERATOR') || context().currentCandidate?.status !== 'COMPLETED');
 }
 async function acceptSession(result) {
   user = result.user; labels = result.roles;
   $('#account-name').textContent = `${user.displayName} (${user.username})`;
   $('#account-login').classList.add('d-none'); $('.app-wrapper').classList.remove('d-none'); applyPermissions();
   if (user.mustChangePassword) bootstrap.Modal.getOrCreateInstance($('#password-modal'), { backdrop: 'static', keyboard: false }).show();
-  else if (!hasRole('CANDIDATE_RECEIVER', 'VALIDATOR', 'RELEASE_APPLICANT', 'EDGE_AUDITOR')) { window.location.hash = '#users'; await refresh(); }
+  else if (!hasRole('EDGE_OPERATOR', 'EDGE_AUDITOR')) { window.location.hash = '#users'; await refresh(); }
   else await refresh();
 }
 async function submit(form, action, id) {
@@ -167,15 +167,15 @@ function saveExport(type) {
 export async function renderAccountView(view) {
   if (view !== 'grants') stopGrantDetailPolling();
   if (view === 'users') {
-    if (!hasRole('EDGE_ADMIN', 'EDGE_AUDITOR')) throw new Error('没有账号管理权限');
+    if (!hasRole('EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR')) throw new Error('没有账号查看权限');
     users = (await api('/api/v1/users')).items;
     $('#user-rows').innerHTML = users.map((u) => `<tr><td>${esc(u.username)}<div class="small">${esc(u.displayName)}</div></td><td>${u.roles.map((r) => esc(labels[r])).join('、')}</td><td>${u.status === 'ACTIVE' ? '启用' : '禁用'}${u.mustChangePassword ? ' / 待改密码' : ''}${u.lockedUntil > Date.now() ? ' / 锁定' : ''}</td><td>-</td></tr>`).join('');
     $('#auth-events').innerHTML = eventTable((await api('/api/v1/auth-events')).items, true);
   }
   if (view === 'grants') {
-    if (!hasRole('VALIDATOR', 'EDGE_AUDITOR')) throw new Error('没有下载授权权限');
+    if (!hasRole('EDGE_OPERATOR', 'EDGE_AUDITOR')) throw new Error('没有下载授权权限');
     const grants = (await api('/api/v1/download-grants')).items;
-    $('#grant-rows').innerHTML = grants.map((g) => `<tr><td class="small text-break">${esc(g.grantId)}<div>责任人：${esc(g.principalId)}</div></td><td>${g.items.length}</td><td>${g.usedTotalSessions} / ${g.maxTotalSessions}</td><td>${new Date(g.expiresAt).toLocaleString()}<div>${g.revokedAt ? '已撤销' : Date.parse(g.expiresAt) <= Date.now() ? '已到期' : '有效'}</div></td><td><button class="btn btn-outline-primary btn-sm me-2" data-grant-log="${esc(g.grantId)}"><i class="bi bi-eye"></i> 明细</button>${g.createdBy === user.id && !g.revokedAt && hasRole('VALIDATOR') ? `<button class="btn btn-outline-danger btn-sm" data-revoke-grant="${esc(g.grantId)}">撤销</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-body-secondary">暂无授权；创建后请及时导出清单。</td></tr>';
+    $('#grant-rows').innerHTML = grants.map((g) => `<tr><td class="small text-break">${esc(g.grantId)}<div>责任人：${esc(g.principalId)}</div></td><td>${g.items.length}</td><td>${g.usedTotalSessions} / ${g.maxTotalSessions}</td><td>${new Date(g.expiresAt).toLocaleString()}<div>${g.revokedAt ? '已撤销' : Date.parse(g.expiresAt) <= Date.now() ? '已到期' : '有效'}</div></td><td><button class="btn btn-outline-primary btn-sm me-2" data-grant-log="${esc(g.grantId)}"><i class="bi bi-eye"></i> 明细</button>${g.createdBy === user.id && !g.revokedAt && hasRole('EDGE_OPERATOR') ? `<button class="btn btn-outline-danger btn-sm" data-revoke-grant="${esc(g.grantId)}">撤销</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-body-secondary">暂无授权；创建后请及时导出清单。</td></tr>';
     if (selectedGrantId && !grants.some((g) => g.grantId === selectedGrantId)) { selectedGrantId = null; stopGrantDetailPolling(); }
     document.querySelectorAll('[data-grant-log]').forEach((b) => { b.onclick = () => showGrantDetail(b.dataset.grantLog); });
     document.querySelectorAll('[data-revoke-grant]').forEach((b) => { b.onclick = async () => { if (!await context().confirm({ title: '撤销下载授权', message: '撤销后对应 Token 链接停止接受新的下载请求。', confirmText: '确定撤销' })) return; try { await api(`/api/v1/download-grants/${encodeURIComponent(b.dataset.revokeGrant)}`, { method: 'DELETE' }); await renderAccountView('grants'); } catch (e) { alert(e.message, 'danger'); } }; });

@@ -20,9 +20,9 @@ test('Core and Edge pair by identity signatures and rotate either side own ident
     }
     return response;
   } });
-  const edge = await buildEdgeApp({ dataDir: join(dir, 'edge'), principalProvider: async () => ({ id: 'test-admin', type: 'TEST', roles: ['EDGE_ADMIN'] }) });
+  const edge = await buildEdgeApp({ dataDir: join(dir, 'edge'), principalProvider: async () => ({ id: 'test-admin', type: 'TEST', roles: ['EDGE_SYSTEM_ADMIN'] }) });
   try {
-    const admin = await core.authStore.createUser({ username: 'admin', displayName: '管理员', password: 'Pairing-test-password-2026!', roles: ['CORE_ADMIN'] });
+    const admin = await core.authStore.createUser({ username: 'admin', displayName: '管理员', password: 'Pairing-test-password-2026!', roles: ['CORE_SYSTEM_ADMIN'] });
     core.authStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE user_id = ?').run(admin.id);
     const login = await core.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'admin', password: 'Pairing-test-password-2026!' } });
     assert.equal(login.statusCode, 200, login.body);

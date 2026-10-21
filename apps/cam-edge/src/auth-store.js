@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { CORE_ROLE_LABELS, EDGE_ROLE_LABELS } from '../../../libs/cam-auth/src/roles.js';
+import { CORE_ROLE_LABELS, EDGE_ROLE_LABELS, normalizeEdgeRoles } from '../../../libs/cam-auth/src/roles.js';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const now = () => new Date().toISOString();
@@ -32,7 +32,7 @@ export class AuthStore {
   getUser(id) {
     const row = this.db.prepare('SELECT * FROM edge_core_users WHERE user_id = ?').get(id);
     if (!row) return null;
-    return { id: row.user_id, username: row.username, displayName: row.display_name, roles: JSON.parse(row.roles_json ?? '[]'), status: row.status, edgeEnabled: Boolean(row.edge_enabled), mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at, source: 'CORE' };
+    return { id: row.user_id, username: row.username, displayName: row.display_name, roles: normalizeEdgeRoles(JSON.parse(row.roles_json ?? '[]')), status: row.status, edgeEnabled: Boolean(row.edge_enabled), mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at, source: 'CORE' };
   }
 
   listUsers() { return this.db.prepare('SELECT user_id FROM edge_core_users ORDER BY username').all().map(({ user_id }) => this.getUser(user_id)); }
@@ -57,15 +57,15 @@ export class AuthStore {
     const sessionId = randomUUID();
     const time = this.clock();
     this.db.prepare('INSERT INTO edge_core_sessions (session_id, core_user_id, username, display_name, roles_json, must_change_password, token_sha256, csrf_token_sha256, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(sessionId, principal.id, principal.username, principal.displayName, JSON.stringify(principal.roles ?? []), principal.mustChangePassword ? 1 : 0, hash(token), hash(csrfToken), time, time + Math.min(idleMs, absoluteMs), time);
+      .run(sessionId, principal.id, principal.username, principal.displayName, JSON.stringify(normalizeEdgeRoles(principal.roles ?? [])), principal.mustChangePassword ? 1 : 0, hash(token), hash(csrfToken), time, time + Math.min(idleMs, absoluteMs), time);
     this.cacheCoreUsers([principal]);
     this.event('CORE_LOGIN_SUCCEEDED', principal.id, { sessionId });
-    return { token, csrfToken, user: { id: principal.id, username: principal.username, displayName: principal.displayName, roles: principal.roles ?? [], status: 'ACTIVE', mustChangePassword: Boolean(principal.mustChangePassword) } };
+    return { token, csrfToken, user: { id: principal.id, username: principal.username, displayName: principal.displayName, roles: normalizeEdgeRoles(principal.roles ?? []), status: 'ACTIVE', mustChangePassword: Boolean(principal.mustChangePassword) } };
   }
 
   cacheCoreUsers(users) {
     const upsert = this.db.prepare('INSERT INTO edge_core_users (user_id, username, display_name, roles_json, status, edge_enabled, must_change_password, last_login_at, locked_until, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, display_name=excluded.display_name, roles_json=excluded.roles_json, status=excluded.status, edge_enabled=excluded.edge_enabled, must_change_password=excluded.must_change_password, last_login_at=excluded.last_login_at, locked_until=excluded.locked_until');
-    for (const user of users ?? []) upsert.run(user.id, user.username, user.displayName, JSON.stringify(user.roles ?? []), user.status ?? 'ACTIVE', user.edgeEnabled ? 1 : 0, user.mustChangePassword ? 1 : 0, user.lastLoginAt ?? null, user.lockedUntil ?? null, user.createdAt ?? new Date().toISOString());
+    for (const user of users ?? []) upsert.run(user.id, user.username, user.displayName, JSON.stringify(normalizeEdgeRoles(user.roles ?? [])), user.status ?? 'ACTIVE', user.edgeEnabled ? 1 : 0, user.mustChangePassword ? 1 : 0, user.lastLoginAt ?? null, user.lockedUntil ?? null, user.createdAt ?? new Date().toISOString());
   }
 
   /** 用 Core 当前下发的授权刷新会话，角色/禁用变更立即生效。 */
@@ -76,7 +76,7 @@ export class AuthStore {
     }
     this.cacheCoreUsers([current]);
     this.db.prepare('UPDATE edge_core_sessions SET username = ?, display_name = ?, roles_json = ?, must_change_password = ?, last_seen_at = ? WHERE session_id = ? AND revoked_at IS NULL')
-      .run(current.username, current.displayName, JSON.stringify(current.roles ?? []), current.mustChangePassword ? 1 : 0, this.clock(), principal.sessionId);
+      .run(current.username, current.displayName, JSON.stringify(normalizeEdgeRoles(current.roles ?? [])), current.mustChangePassword ? 1 : 0, this.clock(), principal.sessionId);
     const session = this.db.prepare('SELECT * FROM edge_core_sessions WHERE session_id = ?').get(principal.sessionId);
     return session ? this.principalFromSession(session, current) : null;
   }
