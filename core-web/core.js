@@ -3,6 +3,7 @@ import { refreshPaginatedTables } from './table-pagination.js?v=20261020-table-p
 import { mountArtifactCatalog } from './artifact-catalog.js?v=20261020-shared-artifact-catalog';
 import { auditEventsMarkup, mountAuditEvents } from './audit-events.js?v=20261022-audit-permissions';
 import { CORE_PAGE_PERMISSIONS, canCorePage, hasCorePermission } from './role-permissions.js?v=20261022-audit-permissions';
+import { renderRoleGroups } from './role-display.js?v=20261022-role-display';
 let csrf = null;
 document.querySelector('#gate-pairing-mount').innerHTML = renderGatePairing('core');
 let forcedPasswordChange = false;
@@ -441,10 +442,10 @@ async function loadUsers() {
     $('#user-rows').innerHTML = coreUsers.map((user) => {
       const coreEnabled = user.coreEnabled ?? (user.status === 'ACTIVE');
       const edgeEnabled = user.edgeEnabled === true;
-      const coreRoleNames = user.roles.map((role) => escapeHtml(coreRoles[role] ?? role)).join('、') || '无';
-      const edgeRoleNames = edgeEnabled
-        ? (user.edgeRoles ?? []).map((role) => escapeHtml(edgeRoles[role] ?? role)).join('、') || '无'
-        : '未授权';
+      const roleDisplay = renderRoleGroups([
+        { scope: 'Core', roles: user.roles.map((role) => coreRoles[role] ?? role), emptyLabel: '无' },
+        { scope: 'Edge', roles: edgeEnabled ? (user.edgeRoles ?? []).map((role) => edgeRoles[role] ?? role) : [], emptyLabel: edgeEnabled ? '无' : '未授权' }
+      ]);
       const accountType = user.authSource === 'AAA' ? 'AAA' : '本地';
       const accountTypeColor = user.authSource === 'AAA' ? 'info' : 'primary';
       const accountState = [
@@ -457,7 +458,7 @@ async function loadUsers() {
       return `<tr>
         <td>${escapeHtml(user.username)}<div class="small text-body-secondary">${escapeHtml(user.displayName)}</div></td>
         <td><span class="badge text-bg-${accountTypeColor}">${accountType}</span></td>
-        <td><div><span class="small text-body-secondary">Core：</span>${coreRoleNames}</div><div class="small text-body-secondary">Edge：${edgeRoleNames}</div></td>
+        <td>${roleDisplay}</td>
         <td><div class="cam-user-login-permissions">
           <span class="badge text-bg-${coreEnabled ? 'success' : 'secondary'}">Core：${coreEnabled ? '允许登录' : '已禁用'}</span>
           <span class="badge text-bg-${edgeEnabled ? 'success' : 'secondary'}">Edge：${edgeEnabled ? '允许登录' : '已禁用'}</span>

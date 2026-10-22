@@ -1,5 +1,6 @@
 import { auditEventsMarkup, mountAuditEvents } from './audit-events.js?v=20261022-audit-permissions';
 import { canEdgePage } from './role-permissions.js?v=20261022-audit-permissions';
+import { renderRoleGroups } from './role-display.js?v=20261022-role-display';
 
 let user = null, api, refresh, context, alert, labels = {}, users = [], exported = null;
 let selectedGrantId = null, grantDetailTimer = null, grantDetailLoading = false;
@@ -177,7 +178,7 @@ export async function renderAccountView(view) {
   if (view === 'users') {
     if (!canEdgePage(user?.roles ?? [], 'users')) throw new Error('没有账号查看权限');
     users = (await api('/api/v1/users')).items;
-    $('#user-rows').innerHTML = users.map((u) => `<tr><td>${esc(u.username)}<div class="small">${esc(u.displayName)}</div></td><td>${u.roles.map((r) => esc(labels[r])).join('、')}</td><td>${u.status === 'ACTIVE' ? '启用' : '禁用'}${u.mustChangePassword ? ' / 待改密码' : ''}${u.lockedUntil > Date.now() ? ' / 锁定' : ''}</td><td>-</td></tr>`).join('');
+    $('#user-rows').innerHTML = users.map((u) => `<tr><td>${esc(u.username)}<div class="small">${esc(u.displayName)}</div></td><td>${renderRoleGroups([{ scope: 'Edge', roles: u.roles.map((role) => labels[role] ?? role) }])}</td><td>${u.status === 'ACTIVE' ? '启用' : '禁用'}${u.mustChangePassword ? ' / 待改密码' : ''}${u.lockedUntil > Date.now() ? ' / 锁定' : ''}</td><td>-</td></tr>`).join('');
   }
   if (view === 'audit') {
     if (!canEdgePage(user?.roles ?? [], 'audit')) throw new Error('没有审计查看权限');

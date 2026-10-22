@@ -1,0 +1,6 @@
+.cam-role-list { display: grid; gap: .35rem; min-width: 10rem; }
+.cam-role-row { display: grid; grid-template-columns: 3.25rem minmax(0, 1fr); align-items: start; gap: .4rem; }
+.cam-role-scope { color: var(--bs-secondary-color); font-size: .75rem; line-height: 1.55; }
+.cam-role-values { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; min-width: 0; }
+.cam-role-chip { display: inline-flex; max-width: 100%; padding: .1rem .4rem; border: 1px solid #dfe3e8; border-radius: .25rem; background: #f6f7f9; color: #344054; font-size: .75rem; font-weight: 500; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }
+.cam-role-empty { color: var(--bs-secondary-color); font-size: .8rem; line-height: 1.45; }
