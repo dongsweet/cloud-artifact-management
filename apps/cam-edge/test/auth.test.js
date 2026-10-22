@@ -50,6 +50,22 @@ test('Edge 系统管理员不能通过 Edge 管理账号', async () => {
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Edge 最近认证及操作审计只对审计管理员开放', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-audit-permissions-'));
+  let roles = ['EDGE_SYSTEM_ADMIN'];
+  const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'test-user', type: 'TEST_IDP', roles }) });
+  try {
+    app.authStore?.event?.('TEST_EVENT', 'test-user');
+    assert.equal((await app.inject({ url: '/api/v1/auth-events' })).statusCode, 403, '系统管理员不应读取认证和操作审计');
+    roles = ['EDGE_SECURITY_ADMIN'];
+    assert.equal((await app.inject({ url: '/api/v1/auth-events' })).statusCode, 403, '安全管理员不应读取认证和操作审计');
+    roles = ['EDGE_AUDITOR'];
+    const response = await app.inject({ url: '/api/v1/auth-events' });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.ok(Array.isArray(response.json().items));
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Edge 委托 Core 登录，且角色变更对已有会话立即生效', async () => {
   const { core, edge, coreData, edgeData } = await createPair();
   try {

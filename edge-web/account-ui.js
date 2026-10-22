@@ -28,7 +28,7 @@ function markup() {
   function section(id, title, content, action) {
     return `<section id="view-${id}" class="d-none"><div class="card"><div class="card-header cam-card-header"><h3 class="card-title">${title}</h3>${action}</div><div class="card-body">${content}</div></div></section>`;
   }
-  $('.app-content .container-fluid').insertAdjacentHTML('beforeend', section('users', '账号与角色', '<p class="small text-body-secondary">账号、Core 登录资格、Edge 登录资格和角色统一由 CAM Core 管理。此处只读展示当前已授权的 Edge 人员。</p><div class="table-responsive"><table class="table align-middle"><thead><tr><th>用户名 / 姓名</th><th>Edge 角色</th><th>状态</th><th>说明</th></tr></thead><tbody id="user-rows"></tbody></table></div><h5 class="mt-4">最近认证及操作审计</h5><div id="auth-events"></div>', '') + section('grants', '下载授权', '<p class="small text-body-secondary">按累计 / 单文件会话次数限制下载；续传复用会话。账号禁用后停止下载。Token 调用记录为授权持有者，不视为责任人本人认证。</p><div class="table-responsive"><table class="table align-middle"><thead><tr><th>授权 / 责任人</th><th>文件数</th><th>已用 / 累计次数</th><th>到期 / 状态</th><th>操作</th></tr></thead><tbody id="grant-rows"></tbody></table></div><div id="grant-detail" class="mt-4 d-none"></div>', '<button id="new-grant" class="btn btn-primary btn-sm">创建下载授权</button>'));
+  $('.app-content .container-fluid').insertAdjacentHTML('beforeend', section('users', '账号与角色', '<p class="small text-body-secondary">账号、Core 登录资格、Edge 登录资格和角色统一由 CAM Core 管理。此处只读展示当前已授权的 Edge 人员。</p><div class="table-responsive"><table class="table align-middle"><thead><tr><th>用户名 / 姓名</th><th>Edge 角色</th><th>状态</th><th>说明</th></tr></thead><tbody id="user-rows" data-paginate></tbody></table></div><section id="audit-events-section" class="mt-4 d-none"><h5>最近认证及操作审计</h5><p class="small text-body-secondary">仅审计管理员可查看。记录最近的认证事件和受保护操作。</p><div class="table-responsive"><table class="table table-sm table-hover align-middle"><thead><tr><th>时间</th><th>事件</th><th>调用身份</th><th>来源</th><th>详情</th></tr></thead><tbody id="auth-events" data-paginate></tbody></table></div></section>', '') + section('grants', '下载授权', '<p class="small text-body-secondary">按累计 / 单文件会话次数限制下载；续传复用会话。账号禁用后停止下载。Token 调用记录为授权持有者，不视为责任人本人认证。</p><div class="table-responsive"><table class="table align-middle"><thead><tr><th>授权 / 责任人</th><th>文件数</th><th>已用 / 累计次数</th><th>到期 / 状态</th><th>操作</th></tr></thead><tbody id="grant-rows" data-paginate></tbody></table></div><div id="grant-detail" class="mt-4 d-none"></div>', '<button id="new-grant" class="btn btn-primary btn-sm">创建下载授权</button>'));
   $('.sidebar-menu').insertAdjacentHTML('beforeend', '<li class="nav-item" id="grants-nav"><a href="#grants" class="nav-link"><span class="nav-icon bi bi-download"></span><p>下载授权</p></a></li><li class="nav-item" id="users-nav"><a href="#users" class="nav-link"><span class="nav-icon bi bi-people"></span><p>账号管理</p></a></li>');
   $('#gate-config-nav').before($('#grants-nav'));
   $('.app-header .container-fluid').insertAdjacentHTML('beforeend', '<div class="ms-auto d-flex gap-2 align-items-center"><span id="account-name" class="small"></span><button id="change-password" class="btn btn-outline-secondary btn-sm">修改密码</button><button id="logout" class="btn btn-outline-secondary btn-sm">退出</button></div>');
@@ -38,6 +38,7 @@ function markup() {
 function applyPermissions() {
   document.querySelectorAll('[data-modal], [data-delete-product], [data-delete-release], [data-round-candidate-delete], [data-candidate-delete], #new-round-button, #new-package-button, #import-packages-button, #batch-receive-button, #candidate-edit-button, #candidate-delete-button, #receive-button, #pause-button').forEach((e) => e.classList.toggle('d-none', !hasRole('EDGE_OPERATOR')));
   $('#users-nav').classList.toggle('d-none', !hasRole('EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'));
+  $('#audit-events-section')?.classList.toggle('d-none', !hasRole('EDGE_AUDITOR'));
   $('#gate-config-nav').classList.toggle('d-none', !hasRole('EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'));
   $('#grants-nav').classList.toggle('d-none', !hasRole('EDGE_OPERATOR', 'EDGE_AUDITOR'));
   for (const id of ['round-grant', 'candidate-grant', 'new-grant']) $(`#${id}`).classList.toggle('d-none', !hasRole('EDGE_OPERATOR'));
@@ -170,7 +171,7 @@ export async function renderAccountView(view) {
     if (!hasRole('EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR')) throw new Error('没有账号查看权限');
     users = (await api('/api/v1/users')).items;
     $('#user-rows').innerHTML = users.map((u) => `<tr><td>${esc(u.username)}<div class="small">${esc(u.displayName)}</div></td><td>${u.roles.map((r) => esc(labels[r])).join('、')}</td><td>${u.status === 'ACTIVE' ? '启用' : '禁用'}${u.mustChangePassword ? ' / 待改密码' : ''}${u.lockedUntil > Date.now() ? ' / 锁定' : ''}</td><td>-</td></tr>`).join('');
-    $('#auth-events').innerHTML = eventTable((await api('/api/v1/auth-events')).items, true);
+    if (hasRole('EDGE_AUDITOR')) $('#auth-events').innerHTML = eventRows((await api('/api/v1/auth-events')).items);
   }
   if (view === 'grants') {
     if (!hasRole('EDGE_OPERATOR', 'EDGE_AUDITOR')) throw new Error('没有下载授权权限');
@@ -217,6 +218,6 @@ async function showGrantDetail(grantId) {
   await load();
   if (selectedGrantId === grantId) grantDetailTimer = window.setInterval(load, 2000);
 }
-function eventTable(events, auth = false) {
-  return `<div class="table-responsive"><table class="table table-sm"><thead><tr><th>时间</th><th>事件</th><th>调用身份</th><th>${auth ? '来源' : '文件'}</th><th>详情</th></tr></thead><tbody>${events.map((e) => `<tr><td>${esc(e.created_at)}</td><td>${esc(e.event_type)}</td><td class="small text-break">${esc(e.principal_id)}</td><td>${esc(auth ? e.source_address : e.candidate_id)}</td><td class="small text-break">${esc(e.details_json)}</td></tr>`).join('')}</tbody></table></div>`;
+function eventRows(events) {
+  return events.map((e) => `<tr><td>${esc(e.created_at)}</td><td>${esc(e.event_type)}</td><td class="small text-break">${esc(e.principal_id)}</td><td>${esc(e.source_address)}</td><td class="small text-break">${esc(e.details_json)}</td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-body-secondary">暂无认证或操作审计记录</td></tr>';
 }

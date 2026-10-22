@@ -64,7 +64,8 @@ export function registerAuth(app, { auth, principalProvider, keyring, gateConfig
     if (actor.user?.mustChangePassword && !['/api/v1/auth/me', '/api/v1/auth/password', '/api/v1/auth/logout'].includes(path)) return fail(reply, 403, 'password_change_required', '请先修改初始密码');
     if (path.startsWith('/api/v1/auth/')) return;
     let required;
-    if (path.startsWith('/api/v1/users') || path === '/api/v1/auth-events') required = writing ? EDGE_PERMISSION_ROLES.userAdminWrite : EDGE_PERMISSION_ROLES.userAdminRead;
+    if (path === '/api/v1/auth-events') required = EDGE_PERMISSION_ROLES.auditRead;
+    else if (path.startsWith('/api/v1/users')) required = writing ? EDGE_PERMISSION_ROLES.userAdminWrite : EDGE_PERMISSION_ROLES.userAdminRead;
     else if (path === '/api/v1/gate/config' || path === '/api/v1/gate/config/test' || path === '/api/v1/gate/keys' || path === '/api/v1/gate/keys/test' || path === '/api/v1/gate/keys/trusted-peer' || path === '/api/v1/gate/keys/schedule' || path === '/api/v1/gate/keys/rotate') required = writing ? EDGE_PERMISSION_ROLES.configWrite : EDGE_PERMISSION_ROLES.configRead;
     else if (path === '/api/v1/validators') required = EDGE_PERMISSION_ROLES.validatorWrite;
     else if (path.startsWith('/api/v1/download-grants')) required = writing ? EDGE_PERMISSION_ROLES.validatorWrite : EDGE_PERMISSION_ROLES.validatorRead;

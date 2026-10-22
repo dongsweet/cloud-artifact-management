@@ -38,7 +38,8 @@ export const EDGE_PERMISSION_ROLES = Object.freeze({
   configWrite: ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN'],
   configRead: ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'],
   userAdminWrite: ['EDGE_SECURITY_ADMIN'],
-  userAdminRead: ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR']
+  userAdminRead: ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'],
+  auditRead: ['EDGE_AUDITOR']
 });
 
 export const AGENT_PERMISSION_ROLES = Object.freeze({
