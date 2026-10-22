@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { buildAgentApp } from '../src/server.js';
+import { AuthStore } from '../../cam-core/src/core-auth-store.js';
 import { createIdentityRotation } from '../src/identity-rotation.js';
 import { buildCoreApp } from '../../cam-core/src/server.js';
 import { generateIdentity } from '../../../libs/cam-agent-auth/src/protocol.js';
@@ -24,6 +25,35 @@ test('cam-agent requires a local login, forces initial password change, and prot
     assert.equal(relogin.statusCode, 200);
     const freshCookies = relogin.headers['set-cookie'].map((value) => value.split(';')[0]).join('; ');
     assert.deepEqual((await app.inject({ method: 'GET', url: '/api/v1/tasks', headers: { cookie: freshCookies } })).json(), { items: [] });
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Agent upgrades the legacy AGENT_ADMIN role to AGENT_SYSTEM_ADMIN without losing access', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-role-migration-'));
+  let app = await buildAgentApp({ dataDir, startWorker: false });
+  try {
+    await app.agentAuthStore.createUser({ username: 'legacyadmin', displayName: 'Legacy Admin', password: 'Legacy-Agent-Password-2026', roles: ['AGENT_SYSTEM_ADMIN'] }, null, { bootstrap: true });
+    app.agentAuthStore.db.prepare('UPDATE core_users SET roles_json = ?, must_change_password = 0 WHERE username = ?').run(JSON.stringify(['AGENT_ADMIN']), 'legacyadmin');
+  } finally { await app.close(); }
+  app = await buildAgentApp({ dataDir, startWorker: false });
+  try {
+    assert.deepEqual(app.agentAuthStore.listUsers()[0].roles, ['AGENT_SYSTEM_ADMIN']);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'legacyadmin', password: 'Legacy-Agent-Password-2026' } });
+    const cookie = login.headers['set-cookie'].map((value) => value.split(';')[0]).join('; ');
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/tasks', headers: { cookie } })).statusCode, 200);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Agent AAA-backed accounts authenticate directly through the configured adapter', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-aaa-login-'));
+  let authenticated = null;
+  const app = await buildAgentApp({ dataDir, startWorker: false, aaaAdapter: { enabled: () => true, authenticate: async (credentials) => { authenticated = credentials; return { username: credentials.loginName }; } } });
+  try {
+    await app.agentAuthStore.createUser({ username: 'aaaoperator', displayName: 'AAA Operator', authSource: 'AAA', roles: ['AGENT_OPERATOR'] });
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'aaaoperator', password: 'AAA-password' } });
+    assert.equal(login.statusCode, 200, login.body);
+    assert.deepEqual(authenticated, { loginName: 'aaaoperator', password: 'AAA-password' });
+    assert.deepEqual(login.json().user.roles, ['AGENT_OPERATOR']);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 

@@ -58,7 +58,7 @@ export class AuthStore {
     for (const row of db.prepare('SELECT user_id, roles_json, edge_roles_json FROM core_users').all()) {
       let roles;
       try { roles = normalizeCoreRoles(JSON.parse(row.roles_json)); } catch { continue; }
-      if (this.roleSet === 'AGENT') roles = roles.map((role) => role.replace(/^CORE_/, 'AGENT_'));
+      if (this.roleSet === 'AGENT') roles = roles.map((role) => role === 'AGENT_ADMIN' ? 'AGENT_SYSTEM_ADMIN' : role.replace(/^CORE_/, 'AGENT_'));
       let edgeRoles;
       try { edgeRoles = normalizeEdgeRoles(JSON.parse(row.edge_roles_json ?? '[]')); } catch { edgeRoles = []; }
       if (JSON.stringify(roles) !== row.roles_json || JSON.stringify(edgeRoles) !== (row.edge_roles_json ?? '[]')) db.prepare('UPDATE core_users SET roles_json = ?, edge_roles_json = ?, updated_at = ? WHERE user_id = ?').run(JSON.stringify(roles), JSON.stringify(edgeRoles), now(), row.user_id);
@@ -77,7 +77,7 @@ export class AuthStore {
     const row = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(id);
     if (!row) return null;
     let roles = normalizeCoreRoles(JSON.parse(row.roles_json));
-    if (this.roleSet === 'AGENT') roles = roles.map((role) => role.replace(/^CORE_/, 'AGENT_'));
+    if (this.roleSet === 'AGENT') roles = roles.map((role) => role === 'AGENT_ADMIN' ? 'AGENT_SYSTEM_ADMIN' : role.replace(/^CORE_/, 'AGENT_'));
     return { id: row.user_id, username: row.username, displayName: row.display_name, authSource: row.auth_source ?? 'LOCAL', roles, coreEnabled: this.roleSet === 'CORE' ? row.status === 'ACTIVE' : undefined, edgeEnabled: Boolean(row.edge_enabled), edgeProvisioned: Boolean(row.edge_provisioned), edgeRoles: normalizeEdgeRoles(JSON.parse(row.edge_roles_json ?? '[]')), status: row.status, mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at };
   }
   listUsers() { return this.db.prepare('SELECT user_id FROM core_users ORDER BY username').all().map((row) => this.getUser(row.user_id)); }
@@ -88,7 +88,7 @@ export class AuthStore {
     if (typeof coreEnabled !== 'boolean') throw failure('Core 登录权限无效');
     if (authSource === 'LOCAL') passwordValid(password);
     if (bootstrap && authSource !== 'LOCAL') throw failure('初始管理员必须使用本地认证');
-    const suppliedRoles = this.roleSet === 'AGENT' ? (roles ?? []).map((role) => role.replace(/^CORE_/, 'AGENT_')) : roles;
+    const suppliedRoles = this.roleSet === 'AGENT' ? (roles ?? []).map((role) => role === 'AGENT_ADMIN' ? 'AGENT_SYSTEM_ADMIN' : role.replace(/^CORE_/, 'AGENT_')) : roles;
     const coreRoles = normalizeAndValidateRoles(suppliedRoles, this.allowedRoles); const normalizedEdgeRoles = this.roleSet === 'AGENT' ? [] : normalizeAndValidateEdgeRoles(edgeRoles);
     if (!coreRoles.length && !normalizedEdgeRoles.length) throw failure('账号至少需要一个 CAM 角色');
     const salt = randomBytes(16).toString('hex');
