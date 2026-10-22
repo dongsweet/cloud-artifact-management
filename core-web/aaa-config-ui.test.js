@@ -18,5 +18,5 @@ test('AAA configuration exposes TLS bypass and keeps test results in its usernam
   assert.match(script, /JSON\.stringify\(\{ \.\.\.aaaConfigFormBody\(\), testLoginName \}\)/u);
   assert.match(script, /校验成功，已读取用户/u);
   assert.match(css, /\.cam-aaa-test-modal/u);
-  assert.match(html, /core\.js\?v=20261022-session-expiry/u);
+  assert.match(html, /core\.js\?v=20261022-account-list/u);
 });

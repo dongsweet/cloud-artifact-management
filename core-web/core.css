@@ -18,6 +18,8 @@
 .app-main .cam-action-header > .btn { margin-left: auto !important; flex: 0 0 auto; }
 .app-main .cam-actions-cell { text-align: right !important; white-space: nowrap; }
 .app-main .cam-action-buttons { display: flex; justify-content: flex-end; gap: .375rem; }
+.app-main .cam-user-login-permissions { display: flex; flex-direction: column; align-items: flex-start; gap: .375rem; }
+.app-main .cam-user-password-action { width: 8.75rem; white-space: nowrap; }
 #actions { justify-content: flex-end; }
 .app-main .card-footer.d-flex { justify-content: flex-end !important; }
 

@@ -27,3 +27,14 @@ test('Core account editor uses a single-column form and explicit local/AAA contr
   assert.match(script, /coreEnabled: \$\('#user-core-enabled'\)\.checked/u);
   assert.match(script, /user-edge-enabled/u);
 });
+
+test('Core account list separates account type and uses matching login and password action styles', async () => {
+  const [html, css, script] = await Promise.all([read('./index.html'), read('./core.css'), read('./core.js')]);
+  assert.match(html, /<th>用户名 \/ 姓名<\/th><th>账号类型<\/th><th>角色<\/th><th>登录权限<\/th><th>最后登录<\/th><th class="text-end">操作<\/th>/u);
+  assert.match(script, /const accountType = user\.authSource === 'AAA' \? 'AAA' : '本地'/u);
+  assert.match(script, /cam-user-login-permissions[\s\S]*?Core：\\?\$\{coreEnabled \? '允许登录' : '已禁用'\}[\s\S]*?Edge：\\?\$\{edgeEnabled \? '允许登录' : '已禁用'\}/u);
+  assert.match(script, /cam-user-password-action[\s\S]*?密码由 AAA 管理/u);
+  assert.match(script, /data-user-reset="\\?\$\{escapeHtml\(user\.id\)\}"/u);
+  assert.match(script, /colspan="6"[^>]*>暂无账号/u);
+  assert.match(css, /\.cam-user-password-action \{ width: 8\.75rem; white-space: nowrap; \}/u);
+});

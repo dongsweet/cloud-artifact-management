@@ -435,8 +435,41 @@ function aaaConfigFormBody() {
 }
 async function loadUsers() {
   try {
-    const result = await api('/api/v1/users'); coreRoles = result.roles; edgeRoles = result.edgeRoles ?? {}; coreUsers = result.items;
-    $('#user-rows').innerHTML = coreUsers.map((user) => `<tr><td>${escapeHtml(user.username)}<div class="small text-body-secondary">${escapeHtml(user.displayName)}</div></td><td>${user.authSource === 'AAA' ? 'AAA 实时认证' : 'Core 本地认证'}<div class="small text-body-secondary">Core：${user.roles.map((role) => escapeHtml(coreRoles[role] ?? role)).join('、') || '无'}<br>Edge：${user.edgeEnabled ? user.edgeRoles.map((role) => escapeHtml(edgeRoles[role] ?? role)).join('、') : '未授权'}</div></td><td><span class="badge text-bg-${((user.coreEnabled ?? (user.status === 'ACTIVE')) ? 'success' : 'secondary')}">Core：${((user.coreEnabled ?? (user.status === 'ACTIVE')) ? '允许登录' : '已禁用')}</span><div class="small text-body-secondary mt-1">Edge：${user.edgeEnabled ? '允许登录' : '已禁用'}${user.mustChangePassword ? ' / 待改密码' : ''}${user.lockedUntil > Date.now() ? ' / 锁定' : ''}</div></td><td>${escapeHtml(user.lastLoginAt ?? '-')}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-primary btn-sm" data-user-edit="${escapeHtml(user.id)}"><i class="bi bi-pencil"></i> 编辑账号</button>${user.authSource === 'AAA' ? '<span class="small text-body-secondary">密码由 AAA 管理</span>' : `<button class="btn btn-outline-warning btn-sm" data-user-reset="${escapeHtml(user.id)}" ${user.id === currentUser?.id ? 'disabled title="请使用右上角修改密码"' : ''}><i class="bi bi-key"></i> 重置密码</button>`}</div></td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-body-secondary py-4">暂无账号</td></tr>';
+    const result = await api('/api/v1/users');
+    coreRoles = result.roles;
+    edgeRoles = result.edgeRoles ?? {};
+    coreUsers = result.items;
+    $('#user-rows').innerHTML = coreUsers.map((user) => {
+      const coreEnabled = user.coreEnabled ?? (user.status === 'ACTIVE');
+      const edgeEnabled = user.edgeEnabled === true;
+      const coreRoleNames = user.roles.map((role) => escapeHtml(coreRoles[role] ?? role)).join('、') || '无';
+      const edgeRoleNames = edgeEnabled
+        ? (user.edgeRoles ?? []).map((role) => escapeHtml(edgeRoles[role] ?? role)).join('、') || '无'
+        : '未授权';
+      const accountType = user.authSource === 'AAA' ? 'AAA' : '本地';
+      const accountTypeColor = user.authSource === 'AAA' ? 'info' : 'primary';
+      const accountState = [
+        user.mustChangePassword ? '<span class="badge text-bg-warning">待改密码</span>' : '',
+        user.lockedUntil > Date.now() ? '<span class="badge text-bg-danger">账号锁定</span>' : ''
+      ].filter(Boolean).join(' ');
+      const passwordAction = user.authSource === 'AAA'
+        ? '<button type="button" class="btn btn-outline-secondary btn-sm cam-user-password-action" disabled title="密码由 AAA 管理"><i class="bi bi-shield-lock me-1"></i>AAA 管理</button>'
+        : `<button class="btn btn-outline-warning btn-sm cam-user-password-action" data-user-reset="${escapeHtml(user.id)}" ${user.id === currentUser?.id ? 'disabled title="请使用右上角修改密码"' : ''}><i class="bi bi-key me-1"></i>重置密码</button>`;
+      return `<tr>
+        <td>${escapeHtml(user.username)}<div class="small text-body-secondary">${escapeHtml(user.displayName)}</div></td>
+        <td><span class="badge text-bg-${accountTypeColor}">${accountType}</span></td>
+        <td><div><span class="small text-body-secondary">Core：</span>${coreRoleNames}</div><div class="small text-body-secondary">Edge：${edgeRoleNames}</div></td>
+        <td><div class="cam-user-login-permissions">
+          <span class="badge text-bg-${coreEnabled ? 'success' : 'secondary'}">Core：${coreEnabled ? '允许登录' : '已禁用'}</span>
+          <span class="badge text-bg-${edgeEnabled ? 'success' : 'secondary'}">Edge：${edgeEnabled ? '允许登录' : '已禁用'}</span>
+        </div>${accountState ? `<div class="small mt-1">${accountState}</div>` : ''}</td>
+        <td>${escapeHtml(user.lastLoginAt ?? '-')}</td>
+        <td class="cam-actions-cell"><div class="cam-action-buttons">
+          <button class="btn btn-outline-primary btn-sm" data-user-edit="${escapeHtml(user.id)}"><i class="bi bi-pencil me-1"></i>编辑账号</button>
+          ${passwordAction}
+        </div></td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="6" class="text-center text-body-secondary py-4">暂无账号</td></tr>';
     refreshPaginatedTables($('#page-users'));
     document.querySelectorAll('[data-user-edit]').forEach((button) => { button.onclick = () => openUserEditor(button.dataset.userEdit); });
     document.querySelectorAll('[data-user-reset]').forEach((button) => { button.onclick = () => openUserReset(button.dataset.userReset); });
