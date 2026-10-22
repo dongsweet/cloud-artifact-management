@@ -13,7 +13,7 @@ test('cam-agent requires a local login, forces initial password change, and prot
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-local-auth-'));
   const app = await buildAgentApp({ dataDir, startWorker: false });
   try {
-    await app.agentAuthStore.createUser({ username: 'agentadmin', displayName: 'Agent Admin', password: 'Initial-Agent-Password-2026', roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true });
+    await app.agentAuthStore.createUser({ username: 'agentadmin', displayName: 'Agent Admin', password: 'Initial-Agent-Password-2026', roles: ['AGENT_OPERATOR'] }, null, { bootstrap: true });
     const noLogin = await app.inject({ method: 'GET', url: '/api/v1/tasks' }); assert.equal(noLogin.statusCode, 401);
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'agentadmin', password: 'Initial-Agent-Password-2026' } });
     assert.equal(login.statusCode, 200, login.body);
@@ -40,7 +40,8 @@ test('Agent upgrades the legacy AGENT_ADMIN role to AGENT_SYSTEM_ADMIN without l
     assert.deepEqual(app.agentAuthStore.listUsers()[0].roles, ['AGENT_SYSTEM_ADMIN']);
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'legacyadmin', password: 'Legacy-Agent-Password-2026' } });
     const cookie = login.headers['set-cookie'].map((value) => value.split(';')[0]).join('; ');
-    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/tasks', headers: { cookie } })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/tasks', headers: { cookie } })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/identity', headers: { cookie } })).statusCode, 200);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
@@ -93,6 +94,64 @@ test('Agent security administrators manage local and AAA users while other roles
     const systemLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'system1', password: 'Initial-System-Password-2026' } });
     const systemHeaders = { cookie: systemLogin.headers['set-cookie'].map((value) => value.split(';')[0]).join('; '), 'x-cam-agent-csrf': systemLogin.json().csrfToken };
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/users', headers: systemHeaders })).statusCode, 403);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Agent roles separate configuration, user administration, operations and audit access', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-role-boundaries-'));
+  const app = await buildAgentApp({ dataDir, startWorker: false });
+  try {
+    const roleAccounts = [
+      ['security', 'AGENT_SECURITY_ADMIN'],
+      ['system', 'AGENT_SYSTEM_ADMIN'],
+      ['operator', 'AGENT_OPERATOR'],
+      ['auditor', 'AGENT_AUDITOR']
+    ];
+    for (const [username, role] of roleAccounts) {
+      await app.agentAuthStore.createUser({ username, displayName: username, password: 'Initial-Role-Password-2026', roles: [role] }, null, { bootstrap: username === 'security' });
+      app.agentAuthStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE username = ?').run(username);
+    }
+    const sessions = {};
+    for (const [username] of roleAccounts) {
+      const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username, password: 'Initial-Role-Password-2026' } });
+      assert.equal(login.statusCode, 200, login.body);
+      sessions[username] = { cookie: login.headers['set-cookie'].map((value) => value.split(';')[0]).join('; '), 'x-cam-agent-csrf': login.json().csrfToken };
+    }
+
+    const security = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: sessions.security })).json();
+    assert.equal(security.permissions.userAdmin, true);
+    assert.equal(security.permissions.businessRead, false);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/users', headers: sessions.security })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/tasks', headers: sessions.security })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/identity', headers: sessions.security })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/auth-events', headers: sessions.security })).statusCode, 403);
+
+    const system = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: sessions.system })).json();
+    assert.equal(system.permissions.configRead, true);
+    assert.equal(system.permissions.businessRead, false);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/identity', headers: sessions.system })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/tasks', headers: sessions.system })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/users', headers: sessions.system })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/auth-events', headers: sessions.system })).statusCode, 403);
+
+    const operator = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: sessions.operator })).json();
+    assert.equal(operator.permissions.businessWrite, true);
+    assert.equal(operator.permissions.deliveryWrite, true);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/tasks', headers: sessions.operator })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/identity', headers: sessions.operator })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/auth-events', headers: sessions.operator })).statusCode, 403);
+
+    const auditor = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: sessions.auditor })).json();
+    assert.equal(auditor.permissions.businessRead, true);
+    assert.equal(auditor.permissions.businessWrite, false);
+    assert.equal(auditor.permissions.auditRead, true);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/tasks', headers: sessions.auditor })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/tasks/pull', headers: sessions.auditor, payload: {} })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/delivery-grants', headers: sessions.auditor })).statusCode, 200);
+    const events = await app.inject({ method: 'GET', url: '/api/v1/auth-events?limit=10', headers: sessions.auditor });
+    assert.equal(events.statusCode, 200, events.body);
+    assert.ok(events.json().items.some((event) => event.event_type === 'LOGIN_SUCCEEDED'));
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/identity', headers: sessions.auditor })).statusCode, 403);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 

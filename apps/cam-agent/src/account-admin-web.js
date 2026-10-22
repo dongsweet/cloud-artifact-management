@@ -19,8 +19,15 @@ export function agentAccountAdminSection() {
 export function agentAccountAdminScript() {
   return `
 let agentUsers = [], agentUserRoles = {}, agentEditingUserId = null, agentResetUserId = null;
-function agentIsSecurityAdmin() { return currentPrincipal?.roles?.includes('AGENT_SECURITY_ADMIN') === true; }
-function agentShowUserAdmin() { const allowed = agentIsSecurityAdmin(); document.querySelectorAll('[data-agent-user-admin]').forEach(item => item.classList.toggle('d-none', !allowed)); if (!allowed && location.hash === '#users') { location.hash = '#identity'; showPage('identity'); } }
+function agentCan(permission) { return currentPermissions?.[permission] === true; }
+function agentDefaultPage() { if (agentCan('configRead')) return 'identity'; if (agentCan('userAdmin')) return 'users'; if (agentCan('businessRead')) return 'artifacts'; return 'identity'; }
+function agentShowUserAdmin() {
+  document.querySelectorAll('[data-agent-permission]').forEach(item => item.classList.toggle('d-none', !agentCan(item.dataset.agentPermission)));
+  $('#tasks-pull').classList.toggle('d-none', !agentCan('businessWrite'));
+  if (location.hash.slice(1) && !agentCan(({ identity: 'configRead', artifacts: 'businessRead', tasks: 'businessRead', delivery: 'deliveryRead', users: 'userAdmin', audit: 'auditRead' })[location.hash.slice(1)])) {
+    const page = agentDefaultPage(); location.hash = '#'+page; showPage(page);
+  }
+}
 function agentUserRoleOptions(selected = []) { $('#agent-user-roles').innerHTML = Object.entries(agentUserRoles).map(([role,label]) => '<label class="form-check"><input class="form-check-input" type="checkbox" value="'+esc(role)+'" '+(selected.includes(role)?'checked':'')+'><span class="form-check-label">'+esc(label)+'</span></label>').join(''); }
 function agentUserEditor(user = null) {
   agentEditingUserId = user?.id ?? null; $('#agent-user-reset').classList.add('d-none'); $('#agent-user-editor').classList.remove('d-none'); $('#agent-user-error').classList.add('d-none'); $('#agent-user-form').reset();

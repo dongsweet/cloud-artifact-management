@@ -7,7 +7,8 @@ import { createHash } from 'node:crypto';
 import { buildServer } from '../../../libs/cam-server/src/server.js';
 import { openDatabase } from '../../../libs/cam-sqlite/src/database.js';
 import { AuthStore } from '../../cam-core/src/core-auth-store.js';
-import { AGENT_ROLE_LABELS, hasAgentPermission } from '../../../libs/cam-auth/src/roles.js';
+import { AGENT_PERMISSION_ROLES, AGENT_ROLE_LABELS, hasAgentPermission } from '../../../libs/cam-auth/src/roles.js';
+import { queryAuthEvents } from '../../../libs/cam-auth/src/audit-events.js';
 import { DkeyAmAdapter } from '../../cam-core/src/aaa-adapter.js';
 import { fingerprint, randomNonce, signRequest, verifyResponse } from '../../../libs/cam-agent-auth/src/protocol.js';
 import { createIdentityRotation, loadAgentIdentity } from './identity-rotation.js';
@@ -26,6 +27,7 @@ function fail(reply, status, code, message) { return reply.code(status).send({ e
 function cookies(request) { return Object.fromEntries((request.headers.cookie ?? '').split(';').filter(Boolean).map((e) => { const i = e.indexOf('='); return [e.slice(0, i).trim(), e.slice(i + 1).trim()]; })); }
 function registerAuth(app, auth) {
   const cookie = (name, value, httpOnly, expired = false) => `${name}=${value}; Path=/; SameSite=Strict; Max-Age=${expired ? 0 : 28800}${httpOnly ? '; HttpOnly' : ''}${process.env.CAM_COOKIE_SECURE === 'false' ? '' : '; Secure'}`;
+  const permissionsFor = (roles = []) => Object.fromEntries(Object.keys(AGENT_PERMISSION_ROLES).map((permission) => [permission, hasAgentPermission(roles, permission)]));
   app.addHook('onRequest', async (request, reply) => {
     const path = request.url.split('?')[0]; if (!path.startsWith('/api/')) return;
     if (path.startsWith('/api/v1/auth/')) { request.principal = auth.resolve(cookies(request).cam_agent_session); return; }
@@ -36,10 +38,10 @@ function registerAuth(app, auth) {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !auth.csrf(request.principal, request.headers['x-cam-agent-csrf'])) return fail(reply, 403, 'csrf_invalid', '会话校验失败，请刷新页面后重试');
   });
   app.post('/api/v1/auth/login', { bodyLimit: 4096 }, async (request, reply) => {
-    try { const result = await auth.login(request.body?.username, request.body?.password, { address: request.ip, userAgent: request.headers['user-agent'] ?? null }); reply.header('Set-Cookie', [cookie('cam_agent_session', result.token, true), cookie('cam_agent_csrf', result.csrfToken, false)]); return { user: result.user, csrfToken: result.csrfToken, roles: AGENT_ROLE_LABELS }; }
+    try { const result = await auth.login(request.body?.username, request.body?.password, { address: request.ip, userAgent: request.headers['user-agent'] ?? null }); reply.header('Set-Cookie', [cookie('cam_agent_session', result.token, true), cookie('cam_agent_csrf', result.csrfToken, false)]); return { user: result.user, csrfToken: result.csrfToken, roles: AGENT_ROLE_LABELS, permissions: permissionsFor(result.user.roles) }; }
     catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'login_failed', err.message); }
   });
-  app.get('/api/v1/auth/me', async (request) => ({ user: request.principal?.user ?? null, csrfToken: cookies(request).cam_agent_csrf, roles: AGENT_ROLE_LABELS }));
+  app.get('/api/v1/auth/me', async (request) => ({ user: request.principal?.user ?? null, csrfToken: cookies(request).cam_agent_csrf, roles: AGENT_ROLE_LABELS, permissions: permissionsFor(request.principal?.user?.roles) }));
   app.post('/api/v1/auth/logout', async (request, reply) => { if (request.principal && !auth.csrf(request.principal, request.headers['x-cam-agent-csrf'])) return fail(reply, 403, 'csrf_invalid', '会话校验失败，请刷新页面后重试'); if (request.principal) auth.logout(request.principal); reply.header('Set-Cookie', [cookie('cam_agent_session', '', true, true), cookie('cam_agent_csrf', '', false, true)]); return { ok: true }; });
   app.post('/api/v1/auth/password', { bodyLimit: 4096 }, async (request, reply) => { if (request.principal?.type !== 'LOCAL_USER') return fail(reply, 403, 'local_account_required', '本地账号密码由 Agent 管理'); if (!auth.csrf(request.principal, request.headers['x-cam-agent-csrf'])) return fail(reply, 403, 'csrf_invalid', '会话校验失败，请刷新页面后重试'); try { await auth.changePassword(request.principal.id, request.body?.password, request.principal.id, request.body?.oldPassword); reply.header('Set-Cookie', [cookie('cam_agent_session', '', true, true), cookie('cam_agent_csrf', '', false, true)]); return { ok: true, loginRequired: true }; } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'password_failed', err.message); } });
 }
@@ -84,6 +86,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   app.get('/assets/table-pagination.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'table-pagination.js'))));
   app.get('/assets/artifact-catalog.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'artifact-catalog.js'))));
   app.get('/assets/task-table.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'task-table.js'))));
+  app.get('/assets/audit-events.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'audit-events.js'))));
   app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(agentPage()));
   const core = async (path, options = {}, signer = identity) => {
     const config = coreConnection.get();
@@ -182,8 +185,12 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   const requirePermission = (permission, message) => async (request, reply) => {
     if (!hasAgentPermission(request.principal?.user?.roles, permission)) return fail(reply, 403, 'agent_permission_denied', message);
   };
-  const admin = requirePermission('configWrite', '需要系统管理员或安全管理员权限');
+  const admin = requirePermission('configWrite', '需要系统管理员权限');
   const userAdmin = requirePermission('userAdmin', '需要安全管理员权限');
+  app.get('/api/v1/auth-events', { preHandler: requirePermission('auditRead', '需要审计管理员权限') }, async (request, reply) => {
+    try { return queryAuthEvents(auth.db, 'core_auth_events', request.query ?? {}); }
+    catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'audit_filter_invalid', err.message); }
+  });
   app.get('/api/v1/users', { preHandler: userAdmin }, async () => ({ items: auth.listUsers(), roles: AGENT_ROLE_LABELS }));
   app.post('/api/v1/users', { bodyLimit: 8192, preHandler: userAdmin }, async (request, reply) => {
     try {
@@ -315,7 +322,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   }
   const poll = async () => { if (running || configuring || testing) return; running = true; try { await rotation.sync(); const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST', body: '' })).json()).items ?? []; for (const task of tasks) { localTask(task); if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
   app.get('/api/v1/identity', { preHandler: requirePermission('configRead', '需要配置查看权限') }, async () => ({ agentId: rotation.status().agentId ?? null, publicKey: identity.publicKeyPem, fingerprint: identity.fingerprint, registered: Boolean(rotation.status().agentId), rotation: rotation.status() }));
-  app.post('/api/v1/tasks/pull', { preHandler: requirePermission('businessWrite', '需要系统管理员或操作员权限') }, async (_request, reply) => { if (running) return reply.code(202).send({ queued: false, running: true }); queueMicrotask(() => { void poll(); }); return reply.code(202).send({ queued: true }); });
+  app.post('/api/v1/tasks/pull', { preHandler: requirePermission('businessWrite', '需要操作员权限') }, async (_request, reply) => { if (running) return reply.code(202).send({ queued: false, running: true }); queueMicrotask(() => { void poll(); }); return reply.code(202).send({ queued: true }); });
   app.get('/api/v1/available-artifacts', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (_request, reply) => {
     try { const items = await listAvailableArtifacts(); return reply.send({ items, cacheSummary: await cacheSummary(items) }); }
     catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'artifact_list_failed', err.message); }
@@ -333,7 +340,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     if (!row) return fail(reply, 404, 'task_not_found', '分发任务不存在');
     return reply.send({ item: await serializeTask(row) });
   });
-  app.post('/api/v1/tasks/:taskId/retry', { bodyLimit: 4096, preHandler: requirePermission('businessWrite', '需要系统管理员或操作员权限') }, async (request, reply) => {
+  app.post('/api/v1/tasks/:taskId/retry', { bodyLimit: 4096, preHandler: requirePermission('businessWrite', '需要操作员权限') }, async (request, reply) => {
     if (running) return fail(reply, 409, 'task_busy', 'Agent 正在传输，请稍后再试');
     const row = db.prepare('SELECT * FROM agent_tasks WHERE task_id = ?').get(request.params.taskId);
     if (!row) return fail(reply, 404, 'task_not_found', '分发任务不存在');
@@ -356,8 +363,8 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   const deliveryGrantResponse = (grant, token = null) => ({ ...grant, items: grant.items.map((item) => ({ ...item, downloadUrl: token ? `/api/v1/delivery-grants/${encodeURIComponent(grant.grantId)}/files/${encodeURIComponent(item.fileSha256)}/content?token=${encodeURIComponent(token)}` : undefined })) });
   const deliveryStatus = (err) => err.statusCode ?? (err.code === 'delivery_grant_invalid' ? 403 : 400);
 
-  app.get('/api/v1/delivery-grants', { preHandler: requirePermission('deliveryRead', '需要部署交付查看权限') }, async (request) => ({ items: delivery.listGrants(request.principal.id) }));
-  app.post('/api/v1/delivery-grants', { bodyLimit: 32 * 1024, preHandler: requirePermission('deliveryWrite', '需要系统管理员或操作员权限') }, async (request, reply) => {
+  app.get('/api/v1/delivery-grants', { preHandler: requirePermission('deliveryRead', '需要部署交付查看权限') }, async (request) => ({ items: delivery.listGrants(hasAgentPermission(request.principal.user.roles, 'auditRead') ? null : request.principal.id) }));
+  app.post('/api/v1/delivery-grants', { bodyLimit: 32 * 1024, preHandler: requirePermission('deliveryWrite', '需要操作员权限') }, async (request, reply) => {
     try {
       const body = request.body ?? {}; const artifactId = body.artifactId;
       const artifact = (await listAvailableArtifacts()).find((item) => item.artifactId === artifactId);
@@ -368,7 +375,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   app.get('/api/v1/delivery-grants/:grantId', { preHandler: requirePermission('deliveryRead', '需要部署交付查看权限') }, async (request, reply) => {
     try {
       const grant = delivery.getGrant(request.params.grantId);
-      if (!grant || (grant.createdBy !== request.principal.id && grant.principalId !== request.principal.id)) return fail(reply, 404, 'delivery_grant_not_found', '交付授权不存在');
+      if (!grant || (!hasAgentPermission(request.principal.user.roles, 'auditRead') && grant.createdBy !== request.principal.id && grant.principalId !== request.principal.id)) return fail(reply, 404, 'delivery_grant_not_found', '交付授权不存在');
       return reply.send({ ...grant, sessions: delivery.getSessions(grant.grantId) });
     } catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_grant_query_failed', err.message); }
   });
@@ -380,7 +387,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     }
     catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_manifest_failed', err.message); }
   });
-  app.delete('/api/v1/delivery-grants/:grantId', { preHandler: requirePermission('deliveryWrite', '需要系统管理员或操作员权限') }, async (request, reply) => {
+  app.delete('/api/v1/delivery-grants/:grantId', { preHandler: requirePermission('deliveryWrite', '需要操作员权限') }, async (request, reply) => {
     try {
       const grant = delivery.getGrant(request.params.grantId);
       if (!grant || grant.createdBy !== request.principal.id) return fail(reply, 404, 'delivery_grant_not_found', '交付授权不存在');

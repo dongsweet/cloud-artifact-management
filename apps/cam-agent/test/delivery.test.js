@@ -9,9 +9,9 @@ import { buildCoreApp } from '../../cam-core/src/server.js';
 import { generateIdentity } from '../../../libs/cam-agent-auth/src/protocol.js';
 
 async function login(app) {
-  await app.agentAuthStore.createUser({ username: 'admin', displayName: 'Agent Admin', password: 'Agent-Delivery-Password-2026', roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true });
+  await app.agentAuthStore.createUser({ username: 'operator', displayName: 'Agent Operator', password: 'Agent-Delivery-Password-2026', roles: ['AGENT_OPERATOR'] }, null, { bootstrap: true });
   app.agentAuthStore.db.prepare('UPDATE core_users SET must_change_password = 0').run();
-  const response = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'admin', password: 'Agent-Delivery-Password-2026' } });
+  const response = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'operator', password: 'Agent-Delivery-Password-2026' } });
   return { cookie: response.headers['set-cookie'].map((value) => value.split(';')[0]).join('; '), 'x-cam-agent-csrf': response.json().csrfToken };
 }
 

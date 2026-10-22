@@ -6,6 +6,7 @@ export function mountArtifactCatalog(root, initialItems, {
   statusFor = (item) => ({ key: 'DEFAULT', label: `${(item.files ?? []).filter((file) => file.stored).length} / ${(item.files ?? []).length} 个包已入库`, color: 'success' }),
   fileStatusFor = (file) => file.cached ? '本机已缓存' : file.stored ? 'Core 已入库' : '未缓存',
   showCacheColumns = false,
+  allowLocalDelivery = true,
   pullLabelFor = () => '拉取',
   actionLabel = '包明细',
   emptyLabel = '暂无正式版本',
@@ -40,7 +41,7 @@ export function mountArtifactCatalog(root, initialItems, {
       const status = statusFor(item); const version = item.displayVersion ?? item.version ?? '未知版本';
       const operation = onPull ? `<button type="button" class="btn btn-outline-primary btn-sm" data-catalog-pull="${index}" ${status.disablePull ? 'disabled' : ''}><i class="bi bi-cloud-download me-1"></i>${esc(pullLabelFor(item, status))}</button>` : '';
       const localDelivery = typeof window !== 'undefined' && typeof window.CamAgentDeliveryOpen === 'function' && (item.files ?? []).length > 0 && (item.files ?? []).every((file) => file.cached);
-      const delivery = onDeliver || localDelivery ? `<button type="button" class="btn btn-outline-success btn-sm" data-catalog-deliver="${index}" ${status.disableDeliver ? 'disabled' : ''}><i class="bi bi-box-arrow-up-right me-1"></i>交付</button>` : '';
+      const delivery = onDeliver || (allowLocalDelivery && localDelivery) ? `<button type="button" class="btn btn-outline-success btn-sm" data-catalog-deliver="${index}" ${status.disableDeliver ? 'disabled' : ''}><i class="bi bi-box-arrow-up-right me-1"></i>交付</button>` : '';
       const files = item.files ?? []; const totalBytes = item.totalBytes ?? files.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0); const cachedFiles = item.cachedFileCount ?? files.filter((file) => file.cached).length; const cacheCells = showCacheColumns ? `<td>${esc(cachedFiles)} / ${esc(files.length)}</td><td class="text-nowrap">${esc(bytes(totalBytes))}</td><td>${esc(date(item.lastTransferAt))}</td>` : '';
       return `<tr><td><div class="fw-semibold">${esc(item.productName ?? '历史产品')}</div></td><td><span class="fw-semibold">${esc(version)}</span></td><td>${files.length}</td>${cacheCells}<td><span class="badge text-bg-${esc(status.color ?? 'secondary')}">${esc(status.label)}</span>${status.detail ? `<div class="small text-body-secondary mt-1">${esc(status.detail)}</div>` : ''}</td><td>${esc(date(item.receivedAt))}</td><td class="text-end"><div class="d-inline-flex gap-1"><button type="button" class="btn btn-outline-secondary btn-sm" data-catalog-detail="${index}"><i class="bi bi-eye me-1"></i>${esc(actionLabel)}</button>${operation}${delivery}</div></td></tr>`;
     }).join('') : `<tr><td colspan="${showCacheColumns ? 9 : 6}" class="text-center text-body-secondary py-4">${esc(filtered.length === 0 && items.length ? '没有符合筛选条件的正式版本' : emptyLabel)}</td></tr>`;

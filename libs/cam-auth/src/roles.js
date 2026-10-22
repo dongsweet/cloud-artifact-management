@@ -29,12 +29,13 @@ export const AGENT_ROLE_LABELS = Object.freeze({
 });
 
 export const AGENT_PERMISSION_ROLES = Object.freeze({
-  businessRead: ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN', 'AGENT_OPERATOR', 'AGENT_AUDITOR'],
-  businessWrite: ['AGENT_SYSTEM_ADMIN', 'AGENT_OPERATOR'],
-  configRead: ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN', 'AGENT_AUDITOR'],
-  configWrite: ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN'],
-  deliveryRead: ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN', 'AGENT_OPERATOR', 'AGENT_AUDITOR'],
-  deliveryWrite: ['AGENT_SYSTEM_ADMIN', 'AGENT_OPERATOR'],
+  businessRead: ['AGENT_OPERATOR', 'AGENT_AUDITOR'],
+  businessWrite: ['AGENT_OPERATOR'],
+  configRead: ['AGENT_SYSTEM_ADMIN'],
+  configWrite: ['AGENT_SYSTEM_ADMIN'],
+  deliveryRead: ['AGENT_OPERATOR', 'AGENT_AUDITOR'],
+  deliveryWrite: ['AGENT_OPERATOR'],
+  auditRead: ['AGENT_AUDITOR'],
   userAdmin: ['AGENT_SECURITY_ADMIN']
 });
 
