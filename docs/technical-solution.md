@@ -633,18 +633,18 @@ Core 与 Edge 各自的 Ed25519/X25519 身份密钥可按本端策略自动轮�
 
 页面和 API 使用统一身份源时只保留 CAM 所需角色映射，不在 SQLite 保存明文密码。服务间使用 mTLS 或受控短期令牌，令牌不写入日志。
 
-当前角色边界固定如下。Core 菜单按“业务”和“系统管理”分组，业务入口位于前面，配置和账号入口位于后面。系统管理员负责平台业务与技术运行，但不具备账号管理权限；账号创建、角色分配、禁用和密码重置只属于安全管理员。Edge 的角色只授予明确的业务 API 权限：
+当前角色边界固定如下。Core 菜单按“业务”和“系统管理”分组。系统管理员管理平台配置和系统对接（包括 AAA），但不管理账号，也没有业务读写权限；安全管理员只管理人员账号和角色；业务由操作员读写；审计管理员只读业务和审计信息。Edge 复用同一职责划分，账号仍由 Core 统一管理：
 
 | 角色 | 允许的操作 |
 |---|---|
-| `CORE_SYSTEM_ADMIN` | Core 业务流程、正式制品、Agent、云管、网闸和平台技术配置；不能查看或修改账号 |
-| `CORE_OPERATOR` | 操作员：查看审批请求和正式制品，执行云管同步、失败重试、传输准备、关单和 Agent 分发 |
-| `CORE_SECURITY_ADMIN` | 安全管理员：管理账号、角色、密码和状态；管理 Agent 接入与轮换、AAA、云管、网闸及身份密钥 |
-| `CORE_AUDITOR` | 审计员：只读查看审批、正式制品、分发任务和相关报告 |
-| `EDGE_SYSTEM_ADMIN` | Edge 网闸及控制通道配置；只读查看 Edge 授权人员和认证审计 |
-| `EDGE_SECURITY_ADMIN` | Edge 安全配置和身份密钥管理；账号仍由 Core 管理 |
+| `CORE_SYSTEM_ADMIN` | 管理 AAA、云管、网闸、Agent 接入及 Core 系统身份等平台配置；不能管理账号，也不能读写业务数据 |
+| `CORE_SECURITY_ADMIN` | 创建和维护账号、密码、状态、角色及 Core/Edge 登录资格；不能管理平台对接配置或业务数据 |
+| `CORE_OPERATOR` | 读写 Core 业务，包括审批处理、正式制品、传输和 Agent 分发；不能管理平台配置或账号 |
+| `CORE_AUDITOR` | 只读查看 Core 业务信息和审计记录；不能写业务、管理平台配置或账号 |
+| `EDGE_SYSTEM_ADMIN` | 管理 Edge 网闸及控制通道配置；不管理账号或候选制品业务 |
+| `EDGE_SECURITY_ADMIN` | 只读查看 Core 授权给 Edge 的人员及其 Edge 角色；不能修改账号、角色或平台对接配置 |
 | `EDGE_OPERATOR` | 软件产品、发布版本、候选轮次、候选包的接收、验证、固化和交付操作 |
-| `EDGE_AUDITOR` | 只读查看候选、固化、下载授权和认证审计 |
+| `EDGE_AUDITOR` | 只读查看 Edge 业务、下载授权和审计记录；不能写业务、管理平台配置或账号 |
 | `AGENT_SYSTEM_ADMIN` | Agent Core 对接、身份轮换和平台技术配置；可执行任务与交付管理 |
 | `AGENT_SECURITY_ADMIN` | Agent 安全配置、AAA 授权映射和审计查看；不能执行制品操作 |
 | `AGENT_OPERATOR` | 查看正式制品和传输任务，发起拉取、重试和部署交付 |
@@ -775,7 +775,7 @@ CAM 的账号体系按“人员身份、服务身份、下载授权”三类对�
 | 服务身份 | 外部交换区、内网、云中心 | mTLS 证书或签名密钥 | 跨区联动、内网接收、中心主动拉取 |
 | 下载授权 Token | 浏览器或测试服务器 | 高强度随机 Bearer Token | 限定文件、期限和次数的下载 |
 
-Core SQLite 保存 CAM 人员账号、密码哈希、Core 角色、Edge 登录资格、Edge 角色和认证审计。密码以 Node.js 内置 `crypto.scrypt` 加随机盐保存，不存明文。Core 角色与 Edge 角色各自校验、分别授权；停用账号或修改角色会撤销 Core 会话。外部区不再创建或管理独立人员密码账号，Edge SQLite 只保存 Core 用户授权缓存、短期会话和审计事件，不再创建或兼容读取 `edge_users`、`edge_sessions`。
+Core SQLite 保存 CAM 人员账号、密码哈希、Core 角色、Edge 登录资格、Edge 角色和认证审计。密码以 Node.js 内置 `crypto.scrypt` 加随机盐保存，不存明文。Core 角色与 Edge 角色各自校验、分别授权；停用账号或修改角色会撤销 Core 会话。账号、角色和两端登录资格由 Core 安全管理员维护；Core 系统管理员负责 AAA 等平台对接配置，不因此获得账号或业务权限。外部区不再创建或管理独立人员密码账号，Edge SQLite 只保存 Core 用户授权缓存、短期会话和审计事件，不再创建或兼容读取 `edge_users`、`edge_sessions`。
 
 Edge 登录复用既有 Core 控制地址和已配对的网闸身份，不增加网络通道：Edge 用临时 X25519 密钥与 Core 配对公钥建立共享密钥，以 AES-256-GCM 加密用户名和密码，再用现有 Ed25519 设备身份签名请求。Core 校验请求签名、时效、随机数和对端配对状态后，检查账号状态、锁定状态、初始密码状态及 Edge 授权。Core 返回仅面向 `cam-edge`、绑定本次随机数且一分钟内有效的 Ed25519 签名断言；Edge 验签后建立最长 15 分钟的短期本地会话。密码不写入 Edge 数据库、日志或网闸记录。Edge 通过同一签名控制通道读取最小化的 Edge 用户及验证人员清单，用于 RBAC 和下载责任人选择。Edge 每个受保护请求均重新读取并验签 Core 当前用户清单；角色变更、账号禁用或 Edge 资格撤销会立即使已有 Edge 会话失效或降权。
 
@@ -787,7 +787,7 @@ Edge 登录复用既有 Core 控制地址和已配对的网闸身份，不增加
 
 创建下载授权必须由已认证的 EDGE_OPERATOR 或等效角色执行。Token 只代表受限下载权，数据库保存 Token 的 SHA-256 摘要、授权创建者和范围；下载事件同时记录授权创建者与实际 Token 调用身份。账号接入前接口默认拒绝匿名请求，不提供客户端身份头回退；自动化测试通过服务器构造参数 principalProvider 注入测试身份，部署服务不启用此适配器。
 
-Core 的账号管理页面维护用户名、密码重置、账号状态、Core 角色、Edge 登录开关和 Edge 角色。Edge 只展示 Core 下发的 Edge 授权人员，不提供独立人员账号或角色编辑。两端均使用 Fastify `onRequest` 统一认证、CSRF 和 RBAC；Edge 短期会话 Cookie 使用不可预测值，数据库仅保存 SHA-256 摘要，并启用 HTTPS 与 Secure Cookie。账号停用或角色变更即时阻止新的 Core / Edge 登录；已签发的 Edge 会话最多持续 15 分钟。下载授权责任人必须是当前 Edge 已授权、账号有效、已完成初始密码修改且具备 EDGE_OPERATOR 角色的人员。Agent 使用 `AGENT_SYSTEM_ADMIN`、`AGENT_SECURITY_ADMIN`、`AGENT_OPERATOR`、`AGENT_AUDITOR` 四类角色；服务端按请求逐次执行 RBAC，角色变更在下一次会话解析或请求时生效。Agent 认证直接调用 AAA，不经过 Core 中转；本地初始管理员只用于首次配置和 AAA 不可用时的受控应急维护。
+Core 的账号管理页面维护用户名、密码重置、账号状态、Core 角色、Edge 登录开关和 Edge 角色，由 Core 安全管理员操作。Edge 的安全管理员只读展示 Core 下发的 Edge 授权人员；人员账号和角色没有 Edge 侧的编辑入口。Core 系统管理员管理 AAA 及平台对接配置，不因此取得账号管理或业务读写权限；Core 操作员读写业务，审计管理员只读业务和审计信息。Edge 系统管理员管理网闸及控制通道配置，Edge 操作员读写候选制品业务，Edge 审计管理员只读业务和审计信息。两端均使用 Fastify `onRequest` 统一认证、CSRF 和 RBAC；Edge 短期会话 Cookie 使用不可预测值，数据库仅保存 SHA-256 摘要，并启用 HTTPS 与 Secure Cookie。账号停用或角色变更即时阻止新的 Core / Edge 登录；已签发的 Edge 会话最多持续 15 分钟。下载授权责任人必须是当前 Edge 已授权、账号有效、已完成初始密码修改且具备 EDGE_OPERATOR 角色的人员。Agent 使用 `AGENT_SYSTEM_ADMIN`、`AGENT_SECURITY_ADMIN`、`AGENT_OPERATOR`、`AGENT_AUDITOR` 四类角色；服务端按请求逐次执行 RBAC，角色变更在下一次会话解析或请求时生效。Agent 认证直接调用 AAA，不经过 Core 中转；本地初始管理员只用于首次配置和 AAA 不可用时的受控应急维护。
 
 统一账号模型和当前落地差异见本节；现有 [外部交换区账号及下载交付](edge-accounts.md) 文档只作为历史说明，不再定义生产人员认证架构，也不再包含 Edge 本地账号迁移表。
 

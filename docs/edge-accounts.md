@@ -8,12 +8,12 @@
 
 | 角色 | 页面与 API 权限 |
 |---|---|
-| `EDGE_SYSTEM_ADMIN` | 配置 Edge 网闸及控制通道、只读查看授权人员和认证审计 |
-| `EDGE_SECURITY_ADMIN` | 管理 Edge 安全配置和身份密钥；账号仍由 Core 管理 |
+| `EDGE_SYSTEM_ADMIN` | 管理 Edge 网闸及控制通道配置 |
+| `EDGE_SECURITY_ADMIN` | 只读查看 Core 授权给 Edge 的人员及其 Edge 角色 |
 | `EDGE_OPERATOR` | 查看并维护产品、版本、轮次、候选包，导入及接收；提交验证报告、固化申请和下载交付 |
-| `EDGE_AUDITOR` | 只读查看账号、候选、全部下载授权及会话明细、认证审计 |
+| `EDGE_AUDITOR` | 只读查看 Edge 业务、下载授权及会话明细、审计记录 |
 
-角色可组合。系统管理员不隐式获得账号管理权限；Core 的账号创建、角色分配、禁用和密码重置只允许 `CORE_SECURITY_ADMIN`。Edge 账号和角色仍由 Core 统一维护。
+角色可组合，实际权限为已分配角色的并集。Core 的账号创建、角色分配、禁用和密码重置只允许 `CORE_SECURITY_ADMIN`；AAA、云管、网闸和 Agent 等平台对接配置由 `CORE_SYSTEM_ADMIN` 管理。Edge 不提供人员账号或角色编辑功能；安全管理员在 Edge 只能查看授权清单，所有变更仍由 Core 安全管理员完成。审计记录只允许审计管理员读取。页面隐藏入口仅用于界面呈现，API 仍会独立校验角色权限。
 
 ## 初始化与部署
 
