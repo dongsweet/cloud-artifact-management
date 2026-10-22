@@ -1,0 +1,95 @@
+services:
+  cam-core:
+    image: ${CAM_CORE_IMAGE:-cam-core:1.0.0}
+    container_name: cam-core
+    read_only: true
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    volumes:
+      - ${CAM_CORE_DATA_DIR:-/var/lib/cloud-artifact-management/core}:/data
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3102
+      DATA_DIR: /data/core
+      CAM_COOKIE_SECURE: ${CAM_COOKIE_SECURE:-true}
+      CAM_TRUST_PROXY: ${CAM_TRUST_PROXY:-192.168.242.0/24}
+      CAM_GATE_MODE: ${CAM_GATE_MODE:-mapping}
+      CAM_GATE_EDGE_CONTROL_URL: ${CAM_GATE_EDGE_CONTROL_URL:-}
+      CAM_GATE_EDGE_TRANSFER_URL: ${CAM_GATE_EDGE_TRANSFER_URL:-}
+      CAM_GATE_CONNECT_TIMEOUT_MS: ${CAM_GATE_CONNECT_TIMEOUT_MS:-10000}
+      CAM_GATE_TRANSFER_TIMEOUT_MS: ${CAM_GATE_TRANSFER_TIMEOUT_MS:-60000}
+      CAM_GATE_CHUNK_SIZE_BYTES: ${CAM_GATE_CHUNK_SIZE_BYTES:-268435456}
+      CAM_GATE_RETRY_LIMIT: ${CAM_GATE_RETRY_LIMIT:-5}
+      CAM_GATE_MAX_IN_FLIGHT_CHUNKS: ${CAM_GATE_MAX_IN_FLIGHT_CHUNKS:-1}
+      CAM_GATE_REQUEST_TTL_SECONDS: ${CAM_GATE_REQUEST_TTL_SECONDS:-86400}
+      CAM_GATE_TLS_CA_FILE: ${CAM_GATE_TLS_CA_FILE:-}
+      CAM_GATE_TLS_SERVER_NAME: ${CAM_GATE_TLS_SERVER_NAME:-}
+      CAM_CLOUD_API_BASE_URL: ${CAM_CLOUD_API_BASE_URL:-}
+      CAM_CLOUD_AUTH_USER_ID: ${CAM_CLOUD_AUTH_USER_ID:-}
+      CAM_CLOUD_AUTH_USERNAME: ${CAM_CLOUD_AUTH_USERNAME:-}
+      CAM_CLOUD_AUTH_SECRET: ${CAM_CLOUD_AUTH_SECRET:-}
+      CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL: ${CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL:-常规变更}
+      CAM_CLOUD_WORK_ORDER_PRIORITY_VALUE: ${CAM_CLOUD_WORK_ORDER_PRIORITY_VALUE:-}
+      CAM_CLOUD_WORK_ORDER_SOURCE_LABEL: ${CAM_CLOUD_WORK_ORDER_SOURCE_LABEL:-内部需求}
+      CAM_CLOUD_WORK_ORDER_SOURCE_VALUE: ${CAM_CLOUD_WORK_ORDER_SOURCE_VALUE:-}
+      CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH: ${CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH:-平台类/其他}
+      CAM_CLOUD_WORK_ORDER_DEPT_NAME: ${CAM_CLOUD_WORK_ORDER_DEPT_NAME:-成都}
+      CAM_CLOUD_WORK_ORDER_TEAM_NAME: ${CAM_CLOUD_WORK_ORDER_TEAM_NAME:-OpenStack平台运维}
+      CAM_CLOUD_WORK_ORDER_PROCESS_USER_NAMES: ${CAM_CLOUD_WORK_ORDER_PROCESS_USER_NAMES:-}
+      CAM_CLOUD_WORK_ORDER_TITLE_PREFIX: ${CAM_CLOUD_WORK_ORDER_TITLE_PREFIX:-云平台制品验证报告审批}
+      CAM_CLOUD_TIMEOUT_MS: ${CAM_CLOUD_TIMEOUT_MS:-10000}
+      CAM_AAA_BASE_URL: ${CAM_AAA_BASE_URL:-}
+      CAM_AAA_TENANT_NAME: ${CAM_AAA_TENANT_NAME:-}
+      CAM_AAA_ACCESS_SERVER_NAME: ${CAM_AAA_ACCESS_SERVER_NAME:-}
+      CAM_AAA_SHARED_SECRET: ${CAM_AAA_SHARED_SECRET:-}
+      CAM_AAA_TIMEOUT_MS: ${CAM_AAA_TIMEOUT_MS:-10000}
+      CAM_AAA_ALLOW_HTTP: ${CAM_AAA_ALLOW_HTTP:-false}
+    ports:
+      - "${CAM_CORE_API_BIND:-127.0.0.1}:${CAM_CORE_API_PORT:-3102}:3102"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${CAM_DOCKER_SUBNET:-192.168.242.0/24}
+
+  cam-core-web:
+    image: ${CAM_CORE_WEB_IMAGE:-cam-core-web:1.0.0}
+    container_name: cam-core-web
+    read_only: true
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+      - /data:size=16m,mode=0700,uid=10001,gid=10001
+      - /config:size=4m,mode=0700,uid=10001,gid=10001
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      CAM_AGENT_UPSTREAM: ${CAM_AGENT_UPSTREAM:-host.docker.internal:3111}
+    depends_on:
+      - cam-core
+    ports:
+      - "${CAM_CORE_WEB_BIND:-127.0.0.1}:${CAM_CORE_WEB_PORT:-8092}:8080"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+

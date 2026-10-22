@@ -1,0 +1,49 @@
+services:
+  cam-agent:
+    image: ${CAM_AGENT_IMAGE:-cam-agent:1.0.0}
+    container_name: cam-agent
+    read_only: true
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    volumes:
+      - ${CAM_AGENT_DATA_DIR:-/var/lib/cloud-artifact-management/agent}:/data
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3103
+      DATA_DIR: /data/agent
+      CAM_COOKIE_SECURE: ${CAM_COOKIE_SECURE:-true}
+      CAM_TRUST_PROXY: ${CAM_TRUST_PROXY:-192.168.243.0/24}
+      CAM_CORE_URL: ${CAM_CORE_URL:?Set the routable Core API base URL}
+      CAM_CORE_PUBLIC_KEY_B64: ${CAM_CORE_PUBLIC_KEY_B64:-}
+      CAM_CORE_PREVIOUS_PUBLIC_KEY_B64: ${CAM_CORE_PREVIOUS_PUBLIC_KEY_B64:-}
+      CAM_CORE_PREVIOUS_PUBLIC_KEY_EXPIRES_AT: ${CAM_CORE_PREVIOUS_PUBLIC_KEY_EXPIRES_AT:-}
+      CAM_AGENT_POLL_MS: ${CAM_AGENT_POLL_MS:-5000}
+      CAM_AGENT_CHUNK_SIZE: ${CAM_AGENT_CHUNK_SIZE:-4194304}
+      CAM_AGENT_CONCURRENCY: ${CAM_AGENT_CONCURRENCY:-4}
+      CAM_AAA_BASE_URL: ${CAM_AAA_BASE_URL:-}
+      CAM_AAA_TENANT_NAME: ${CAM_AAA_TENANT_NAME:-}
+      CAM_AAA_ACCESS_SERVER_NAME: ${CAM_AAA_ACCESS_SERVER_NAME:-}
+      CAM_AAA_SHARED_SECRET: ${CAM_AAA_SHARED_SECRET:-}
+      CAM_AAA_TIMEOUT_MS: ${CAM_AAA_TIMEOUT_MS:-10000}
+      CAM_AAA_ALLOW_HTTP: ${CAM_AAA_ALLOW_HTTP:-false}
+    ports:
+      - "${CAM_AGENT_API_BIND:-127.0.0.1}:${CAM_AGENT_API_PORT:-3111}:3103"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${CAM_DOCKER_SUBNET:-192.168.243.0/24}
+

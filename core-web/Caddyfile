@@ -9,7 +9,9 @@
   }
 
   handle_path /agent/* {
-    reverse_proxy cam-agent-1:3103
+    # In production Core and Agent may be deployed on separate hosts. The
+    # upstream is therefore supplied by the Core deployment environment.
+    reverse_proxy {$CAM_AGENT_UPSTREAM:host.docker.internal:3111}
   }
 
   handle /api/* {

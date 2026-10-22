@@ -9,10 +9,6 @@ const dataDir = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ?
 const db = await openDatabase(join(dataDir, 'core.sqlite'));
 const auth = new AuthStore(db);
 const users = auth.listUsers();
-if (!users.some((user) => user.status === 'ACTIVE' && user.roles.includes('CORE_SYSTEM_ADMIN'))) {
-  db.close();
-  throw new Error('请先创建有效的 Core 系统管理员');
-}
 if (users.some((user) => user.status === 'ACTIVE' && user.roles.includes('CORE_SECURITY_ADMIN'))) {
   db.close();
   throw new Error('已经存在有效的 Core 安全管理员，无需重复初始化');

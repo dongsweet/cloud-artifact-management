@@ -9,10 +9,6 @@ const dataDir = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ?
 const db = await openDatabase(join(dataDir, 'agent.sqlite'));
 const auth = new AuthStore(db, { roleSet: 'AGENT' });
 const users = auth.listUsers();
-if (!users.some((user) => user.status === 'ACTIVE' && user.roles.includes('AGENT_SYSTEM_ADMIN'))) {
-  db.close();
-  throw new Error('请先创建有效的 Agent 系统管理员');
-}
 if (users.some((user) => user.status === 'ACTIVE' && user.roles.includes('AGENT_SECURITY_ADMIN'))) {
   db.close();
   throw new Error('已经存在有效的 Agent 安全管理员，无需重复初始化');

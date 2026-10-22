@@ -2,6 +2,8 @@
 
 当前实现从传输核心和三个服务骨架开始。服务使用 Node.js 24 LTS、Fastify、原生 ES Modules 和 Node.js 内置 SQLite。
 
+面向隔离网络的 Docker 镜像交付方式、Edge/Core/Agent 独立 Compose 示例、配置字段说明、管理员初始化、更新和维护步骤见[部署指南](docs/deployment-guide.md)。根目录组合式 Compose 文件仅用于开发和测试联调。
+
 ## 本地验证
 
 ```bash
@@ -61,7 +63,7 @@ Caddyfile，并保留其全局 DNS Challenge 配置。浏览器入口为
 docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-core node apps/cam-core/src/bootstrap-admin.js
 ```
 
-系统管理员负责业务和平台运行，不能管理账号。初始化完成后继续执行以下命令创建独立的安全管理员；账号创建、角色分配、禁用和密码重置由安全管理员在 Core 页面完成：
+安全管理员负责账号和角色管理。首次部署可直接运行以下命令创建安全管理员，无需先创建系统管理员；之后可由安全管理员在 Core 页面创建系统管理员及其他账号：
 
 ```bash
 docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-core node apps/cam-core/src/bootstrap-security-admin.js
@@ -77,7 +79,7 @@ docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-core n
 
 Core 账号和会话保存在内网 Core 自己的 SQLite 文件；Edge 不保存本地账号，只缓存 Core 下发的 Edge 授权和短期会话。AAA 接入由 Core 实时认证适配器负责，不改变审批业务页面。
 
-各 Agent 有独立的本地人员授权数据库；首次部署时在对应容器里初始化系统管理员和安全管理员。两个 Agent 分开执行，账号、会话和角色彼此独立。安全管理员脚本只允许在当前没有有效安全管理员时运行，并且要求先存在有效的系统管理员；初始密码通过交互终端输入，首次登录后必须修改。Agent 人员认证配置为直接连接 AAA，不经过 Core；本地管理员用于初始化和受控应急维护。
+各 Agent 有独立的本地人员授权数据库；首次部署时可直接在对应容器里初始化安全管理员，也可单独初始化系统管理员。两个 Agent 分开执行，账号、会话和角色彼此独立。安全管理员脚本只允许在当前没有有效安全管理员时运行；初始密码通过交互终端输入，首次登录后必须修改。Agent 人员认证配置为直接连接 AAA，不经过 Core；本地管理员用于初始化和受控应急维护。
 
 ```bash
 docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-agent-1 node apps/cam-agent/src/bootstrap-admin.js
