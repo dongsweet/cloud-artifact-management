@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { Agent } from 'undici';
 import { DkeyAmAdapter, readAaaConfig } from '../src/aaa-adapter.js';
 
 const baseEnv = {
@@ -12,8 +13,29 @@ const baseEnv = {
 test('DKEY AM configuration validates HTTPS and only reads real-time authentication settings', () => {
   const config = readAaaConfig(baseEnv);
   assert.equal(config.baseUrl, 'https://aaa.test:8443');
+  assert.equal(config.skipTlsVerification, false);
   assert.equal(new DkeyAmAdapter({ config, fetchImpl: async () => new Response('{}') }).enabled(), true);
+  assert.equal(readAaaConfig({ ...baseEnv, CAM_AAA_SKIP_TLS_VERIFICATION: 'true' }).skipTlsVerification, true);
   assert.throws(() => readAaaConfig({ ...baseEnv, CAM_AAA_BASE_URL: 'http://aaa.test:8443' }), /必须使用 HTTPS/);
+});
+
+test('skipping AAA TLS verification is opt-in and applies to probe and authentication requests', async () => {
+  const requests = [];
+  const adapter = new DkeyAmAdapter({ env: baseEnv, fetchImpl: async (url, options) => {
+    requests.push({ url: String(url), options });
+    return new Response(JSON.stringify({ success: true, errorCode: 0, data: {} }), { status: 200 });
+  } });
+  try {
+    const config = readAaaConfig(baseEnv);
+    await adapter.probe({ ...config, skipTlsVerification: true });
+    assert.ok(requests[0].options.dispatcher instanceof Agent, 'unsaved probe option uses a temporary permissive TLS dispatcher');
+    assert.equal(adapter.insecureDispatcher, undefined, 'temporary dispatcher is not retained');
+
+    adapter.updateConfig({ ...config, skipTlsVerification: true });
+    await adapter.authenticate({ loginName: 'u', password: 'p' });
+    assert.ok(requests[1].options.dispatcher instanceof Agent, 'saved option is used for authentication');
+    assert.equal(requests[1].options.dispatcher, adapter.insecureDispatcher);
+  } finally { await adapter.close(); }
 });
 
 test('DKEY AM adapter sends real-time credentials as a form body', async () => {

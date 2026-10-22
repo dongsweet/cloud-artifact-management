@@ -1,3 +1,5 @@
+import { Agent } from 'undici';
+
 const text = (value) => value === undefined || value === null ? '' : String(value).trim();
 
 function failure(message, code, statusCode) {
@@ -30,7 +32,8 @@ export function normalizeAaaConfig(input = {}) {
     accessServerName: text(input.accessServerName),
     sharedSecret: text(input.sharedSecret),
     timeoutMs: Number(input.timeoutMs ?? 10000),
-    allowHttp: input.allowHttp === true || input.allowHttp === 'true'
+    allowHttp: input.allowHttp === true || input.allowHttp === 'true',
+    skipTlsVerification: input.skipTlsVerification === true || input.skipTlsVerification === 'true'
   };
   if (config.baseUrl) {
     let url;
@@ -50,7 +53,8 @@ export function readAaaConfig(env = process.env) {
     accessServerName: configValue(env, 'CAM_AAA_ACCESS_SERVER_NAME'),
     sharedSecret: configValue(env, 'CAM_AAA_SHARED_SECRET'),
     timeoutMs: Number(configValue(env, 'CAM_AAA_TIMEOUT_MS') || 10000),
-    allowHttp: configValue(env, 'CAM_AAA_ALLOW_HTTP') === 'true'
+    allowHttp: configValue(env, 'CAM_AAA_ALLOW_HTTP') === 'true',
+    skipTlsVerification: configValue(env, 'CAM_AAA_SKIP_TLS_VERIFICATION') === 'true'
   });
 }
 
@@ -74,19 +78,28 @@ export class AaaConfigStore {
     const submittedSecret = text(input?.sharedSecret);
     const config = normalizeAaaConfig({ ...current, ...input, sharedSecret: submittedSecret || current.sharedSecret });
     const timestamp = new Date().toISOString();
-    this.db.prepare('INSERT INTO core_aaa_config (config_id, config_json, updated_by, updated_at) VALUES (1, ?, ?, ?) ON CONFLICT(config_id) DO UPDATE SET config_json = excluded.config_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at').run(JSON.stringify({ baseUrl: config.baseUrl, tenantName: config.tenantName, accessServerName: config.accessServerName, timeoutMs: config.timeoutMs, allowHttp: config.allowHttp, sharedSecret: config.sharedSecret }), actorId, timestamp);
+    this.db.prepare('INSERT INTO core_aaa_config (config_id, config_json, updated_by, updated_at) VALUES (1, ?, ?, ?) ON CONFLICT(config_id) DO UPDATE SET config_json = excluded.config_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at').run(JSON.stringify({ baseUrl: config.baseUrl, tenantName: config.tenantName, accessServerName: config.accessServerName, timeoutMs: config.timeoutMs, allowHttp: config.allowHttp, skipTlsVerification: config.skipTlsVerification, sharedSecret: config.sharedSecret }), actorId, timestamp);
     return this.get();
   }
   publicValue() {
     const current = this.get();
-    return { baseUrl: current.config.baseUrl, tenantName: current.config.tenantName, accessServerName: current.config.accessServerName, timeoutMs: current.config.timeoutMs, allowHttp: current.config.allowHttp, source: current.source, updatedBy: current.updatedBy, updatedAt: current.updatedAt, configured: Boolean(current.config.baseUrl && current.config.tenantName && current.config.accessServerName && current.secretConfigured), secretConfigured: current.secretConfigured };
+    return { baseUrl: current.config.baseUrl, tenantName: current.config.tenantName, accessServerName: current.config.accessServerName, timeoutMs: current.config.timeoutMs, allowHttp: current.config.allowHttp, skipTlsVerification: current.config.skipTlsVerification, source: current.source, updatedBy: current.updatedBy, updatedAt: current.updatedAt, configured: Boolean(current.config.baseUrl && current.config.tenantName && current.config.accessServerName && current.secretConfigured), secretConfigured: current.secretConfigured };
   }
 }
 
 export class DkeyAmAdapter {
   constructor({ env = process.env, config = undefined, fetchImpl = globalThis.fetch } = {}) {
-    this.config = config ?? readAaaConfig(env);
+    this.config = normalizeAaaConfig(config ?? readAaaConfig(env));
     this.fetch = fetchImpl;
+    this.insecureDispatcher = this.config.skipTlsVerification ? this.createInsecureDispatcher() : undefined;
+  }
+
+  createInsecureDispatcher() { return new Agent({ connect: { rejectUnauthorized: false } }); }
+
+  dispatcherFor(config) {
+    if (!config.skipTlsVerification || new URL(config.baseUrl).protocol !== 'https:') return { dispatcher: undefined, temporary: false };
+    if (this.config.skipTlsVerification) return { dispatcher: this.insecureDispatcher, temporary: false };
+    return { dispatcher: this.createInsecureDispatcher(), temporary: true };
   }
 
   enabled() {
@@ -94,29 +107,50 @@ export class DkeyAmAdapter {
     return Boolean(this.fetch && baseUrl && tenantName && accessServerName && sharedSecret);
   }
 
-  updateConfig(config) { this.config = normalizeAaaConfig(config); }
+  updateConfig(config) {
+    const next = normalizeAaaConfig(config);
+    const verificationChanged = next.skipTlsVerification !== this.config.skipTlsVerification;
+    const previousDispatcher = this.insecureDispatcher;
+    this.config = next;
+    if (verificationChanged) {
+      this.insecureDispatcher = next.skipTlsVerification ? this.createInsecureDispatcher() : undefined;
+      if (previousDispatcher) void previousDispatcher.close().catch(() => {});
+    }
+  }
+
+  async close() {
+    const dispatcher = this.insecureDispatcher;
+    this.insecureDispatcher = undefined;
+    if (dispatcher) await dispatcher.close();
+  }
 
   async probe(input = this.config) {
     const config = normalizeAaaConfig(input);
     if (!config.baseUrl) throw failure('AAA 地址尚未配置', 'aaa_not_configured', 503);
     const url = new URL(config.baseUrl);
+    const { dispatcher, temporary } = this.dispatcherFor(config);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), config.timeoutMs);
     try {
-      const response = await this.fetch(url, { method: 'GET', redirect: 'manual', signal: controller.signal });
+      const response = await this.fetch(url, { method: 'GET', redirect: 'manual', signal: controller.signal, ...(dispatcher ? { dispatcher } : {}) });
+      await response.arrayBuffer();
       if (response.status >= 500) throw failure(`AAA 服务返回 HTTP ${response.status}`, 'aaa_api_error', 503);
       return { reachable: true, httpStatus: response.status };
     } catch (error) {
       if (error.code === 'aaa_api_error') throw error;
       if (error.name === 'AbortError' || error.cause?.code === 'UND_ERR_ABORTED') throw failure('AAA 连接测试超时，请稍后重试', 'aaa_timeout', 504);
       throw failure(`AAA 连接失败（${url.host}）`, 'aaa_unavailable', 503);
-    } finally { clearTimeout(timer); }
+    } finally {
+      clearTimeout(timer);
+      if (temporary) await dispatcher.close().catch(() => {});
+    }
   }
 
   async authenticate({ loginName, password, terminalIp = undefined, terminalMac = undefined } = {}) {
     if (!this.enabled()) throw failure('AAA 实时认证参数尚未完整配置', 'aaa_not_configured', 503);
     if (!text(loginName) || typeof password !== 'string') throw failure('请输入 AAA 用户名和密码', 'aaa_credentials_invalid', 401);
     const url = new URL('/am/webauth/1/strong/authenticate', `${this.config.baseUrl}/`);
+    const { dispatcher, temporary } = this.dispatcherFor(this.config);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
     try {
@@ -133,7 +167,8 @@ export class DkeyAmAdapter {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: form,
-        signal: controller.signal
+        signal: controller.signal,
+        ...(dispatcher ? { dispatcher } : {})
       });
       const raw = await response.text();
       const value = parseJson(raw, response.status);
@@ -148,6 +183,9 @@ export class DkeyAmAdapter {
       if (error.code === 'aaa_not_configured' || error.code === 'aaa_credentials_invalid' || error.code === 'aaa_rejected' || error.code === 'aaa_api_error') throw error;
       if (error.name === 'AbortError' || error.cause?.code === 'UND_ERR_ABORTED' || error.code === 'UND_ERR_ABORTED') throw failure('AAA 认证请求超时，请稍后重试', 'aaa_timeout', 504);
       throw failure(`AAA 连接失败（${url.host}）：${error.code ?? 'network_error'}`, 'aaa_unavailable', 503);
-    } finally { clearTimeout(timer); }
+    } finally {
+      clearTimeout(timer);
+      if (temporary) await dispatcher.close().catch(() => {});
+    }
   }
 }

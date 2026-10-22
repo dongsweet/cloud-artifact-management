@@ -90,7 +90,7 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
         return body;
       });
       if (enableAuth) registerCoreAuth(server, { auth, keyring, aaaConfigStore, aaaAdapter: resolvedAaaAdapter });
-      server.addHook('onClose', async () => { cancelRotationDeadline?.(); db.close(); });
+      server.addHook('onClose', async () => { cancelRotationDeadline?.(); await resolvedAaaAdapter.close?.(); db.close(); });
     }
   });
   app.decorate('coreStore', store);
