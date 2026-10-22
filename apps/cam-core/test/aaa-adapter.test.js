@@ -19,23 +19,50 @@ test('DKEY AM configuration validates HTTPS and only reads real-time authenticat
   assert.throws(() => readAaaConfig({ ...baseEnv, CAM_AAA_BASE_URL: 'http://aaa.test:8443' }), /必须使用 HTTPS/);
 });
 
-test('skipping AAA TLS verification is opt-in and applies to probe and authentication requests', async () => {
+test('skipping AAA TLS verification is opt-in and applies to configuration tests and authentication requests', async () => {
   const requests = [];
   const adapter = new DkeyAmAdapter({ env: baseEnv, fetchImpl: async (url, options) => {
     requests.push({ url: String(url), options });
-    return new Response(JSON.stringify({ success: true, errorCode: 0, data: {} }), { status: 200 });
+    return new Response(JSON.stringify({ success: true, errorCode: 0, data: { staticPasswordRequired: false } }), { status: 200 });
   } });
   try {
     const config = readAaaConfig(baseEnv);
-    await adapter.probe({ ...config, skipTlsVerification: true });
-    assert.ok(requests[0].options.dispatcher instanceof Agent, 'unsaved probe option uses a temporary permissive TLS dispatcher');
+    await adapter.testConfiguration({ ...config, skipTlsVerification: true }, 'tester');
+    assert.ok(requests[0].options.dispatcher instanceof Agent, 'unsaved test option uses a temporary permissive TLS dispatcher');
     assert.equal(adapter.insecureDispatcher, undefined, 'temporary dispatcher is not retained');
+    assert.equal(new URL(requests[0].url).pathname, '/am/webauth/1/strong/passwordRequirement');
 
     adapter.updateConfig({ ...config, skipTlsVerification: true });
     await adapter.authenticate({ loginName: 'u', password: 'p' });
     assert.ok(requests[1].options.dispatcher instanceof Agent, 'saved option is used for authentication');
     assert.equal(requests[1].options.dispatcher, adapter.insecureDispatcher);
   } finally { await adapter.close(); }
+});
+
+test('DKEY AM configuration test validates device credentials using the password policy endpoint without a password', async () => {
+  let request;
+  const adapter = new DkeyAmAdapter({ env: baseEnv, fetchImpl: async (url, options) => {
+    request = { url: String(url), options };
+    return new Response(JSON.stringify({ success: true, errorCode: 0, data: { staticPasswordRequired: true, dynamicPasswordRequired: false } }), { status: 200 });
+  } });
+  const result = await adapter.testConfiguration(readAaaConfig(baseEnv), 'known-user');
+  const form = new URLSearchParams(String(request.options.body));
+  assert.equal(new URL(request.url).pathname, '/am/webauth/1/strong/passwordRequirement');
+  assert.equal(request.options.method, 'POST');
+  assert.equal(form.get('tenantName'), 'CAM');
+  assert.equal(form.get('accessServerName'), 'CAM API');
+  assert.equal(form.get('sharedSecret'), 'shared-secret');
+  assert.equal(form.get('loginName'), 'known-user');
+  assert.equal(form.has('password'), false);
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.policy, { staticPasswordRequired: true, dynamicPasswordRequired: false, needsGetDynamicPassword: undefined, dynamicPasswordEnforced: undefined });
+});
+
+test('DKEY AM configuration test rejects failed policy lookup and redirects', async () => {
+  const failed = new DkeyAmAdapter({ env: baseEnv, fetchImpl: async () => new Response(JSON.stringify({ success: false, errorCode: 3001, message: 'invalid interface' }), { status: 200 }) });
+  await assert.rejects(() => failed.testConfiguration(readAaaConfig(baseEnv), 'known-user'), (error) => error.code === 'aaa_config_rejected' && /3001/u.test(error.message));
+  const redirected = new DkeyAmAdapter({ env: baseEnv, fetchImpl: async () => new Response('', { status: 302 }) });
+  await assert.rejects(() => redirected.testConfiguration(readAaaConfig(baseEnv), 'known-user'), (error) => error.code === 'aaa_api_redirect' && /HTTP 302/u.test(error.message));
 });
 
 test('DKEY AM adapter sends real-time credentials as a form body', async () => {

@@ -90,10 +90,13 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
 test('AAA accounts authenticate in real time but receive CAM roles from Core account management', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-aaa-auth-'));
   const calls = [];
+  const aaaTestCalls = [];
   let aaaEnabled = true;
   const app = await buildCoreApp({ dataDir, aaaAdapter: {
+    fetch: async () => new Response(),
     enabled: () => aaaEnabled,
-    authenticate: async (credentials) => { calls.push(credentials); if (credentials.password !== 'AAA-password-123') throw Object.assign(new Error('rejected'), { statusCode: 401, code: 'aaa_rejected' }); return { username: credentials.loginName }; }
+    authenticate: async (credentials) => { calls.push(credentials); if (credentials.password !== 'AAA-password-123') throw Object.assign(new Error('rejected'), { statusCode: 401, code: 'aaa_rejected' }); return { username: credentials.loginName }; },
+    testConfiguration: async (config, loginName) => { aaaTestCalls.push({ config, loginName }); return { valid: true, loginName, policy: { staticPasswordRequired: true } }; }
   } });
   try {
     await app.authStore.createUser({ username: 'local-admin', displayName: '本地管理员', password: 'Local-admin-123', roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true });
@@ -114,8 +117,14 @@ test('AAA accounts authenticate in real time but receive CAM roles from Core acc
     const loadedAaaConfig = await app.inject({ method: 'GET', url: '/api/v1/aaa/config', headers: adminHeaders });
     assert.equal(loadedAaaConfig.json().item.skipTlsVerification, true);
     assert.equal(loadedAaaConfig.json().item.sharedSecret, undefined);
-    const aaaTest = await app.inject({ method: 'POST', url: '/api/v1/aaa/test', headers: adminHeaders, payload: { baseUrl: 'https://aaa.example.test:8443', tenantName: 'CAM', accessServerName: 'CAM API', timeoutMs: 12000, skipTlsVerification: true } });
+    const aaaTest = await app.inject({ method: 'POST', url: '/api/v1/aaa/test', headers: adminHeaders, payload: { baseUrl: 'https://aaa.example.test:8443', tenantName: 'CAM', accessServerName: 'CAM API', timeoutMs: 12000, skipTlsVerification: true, testLoginName: 'known-user' } });
     assert.equal(aaaTest.statusCode, 200, aaaTest.body);
+    assert.equal(aaaTest.json().check.loginName, 'known-user');
+    assert.equal(aaaTestCalls[0].config.sharedSecret, 'page-managed-secret');
+    assert.equal(aaaTestCalls[0].config.skipTlsVerification, true);
+    assert.equal(aaaTestCalls[0].loginName, 'known-user');
+    const missingTestUser = await app.inject({ method: 'POST', url: '/api/v1/aaa/test', headers: adminHeaders, payload: { baseUrl: 'https://aaa.example.test:8443', tenantName: 'CAM', accessServerName: 'CAM API', timeoutMs: 12000, skipTlsVerification: true } });
+    assert.equal(missingTestUser.statusCode, 400);
     const deniedAccountResponse = await app.inject({ method: 'POST', url: '/api/v1/users', headers: adminHeaders, payload: { username: 'aaa-denied', displayName: '不应创建', authSource: 'AAA', roles: ['CORE_OPERATOR'] } });
     assert.equal(deniedAccountResponse.statusCode, 403);
     await app.authStore.createUser({ username: 'aaa-security', displayName: 'AAA 安全管理员', password: 'AAA-Security-Password-2026', roles: ['CORE_SECURITY_ADMIN'] });

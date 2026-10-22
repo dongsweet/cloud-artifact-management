@@ -23,6 +23,12 @@ function responseSucceeded(value) {
   return true;
 }
 
+function explicitResponseSuccess(value) {
+  if (!value || typeof value !== 'object') return false;
+  if (value.success === true) return value.errorCode === undefined || String(value.errorCode) === '0';
+  return value.code !== undefined && String(value.code) === '0';
+}
+
 function configValue(env, key) { return text(env?.[key]); }
 
 export function normalizeAaaConfig(input = {}) {
@@ -124,20 +130,54 @@ export class DkeyAmAdapter {
     if (dispatcher) await dispatcher.close();
   }
 
-  async probe(input = this.config) {
+  async testConfiguration(input = this.config, loginName = '') {
     const config = normalizeAaaConfig(input);
-    if (!config.baseUrl) throw failure('AAA 地址尚未配置', 'aaa_not_configured', 503);
-    const url = new URL(config.baseUrl);
+    const username = text(loginName);
+    if (!config.baseUrl || !config.tenantName || !config.accessServerName || !config.sharedSecret) throw failure('AAA 参数尚未完整配置', 'aaa_not_configured', 503);
+    if (!username) throw failure('请输入一个已存在的 AAA 测试用户名', 'aaa_test_user_required', 400);
+    const url = new URL('/am/webauth/1/strong/passwordRequirement', `${config.baseUrl}/`);
     const { dispatcher, temporary } = this.dispatcherFor(config);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), config.timeoutMs);
     try {
-      const response = await this.fetch(url, { method: 'GET', redirect: 'manual', signal: controller.signal, ...(dispatcher ? { dispatcher } : {}) });
-      await response.arrayBuffer();
-      if (response.status >= 500) throw failure(`AAA 服务返回 HTTP ${response.status}`, 'aaa_api_error', 503);
-      return { reachable: true, httpStatus: response.status };
+      const form = new URLSearchParams({
+        tenantName: config.tenantName,
+        accessServerName: config.accessServerName,
+        sharedSecret: config.sharedSecret,
+        loginName: username
+      });
+      const response = await this.fetch(url, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        body: form,
+        signal: controller.signal,
+        ...(dispatcher ? { dispatcher } : {})
+      });
+      const raw = await response.text();
+      if (response.status >= 300 && response.status < 400) throw failure(`AAA 认证接口返回 HTTP ${response.status}，请检查服务地址和接口访问策略`, 'aaa_api_redirect', 502);
+      const value = parseJson(raw, response.status);
+      if (!response.ok) throw failure(`AAA 配置校验请求失败（HTTP ${response.status}）`, 'aaa_api_error', response.status >= 500 ? 503 : 502);
+      if (!explicitResponseSuccess(value)) {
+        const errorCode = value?.errorCode ?? value?.code;
+        const detail = text(value?.message ?? value?.msg);
+        throw failure(`AAA 参数校验失败${errorCode !== undefined ? `（错误码 ${errorCode}）` : ''}${detail ? `：${detail}` : ''}`, 'aaa_config_rejected', 400);
+      }
+      const data = responseData(value) ?? {};
+      const policyFields = ['staticPasswordRequired', 'dynamicPasswordRequired', 'needsGetDynamicPassword', 'dynamicPasswordEnforced'];
+      if (!data || typeof data !== 'object' || Array.isArray(data) || !policyFields.some((field) => typeof data[field] === 'boolean')) throw failure('AAA 配置校验接口未返回用户认证策略', 'aaa_api_error', 502);
+      return {
+        valid: true,
+        loginName: username,
+        policy: {
+          staticPasswordRequired: data.staticPasswordRequired,
+          dynamicPasswordRequired: data.dynamicPasswordRequired,
+          needsGetDynamicPassword: data.needsGetDynamicPassword,
+          dynamicPasswordEnforced: data.dynamicPasswordEnforced
+        }
+      };
     } catch (error) {
-      if (error.code === 'aaa_api_error') throw error;
+      if (error.code === 'aaa_api_error' || error.code === 'aaa_api_redirect' || error.code === 'aaa_config_rejected') throw error;
       if (error.name === 'AbortError' || error.cause?.code === 'UND_ERR_ABORTED') throw failure('AAA 连接测试超时，请稍后重试', 'aaa_timeout', 504);
       throw failure(`AAA 连接失败（${url.host}）`, 'aaa_unavailable', 503);
     } finally {

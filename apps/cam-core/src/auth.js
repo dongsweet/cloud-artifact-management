@@ -98,11 +98,14 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
     if (requirePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     try {
       const current = aaaConfigStore.get().config;
-      const candidate = { ...current, ...(request.body ?? {}), sharedSecret: String(request.body?.sharedSecret ?? '').trim() || current.sharedSecret };
-      if (typeof aaaAdapter?.probe !== 'function') return { ok: true, item: aaaConfigStore.publicValue(), probe: { reachable: true, mode: 'injected' } };
+      const { testLoginName, ...input } = request.body ?? {};
+      const loginName = typeof testLoginName === 'string' ? testLoginName.trim() : '';
+      const candidate = { ...current, ...input, sharedSecret: String(input.sharedSecret ?? '').trim() || current.sharedSecret };
+      if (!loginName || loginName.length > 128) return fail(reply, 400, 'aaa_test_user_required', '请输入一个已存在的 AAA 测试用户名（最多 128 个字符）');
+      if (typeof aaaAdapter?.testConfiguration !== 'function') return { ok: true, item: aaaConfigStore.publicValue(), check: { valid: true, loginName, mode: 'injected' } };
       if (!aaaAdapter?.fetch || !candidate.baseUrl || !candidate.tenantName || !candidate.accessServerName || !candidate.sharedSecret) return fail(reply, 503, 'aaa_not_configured', 'AAA 参数尚未完整配置，请先填写 API 共享密钥');
-      const result = await aaaAdapter.probe(candidate);
-      return { ok: true, item: aaaConfigStore.publicValue(), probe: result };
+      const result = await aaaAdapter.testConfiguration(candidate, loginName);
+      return { ok: true, item: aaaConfigStore.publicValue(), check: result };
     } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'aaa_test_failed', err.message); }
   });
   app.post('/api/v1/users', { bodyLimit: 8192 }, async (request, reply) => {
