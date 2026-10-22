@@ -10,6 +10,13 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /cam-agent-identity-panel/);
   assert.match(html, /轮换周期和旧密钥过渡期由 Core 下发/);
   assert.match(html, /测试配对并同步状态/);
+  assert.match(html, /id="password-title" class="card-title">修改初始密码/);
+  assert.match(html, /id="password-help" class="alert alert-info">首次登录必须修改初始密码/);
+  assert.match(html, /id="password-cancel"[^>]*>取消/);
+  assert.match(html, /function showPasswordChange\(forced\)/);
+  assert.match(html, /showPasswordChange\(true\)/);
+  assert.match(html, /showPasswordChange\(false\)/);
+  assert.match(html, /password-cancel.*?show\('app'\)/s);
   assert.match(html, /本机 Agent 身份<\/h4><div class="d-flex align-items-center gap-2">.*?id="identity-copy"/s);
   assert.match(html, /Core 服务身份<\/h4><div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">.*?id="core-key-replace".*?重新配对.*?id="core-config-save".*?保存 Core 身份.*?id="core-key-cancel".*?取消/s);
   assert.doesNotMatch(html, /id="core-copy"/);
