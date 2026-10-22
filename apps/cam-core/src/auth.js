@@ -1,4 +1,5 @@
 import { EDGE_ROLE_LABELS, ROLE_LABELS, AuthStore, hasCorePermission } from './core-auth-store.js';
+import { queryAuthEvents } from '../../../libs/cam-auth/src/audit-events.js';
 
 const fail = (reply, status, code, message) => reply.code(status).send({ error: { code, message } });
 function cookies(request) {
@@ -83,11 +84,11 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
     return { items: auth.listUsers(), roles: ROLE_LABELS, edgeRoles: EDGE_ROLE_LABELS };
   });
   app.get('/api/v1/aaa/config', async (request, reply) => {
-    if (requirePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
+    if (requirePermission(request, reply, 'aaaRead', '需要系统管理员权限')) return;
     return { item: aaaConfigStore?.publicValue() ?? { configured: false, secretConfigured: false } };
   });
   app.put('/api/v1/aaa/config', { bodyLimit: 4096 }, async (request, reply) => {
-    if (requirePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
+    if (requirePermission(request, reply, 'aaaWrite', '需要系统管理员权限')) return;
     try {
       const saved = aaaConfigStore.save(request.body ?? {}, request.principal.id);
       aaaAdapter?.updateConfig?.(saved.config);
@@ -95,7 +96,7 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
     } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'aaa_config_invalid', err.message); }
   });
   app.post('/api/v1/aaa/test', { bodyLimit: 4096 }, async (request, reply) => {
-    if (requirePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
+    if (requirePermission(request, reply, 'aaaRead', '需要系统管理员权限')) return;
     try {
       const current = aaaConfigStore.get().config;
       const { testLoginName, ...input } = request.body ?? {};
@@ -126,6 +127,11 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
       await auth.changePassword(request.params.id, request.body?.password, request.principal.id);
       return { ok: true, mustChangePassword: true };
     } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'password_reset_failed', err.message); }
+  });
+  app.get('/api/v1/auth-events', async (request, reply) => {
+    if (requirePermission(request, reply, 'auditRead', '需要审计管理员权限')) return;
+    try { return queryAuthEvents(auth.db, 'core_auth_events', request.query ?? {}); }
+    catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'audit_filter_invalid', err.message); }
   });
 }
 

@@ -1,5 +1,9 @@
+import { auditEventsMarkup, mountAuditEvents } from './audit-events.js?v=20261022-audit-permissions';
+import { canEdgePage } from './role-permissions.js?v=20261022-audit-permissions';
+
 let user = null, api, refresh, context, alert, labels = {}, users = [], exported = null;
 let selectedGrantId = null, grantDetailTimer = null, grantDetailLoading = false;
+let loadAuditEvents = null;
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const modal = (id) => bootstrap.Modal.getOrCreateInstance($(`#${id}-modal`));
@@ -29,7 +33,9 @@ function markup() {
     return `<section id="view-${id}" class="d-none"><div class="card"><div class="card-header cam-card-header"><h3 class="card-title">${title}</h3>${action}</div><div class="card-body">${content}</div></div></section>`;
   }
   $('.app-content .container-fluid').insertAdjacentHTML('beforeend', section('users', '账号与角色', '<p class="small text-body-secondary">账号、Core 登录资格、Edge 登录资格和角色统一由 CAM Core 管理。此处只读展示当前已授权的 Edge 人员。</p><div class="table-responsive"><table class="table align-middle"><thead><tr><th>用户名 / 姓名</th><th>Edge 角色</th><th>状态</th><th>说明</th></tr></thead><tbody id="user-rows" data-paginate></tbody></table></div><section id="audit-events-section" class="mt-4 d-none"><h5>最近认证及操作审计</h5><p class="small text-body-secondary">仅审计管理员可查看。记录最近的认证事件和受保护操作。</p><div class="table-responsive"><table class="table table-sm table-hover align-middle"><thead><tr><th>时间</th><th>事件</th><th>调用身份</th><th>来源</th><th>详情</th></tr></thead><tbody id="auth-events" data-paginate></tbody></table></div></section>', '') + section('grants', '下载授权', '<p class="small text-body-secondary">按累计 / 单文件会话次数限制下载；续传复用会话。账号禁用后停止下载。Token 调用记录为授权持有者，不视为责任人本人认证。</p><div class="table-responsive"><table class="table align-middle"><thead><tr><th>授权 / 责任人</th><th>文件数</th><th>已用 / 累计次数</th><th>到期 / 状态</th><th>操作</th></tr></thead><tbody id="grant-rows" data-paginate></tbody></table></div><div id="grant-detail" class="mt-4 d-none"></div>', '<button id="new-grant" class="btn btn-primary btn-sm">创建下载授权</button>'));
-  $('.sidebar-menu').insertAdjacentHTML('beforeend', '<li class="nav-item" id="grants-nav"><a href="#grants" class="nav-link"><span class="nav-icon bi bi-download"></span><p>下载授权</p></a></li><li class="nav-item" id="users-nav"><a href="#users" class="nav-link"><span class="nav-icon bi bi-people"></span><p>账号管理</p></a></li>');
+  $('#audit-events-section')?.remove();
+  $('.app-content .container-fluid').insertAdjacentHTML('beforeend', section('audit', '审计日志', auditEventsMarkup(), ''));
+  $('.sidebar-menu').insertAdjacentHTML('beforeend', '<li class="nav-item" id="grants-nav"><a href="#grants" class="nav-link" data-route="grants"><span class="nav-icon bi bi-download"></span><p>下载授权</p></a></li><li class="nav-item" id="users-nav"><a href="#users" class="nav-link" data-route="users"><span class="nav-icon bi bi-people"></span><p>账号管理</p></a></li><li class="nav-item" id="audit-nav"><a href="#audit" class="nav-link" data-route="audit"><span class="nav-icon bi bi-journal-text"></span><p>审计日志</p></a></li>');
   $('#gate-config-nav').before($('#grants-nav'));
   $('.app-header .container-fluid').insertAdjacentHTML('beforeend', '<div class="ms-auto d-flex gap-2 align-items-center"><span id="account-name" class="small"></span><button id="change-password" class="btn btn-outline-secondary btn-sm">修改密码</button><button id="logout" class="btn btn-outline-secondary btn-sm">退出</button></div>');
   $('#new-package-button').insertAdjacentHTML('beforebegin', '<button id="round-grant" class="btn btn-outline-success btn-sm"><i class="bi bi-download me-1"></i>交付验证</button>');
@@ -37,10 +43,10 @@ function markup() {
 }
 function applyPermissions() {
   document.querySelectorAll('[data-modal], [data-delete-product], [data-delete-release], [data-round-candidate-delete], [data-candidate-delete], #new-round-button, #new-package-button, #import-packages-button, #batch-receive-button, #candidate-edit-button, #candidate-delete-button, #receive-button, #pause-button').forEach((e) => e.classList.toggle('d-none', !hasRole('EDGE_OPERATOR')));
-  $('#users-nav').classList.toggle('d-none', !hasRole('EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'));
-  $('#audit-events-section')?.classList.toggle('d-none', !hasRole('EDGE_AUDITOR'));
-  $('#gate-config-nav').classList.toggle('d-none', !hasRole('EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'));
-  $('#grants-nav').classList.toggle('d-none', !hasRole('EDGE_OPERATOR', 'EDGE_AUDITOR'));
+  $('#users-nav').classList.toggle('d-none', !canEdgePage(user?.roles ?? [], 'users'));
+  $('#audit-nav').classList.toggle('d-none', !canEdgePage(user?.roles ?? [], 'audit'));
+  $('#gate-config-nav').classList.toggle('d-none', !canEdgePage(user?.roles ?? [], 'gate-config'));
+  $('#grants-nav').classList.toggle('d-none', !canEdgePage(user?.roles ?? [], 'grants'));
   for (const id of ['round-grant', 'candidate-grant', 'new-grant']) $(`#${id}`).classList.toggle('d-none', !hasRole('EDGE_OPERATOR'));
   $('#candidate-grant').classList.toggle('d-none', !hasRole('EDGE_OPERATOR') || context().currentCandidate?.status !== 'COMPLETED');
 }
@@ -49,7 +55,7 @@ async function acceptSession(result) {
   $('#account-name').textContent = `${user.displayName} (${user.username})`;
   $('#account-login').classList.add('d-none'); $('.app-wrapper').classList.remove('d-none'); applyPermissions();
   if (user.mustChangePassword) bootstrap.Modal.getOrCreateInstance($('#password-modal'), { backdrop: 'static', keyboard: false }).show();
-  else if (!hasRole('EDGE_OPERATOR', 'EDGE_AUDITOR')) { window.location.hash = '#users'; await refresh(); }
+  else if (!canEdgePage(user.roles ?? [], context().view)) { window.location.hash = `#${['products', 'gate-config', 'users', 'audit', 'grants'].find((view) => canEdgePage(user.roles ?? [], view)) ?? 'products'}`; await refresh(); }
   else await refresh();
 }
 async function submit(form, action, id) {
@@ -58,6 +64,7 @@ async function submit(form, action, id) {
 }
 export async function initAccountUI(options) {
   ({ api, refresh, context, alert } = options); markup();
+  loadAuditEvents = mountAuditEvents($('#view-audit'), api, (error) => alert(error.message, 'danger'));
   new MutationObserver(applyPermissions).observe($('.app-main'), { childList: true, subtree: true });
   $('#login-form').onsubmit = (e) => { e.preventDefault(); submit(e.target, async () => { const r = await api('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ username: $('#login-name').value, password: $('#login-password').value }) }); $('#login-password').value = ''; await acceptSession(r); }, 'login'); };
   $('#logout').onclick = async () => { try { await api('/api/v1/auth/logout', { method: 'POST' }); showLogin(); } catch (e) { alert(e.message, 'danger'); } };
@@ -168,10 +175,13 @@ function saveExport(type) {
 export async function renderAccountView(view) {
   if (view !== 'grants') stopGrantDetailPolling();
   if (view === 'users') {
-    if (!hasRole('EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR')) throw new Error('没有账号查看权限');
+    if (!canEdgePage(user?.roles ?? [], 'users')) throw new Error('没有账号查看权限');
     users = (await api('/api/v1/users')).items;
     $('#user-rows').innerHTML = users.map((u) => `<tr><td>${esc(u.username)}<div class="small">${esc(u.displayName)}</div></td><td>${u.roles.map((r) => esc(labels[r])).join('、')}</td><td>${u.status === 'ACTIVE' ? '启用' : '禁用'}${u.mustChangePassword ? ' / 待改密码' : ''}${u.lockedUntil > Date.now() ? ' / 锁定' : ''}</td><td>-</td></tr>`).join('');
-    if (hasRole('EDGE_AUDITOR')) $('#auth-events').innerHTML = eventRows((await api('/api/v1/auth-events')).items);
+  }
+  if (view === 'audit') {
+    if (!canEdgePage(user?.roles ?? [], 'audit')) throw new Error('没有审计查看权限');
+    await loadAuditEvents?.();
   }
   if (view === 'grants') {
     if (!hasRole('EDGE_OPERATOR', 'EDGE_AUDITOR')) throw new Error('没有下载授权权限');
@@ -217,7 +227,4 @@ async function showGrantDetail(grantId) {
   };
   await load();
   if (selectedGrantId === grantId) grantDetailTimer = window.setInterval(load, 2000);
-}
-function eventRows(events) {
-  return events.map((e) => `<tr><td>${esc(e.created_at)}</td><td>${esc(e.event_type)}</td><td class="small text-break">${esc(e.principal_id)}</td><td>${esc(e.source_address)}</td><td class="small text-break">${esc(e.details_json)}</td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-body-secondary">暂无认证或操作审计记录</td></tr>';
 }

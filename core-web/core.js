@@ -1,6 +1,8 @@
 import { renderGatePairing } from './gate-pairing.js?v=20261020-peer-save-feedback';
 import { refreshPaginatedTables } from './table-pagination.js?v=20261020-table-pagination';
 import { mountArtifactCatalog } from './artifact-catalog.js?v=20261020-shared-artifact-catalog';
+import { auditEventsMarkup, mountAuditEvents } from './audit-events.js?v=20261022-audit-permissions';
+import { CORE_PAGE_PERMISSIONS, canCorePage, hasCorePermission } from './role-permissions.js?v=20261022-audit-permissions';
 let csrf = null;
 document.querySelector('#gate-pairing-mount').innerHTML = renderGatePairing('core');
 let forcedPasswordChange = false;
@@ -16,30 +18,14 @@ let cloudMappings = null;
 let requestPollTimer = null;
 let gatePeerTrusted = false;
 const $ = (selector) => document.querySelector(selector);
-const pagePermissions = Object.freeze({
-  requests: 'businessRead',
-  artifacts: 'businessRead',
-  distribution: 'businessRead',
-  agents: 'configRead',
-  'cloud-config': 'configRead',
-  'aaa-config': 'configRead',
-  'gate-config': 'configRead',
-  users: 'userAdmin'
-});
+const pagePermissions = CORE_PAGE_PERMISSIONS;
 function canCore(permission) {
-  const roles = currentUser?.roles ?? [];
-  return {
-    businessRead: ['CORE_SYSTEM_ADMIN', 'CORE_OPERATOR', 'CORE_AUDITOR'],
-    businessWrite: ['CORE_SYSTEM_ADMIN', 'CORE_OPERATOR'],
-    configRead: ['CORE_SYSTEM_ADMIN', 'CORE_SECURITY_ADMIN', 'CORE_AUDITOR'],
-    configWrite: ['CORE_SYSTEM_ADMIN', 'CORE_SECURITY_ADMIN'],
-    userAdmin: ['CORE_SECURITY_ADMIN']
-  }[permission]?.some((role) => roles.includes(role));
+  return hasCorePermission(currentUser?.roles ?? [], permission);
 }
 function applyRoleMenu() {
   document.querySelectorAll('[data-menu-group-item]').forEach((item) => {
     const page = item.querySelector('[data-page]')?.dataset.page;
-    item.classList.toggle('d-none', !canCore(pagePermissions[page]));
+    item.classList.toggle('d-none', !canCorePage(currentUser?.roles ?? [], page));
   });
   document.querySelectorAll('[data-menu-group]').forEach((header) => {
     const group = header.dataset.menuGroup;
@@ -49,7 +35,7 @@ function applyRoleMenu() {
   $('#distribution-form')?.classList.toggle('d-none', !canCore('businessWrite'));
 }
 function firstAllowedPage() {
-  return Object.keys(pagePermissions).find((page) => canCore(pagePermissions[page])) ?? 'requests';
+  return Object.keys(pagePermissions).find((page) => canCorePage(currentUser?.roles ?? [], page)) ?? 'requests';
 }
 function mountAaaConfigPage() {
   const cloudLink = document.querySelector('[data-page="cloud-config"]');
@@ -58,6 +44,18 @@ function mountAaaConfigPage() {
   $('#page-cloud-config').insertAdjacentHTML('beforebegin', '<section id="page-aaa-config" class="d-none"><div class="card"><div class="card-header cam-action-header"><h3 class="card-title">AAA 对接配置</h3><span id="aaa-config-badge" class="badge text-bg-secondary">未配置</span></div><form id="aaa-config-form"><div class="card-body"><div class="alert alert-info"><i class="bi bi-info-circle me-1"></i>这里维护 DKEY AM 的连接参数。共享密钥只在提交时写入 Core 数据库，页面刷新后不回显，仅显示是否已配置。</div><div id="aaa-config-error" class="alert alert-danger d-none"></div><div class="row g-3"><div class="col-md-6"><label class="form-label" for="aaa-base-url">AAA 服务地址</label><input id="aaa-base-url" name="baseUrl" class="form-control" type="url" placeholder="https://aaa.example.cn:8443" required></div><div class="col-md-6"><label class="form-label" for="aaa-timeout">请求超时（毫秒）</label><input id="aaa-timeout" name="timeoutMs" class="form-control" type="number" min="1000" max="120000" required></div><div class="col-md-6"><label class="form-label" for="aaa-tenant">租户名称</label><input id="aaa-tenant" name="tenantName" class="form-control" maxlength="128" required></div><div class="col-md-6"><label class="form-label" for="aaa-access-server">认证设备名称</label><input id="aaa-access-server" name="accessServerName" class="form-control" maxlength="128" required></div><div class="col-md-8"><label class="form-label" for="aaa-shared-secret">API 共享密钥</label><input id="aaa-shared-secret" name="sharedSecret" class="form-control" type="password" autocomplete="new-password" placeholder="留空表示保持当前密钥"></div><div class="col-md-4"><label class="form-label" for="aaa-secret-status">当前状态</label><input id="aaa-secret-status" class="form-control bg-body-secondary" readonly></div><div class="col-12"><div class="form-check form-switch"><input id="aaa-skip-tls-verification" name="skipTlsVerification" class="form-check-input" type="checkbox"><label class="form-check-label" for="aaa-skip-tls-verification">跳过 HTTPS 证书校验</label><div class="form-text">勾选后不验证证书颁发机构、有效期和主机名。</div></div></div><div id="aaa-config-status" class="col-12 small text-body-secondary" role="status"></div></div></div><div class="card-footer d-flex justify-content-end gap-2"><button id="aaa-test" type="button" class="btn btn-outline-primary"><i class="bi bi-plug me-1"></i>测试配置</button><button class="btn btn-primary" type="submit"><i class="bi bi-check-lg me-1"></i>保存配置</button></div></form></div><dialog id="aaa-test-dialog" class="cam-aaa-test-modal" aria-labelledby="aaa-test-title"><div class="card"><div class="card-header d-flex align-items-center justify-content-between"><h3 id="aaa-test-title" class="card-title mb-0">测试 AAA 用户</h3><button id="aaa-test-close" type="button" class="btn-close" aria-label="关闭"></button></div><div class="card-body"><label class="form-label" for="aaa-test-login-name">测试用户名</label><input id="aaa-test-login-name" class="form-control" maxlength="128" autocomplete="off" aria-describedby="aaa-test-help"><div id="aaa-test-help" class="form-text">填写一个现有 AAA 用户；无需密码，不保存。</div><div id="aaa-test-result" class="alert d-none mt-3 mb-0" role="status" aria-live="polite"></div></div><div class="card-footer d-flex justify-content-end gap-2"><button id="aaa-test-cancel" type="button" class="btn btn-outline-secondary">关闭</button><button id="aaa-test-submit" type="button" class="btn btn-primary"><i class="bi bi-plug me-1"></i>开始校验</button></div></div></dialog></section>');
 }
 mountAaaConfigPage();
+function mountAuditPage() {
+  if (document.querySelector('#page-audit')) return;
+  document.querySelector('.app-content .container-fluid').insertAdjacentHTML('beforeend', `<section id="page-audit" class="d-none"><div class="card"><div class="card-header"><h3 class="card-title">审计日志</h3></div><div class="card-body">${auditEventsMarkup()}</div></div></section>`);
+  const usersItem = document.querySelector('[data-page="users"]')?.parentElement;
+  if (usersItem) {
+    usersItem.dataset.menuGroupItem = 'security';
+    usersItem.insertAdjacentHTML('beforebegin', '<li class="nav-header" data-menu-group="security">账号安全</li>');
+    usersItem.insertAdjacentHTML('afterend', '<li class="nav-header" data-menu-group="audit">审计</li><li class="nav-item" data-menu-group-item="audit"><a href="#audit" class="nav-link" data-page="audit"><span class="nav-icon bi bi-journal-text"></span><p>审计日志</p></a></li>');
+  }
+}
+mountAuditPage();
+const loadAuditEvents = mountAuditEvents($('#page-audit'), api, (error) => message(error.message, 'danger'));
 $('#login .card-title').textContent = 'CAM Core · 内网发布审批';
 $('.sidebar-brand .brand-text').textContent = 'CAM Core';
 $('#page-artifacts .card-title').textContent = '正式制品';
@@ -394,21 +392,22 @@ async function loadGateKeys({ preserveInputs = false } = {}) {
   return item;
 }
 function showPage(page) {
-  const validPages = new Set(['requests', 'artifacts', 'distribution', 'cloud-config', 'aaa-config', 'gate-config', 'agents', 'users']);
-  if (!validPages.has(page)) page = 'requests';
-  if (!canCore(pagePermissions[page])) page = firstAllowedPage();
+  if (!Object.hasOwn(pagePermissions, page)) page = firstAllowedPage();
+  if (!canCorePage(currentUser?.roles ?? [], page)) page = firstAllowedPage();
   if (window.location.hash.slice(1).split('?')[0] !== page) history.replaceState(null, '', `#${page}`);
-  const artifacts = page === 'artifacts'; const distribution = page === 'distribution'; const cloud = page === 'cloud-config'; const aaa = page === 'aaa-config'; const gate = page === 'gate-config'; const agents = page === 'agents'; const users = page === 'users';
-  $('#page-requests').classList.toggle('d-none', artifacts || distribution || cloud || aaa || gate || agents || users); $('#page-artifacts').classList.toggle('d-none', !artifacts); $('#page-distribution').classList.toggle('d-none', !distribution); $('#page-cloud-config').classList.toggle('d-none', !cloud); $('#page-aaa-config').classList.toggle('d-none', !aaa); $('#page-gate-config').classList.toggle('d-none', !gate); $('#page-agents').classList.toggle('d-none', !agents); $('#page-users').classList.toggle('d-none', !users);
-  $('#page-title').textContent = artifacts ? '正式制品' : distribution ? 'Agent 分发' : cloud ? '云管对接配置' : aaa ? 'AAA 对接配置' : gate ? '网闸对接配置' : agents ? 'Agent 管理' : users ? '账号管理' : '审批请求';
+  const pages = ['requests', 'artifacts', 'distribution', 'cloud-config', 'aaa-config', 'gate-config', 'agents', 'users', 'audit'];
+  for (const item of pages) $(`#page-${item}`).classList.toggle('d-none', item !== page);
+  const titles = { requests: '审批请求', artifacts: '正式制品', distribution: 'Agent 分发', 'cloud-config': '云管对接配置', 'aaa-config': 'AAA 对接配置', 'gate-config': '网闸对接配置', agents: 'Agent 管理', users: '账号管理', audit: '审计日志' };
+  $('#page-title').textContent = titles[page] ?? '审批请求';
   document.querySelectorAll('[data-page]').forEach((link) => link.classList.toggle('active', link.dataset.page === page));
-  if (artifacts) loadArtifacts();
-  if (distribution) loadDistribution();
-  if (cloud) loadCloudConfig();
-  if (aaa) loadAaaConfig();
-  if (gate) loadGateConfig();
-  if (agents) loadAgents();
-  if (users) loadUsers();
+  if (page === 'artifacts') loadArtifacts();
+  if (page === 'distribution') loadDistribution();
+  if (page === 'cloud-config') loadCloudConfig();
+  if (page === 'aaa-config') loadAaaConfig();
+  if (page === 'gate-config') loadGateConfig();
+  if (page === 'agents') loadAgents();
+  if (page === 'users') loadUsers();
+  if (page === 'audit') void loadAuditEvents();
 }
 function pageFromHash() {
   const value = window.location.hash.slice(1).split('?')[0];

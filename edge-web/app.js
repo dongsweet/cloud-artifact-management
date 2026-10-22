@@ -1,6 +1,7 @@
 import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js?v=20261021-unified-identity';
 import { renderGatePairing } from './gate-pairing.js?v=20261020-peer-save-feedback';
 import { refreshPaginatedTables } from './table-pagination.js?v=20261020-table-pagination';
+import { canEdgePage } from './role-permissions.js?v=20261022-audit-permissions';
 const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, currentRoundCandidates: [], currentRoundQueue: [], batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null, nextRoundPreview: null };
 document.querySelector('#gate-pairing-mount').innerHTML = renderGatePairing('edge');
 let importPreviewRequestId = 0;
@@ -45,7 +46,7 @@ function routeContext() {
   const [viewPart, queryPart = ''] = window.location.hash.slice(1).split('?');
   const params = new URLSearchParams(queryPart);
   return {
-    view: ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'gate-config', 'users', 'grants'].includes(viewPart) ? viewPart : 'products',
+    view: ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'gate-config', 'users', 'grants', 'audit'].includes(viewPart) ? viewPart : 'products',
     productId: params.get('productId'),
     releaseId: params.get('releaseId'),
     roundId: params.get('roundId'),
@@ -59,18 +60,22 @@ function paramsForState(overrides = {}) {
 }
 
 function renderShell(view) {
-  const views = ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'gate-config', 'users', 'grants'];
+  const views = ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'gate-config', 'users', 'grants', 'audit'];
   views.forEach((name) => $(`#view-${name}`).classList.toggle('d-none', name !== view));
   const activeRoute = view === 'release-detail' ? 'rounds' : view === 'candidate-detail' ? 'candidates' : view;
   document.querySelectorAll('.sidebar-menu a').forEach((link) => link.classList.toggle('active', (link.dataset.route ?? link.hash.slice(1)) === activeRoute));
-  const titles = { products: '软件产品', releases: '发布版本', rounds: '候选轮次', candidates: '候选包', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情', 'gate-config': '网闸对接配置', users: '账号管理', grants: '下载授权' };
+  document.querySelectorAll('.sidebar-menu a').forEach((link) => {
+    const route = link.dataset.route ?? link.hash.slice(1);
+    link.parentElement.classList.toggle('d-none', !canEdgePage(currentUser()?.roles ?? [], route));
+  });
+  const titles = { products: '软件产品', releases: '发布版本', rounds: '候选轮次', candidates: '候选包', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情', 'gate-config': '网闸对接配置', users: '账号管理', grants: '下载授权', audit: '审计日志' };
   $('#page-title').textContent = titles[view] ?? '软件产品';
 }
 
 function renderBreadcrumb() {
   const labels = [];
   const product = state.products.find((item) => item.productId === state.productId);
-  if (state.view === 'users' || state.view === 'grants') labels.push([state.view === 'users' ? '账号管理' : '下载授权']);
+  if (state.view === 'users' || state.view === 'grants' || state.view === 'audit') labels.push([{ users: '账号管理', grants: '下载授权', audit: '审计日志' }[state.view]]);
   else if (state.view === 'products') labels.push(['软件产品']);
   else if (state.view === 'releases') {
     if (state.productId) labels.push([product?.name ?? '软件产品', routeHash('releases', { productId: state.productId })]);
@@ -757,11 +762,16 @@ async function renderRoute() {
   if (!currentUser() || currentUser().mustChangePassword) return;
   const generation = ++state.routeGeneration;
   const route = routeContext();
+  if (!canEdgePage(currentUser().roles ?? [], route.view)) {
+    const fallback = ['products', 'gate-config', 'users', 'audit', 'grants'].find((view) => canEdgePage(currentUser().roles ?? [], view)) ?? 'products';
+    if (window.location.hash !== `#${fallback}`) window.location.hash = `#${fallback}`;
+    return;
+  }
   Object.assign(state, route);
   window.clearInterval(state.queueTimer);
   renderShell(state.view);
   try {
-    if (state.view === 'users' || state.view === 'grants') await renderAccountView(state.view);
+    if (state.view === 'users' || state.view === 'grants' || state.view === 'audit') await renderAccountView(state.view);
     if (state.view === 'products') await loadProducts(generation);
     if (state.view === 'releases') await loadReleases(generation);
     if (state.view === 'rounds') await loadRounds(generation);

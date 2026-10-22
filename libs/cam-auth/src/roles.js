@@ -28,20 +28,6 @@ export const AGENT_ROLE_LABELS = Object.freeze({
   AGENT_AUDITOR: '审计管理员'
 });
 
-// 业务路由使用的最小权限集合。页面可以据此隐藏入口，服务端仍必须逐请求校验。
-export const EDGE_PERMISSION_ROLES = Object.freeze({
-  candidateWrite: ['EDGE_OPERATOR'],
-  candidateRead: ['EDGE_SYSTEM_ADMIN', 'EDGE_OPERATOR', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'],
-  validatorWrite: ['EDGE_OPERATOR'],
-  validatorRead: ['EDGE_SYSTEM_ADMIN', 'EDGE_OPERATOR', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'],
-  releaseDecision: ['EDGE_OPERATOR'],
-  configWrite: ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN'],
-  configRead: ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'],
-  userAdminWrite: ['EDGE_SECURITY_ADMIN'],
-  userAdminRead: ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN', 'EDGE_AUDITOR'],
-  auditRead: ['EDGE_AUDITOR']
-});
-
 export const AGENT_PERMISSION_ROLES = Object.freeze({
   businessRead: ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN', 'AGENT_OPERATOR', 'AGENT_AUDITOR'],
   businessWrite: ['AGENT_SYSTEM_ADMIN', 'AGENT_OPERATOR'],
@@ -51,13 +37,31 @@ export const AGENT_PERMISSION_ROLES = Object.freeze({
   deliveryWrite: ['AGENT_SYSTEM_ADMIN', 'AGENT_OPERATOR']
 });
 
-// 系统管理员负责平台运行和技术配置；账号与角色管理始终只属于安全管理员。
+// Core 与 Edge 共用同一套职责边界：业务由操作员维护，系统管理员负责平台配置，
+// 安全管理员管理账号，审计管理员只读查看业务和审计记录。
 export const CORE_PERMISSION_ROLES = Object.freeze({
-  businessRead: ['CORE_SYSTEM_ADMIN', 'CORE_OPERATOR', 'CORE_AUDITOR'],
-  businessWrite: ['CORE_SYSTEM_ADMIN', 'CORE_OPERATOR'],
-  configRead: ['CORE_SYSTEM_ADMIN', 'CORE_SECURITY_ADMIN', 'CORE_AUDITOR'],
-  configWrite: ['CORE_SYSTEM_ADMIN', 'CORE_SECURITY_ADMIN'],
-  userAdmin: ['CORE_SECURITY_ADMIN']
+  businessRead: ['CORE_OPERATOR', 'CORE_AUDITOR'],
+  businessWrite: ['CORE_OPERATOR'],
+  configRead: ['CORE_SYSTEM_ADMIN'],
+  configWrite: ['CORE_SYSTEM_ADMIN'],
+  aaaRead: ['CORE_SYSTEM_ADMIN'],
+  aaaWrite: ['CORE_SYSTEM_ADMIN'],
+  userAdmin: ['CORE_SECURITY_ADMIN'],
+  auditRead: ['CORE_AUDITOR']
+});
+
+// Edge 账号由 Core 统一维护；Edge 只提供安全管理员的只读账号清单。
+export const EDGE_PERMISSION_ROLES = Object.freeze({
+  candidateWrite: ['EDGE_OPERATOR'],
+  candidateRead: ['EDGE_OPERATOR', 'EDGE_AUDITOR'],
+  validatorWrite: ['EDGE_OPERATOR'],
+  validatorRead: ['EDGE_OPERATOR', 'EDGE_AUDITOR'],
+  releaseDecision: ['EDGE_OPERATOR'],
+  configWrite: ['EDGE_SYSTEM_ADMIN'],
+  configRead: ['EDGE_SYSTEM_ADMIN'],
+  userAdminWrite: ['EDGE_SECURITY_ADMIN'],
+  userAdminRead: ['EDGE_SECURITY_ADMIN'],
+  auditRead: ['EDGE_AUDITOR']
 });
 
 export function normalizeCoreRoles(roles) {
@@ -74,6 +78,12 @@ export function hasCorePermission(roles, permission) {
   if (!Array.isArray(roles)) return false;
   const normalized = normalizeCoreRoles(roles);
   return (CORE_PERMISSION_ROLES[permission] ?? []).some((role) => normalized.includes(role));
+}
+
+export function hasEdgePermission(roles, permission) {
+  if (!Array.isArray(roles)) return false;
+  const normalized = normalizeEdgeRoles(roles);
+  return (EDGE_PERMISSION_ROLES[permission] ?? []).some((role) => normalized.includes(role));
 }
 
 export function hasAgentPermission(roles, permission) {

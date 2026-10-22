@@ -57,12 +57,22 @@ test('Edge 最近认证及操作审计只对审计管理员开放', async () => 
   try {
     app.authStore?.event?.('TEST_EVENT', 'test-user');
     assert.equal((await app.inject({ url: '/api/v1/auth-events' })).statusCode, 403, '系统管理员不应读取认证和操作审计');
+    assert.equal((await app.inject({ url: '/api/v1/products' })).statusCode, 403, '系统管理员不应进入业务页面');
+    assert.equal((await app.inject({ url: '/api/v1/gate/config' })).statusCode, 200, '系统管理员应管理网闸对接配置');
     roles = ['EDGE_SECURITY_ADMIN'];
     assert.equal((await app.inject({ url: '/api/v1/auth-events' })).statusCode, 403, '安全管理员不应读取认证和操作审计');
+    assert.equal((await app.inject({ url: '/api/v1/gate/config' })).statusCode, 403, '安全管理员不应管理平台对接配置');
+    assert.equal((await app.inject({ url: '/api/v1/products' })).statusCode, 403, '安全管理员不应进入业务页面');
     roles = ['EDGE_AUDITOR'];
     const response = await app.inject({ url: '/api/v1/auth-events' });
     assert.equal(response.statusCode, 200, response.body);
     assert.ok(Array.isArray(response.json().items));
+    const auditPage = await app.inject({ url: '/api/v1/auth-events?limit=1&offset=0&search=TEST_EVENT' });
+    assert.equal(auditPage.statusCode, 200, auditPage.body);
+    assert.equal(auditPage.json().total, 1);
+    assert.equal(auditPage.json().items.length, 1);
+    assert.equal((await app.inject({ url: '/api/v1/products' })).statusCode, 200, '审计管理员可只读追溯业务信息');
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'denied' } })).statusCode, 403, '审计管理员不能写业务数据');
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 

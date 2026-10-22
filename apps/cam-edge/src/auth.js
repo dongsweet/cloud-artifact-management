@@ -1,5 +1,6 @@
 import { ROLE_LABELS } from './auth-store.js';
 import { EDGE_PERMISSION_ROLES, normalizeEdgeRoles } from '../../../libs/cam-auth/src/roles.js';
+import { queryAuthEvents } from '../../../libs/cam-auth/src/audit-events.js';
 import { randomBytes } from 'node:crypto';
 
 const fail = (reply, status, code, message) => reply.code(status).send({ error: { code, message } });
@@ -135,5 +136,8 @@ export function registerAuth(app, { auth, principalProvider, keyring, gateConfig
   app.post('/api/v1/users/:id/password', { bodyLimit: 4096 }, async (request, reply) => {
     return fail(reply, 403, 'users_managed_by_core', 'CAM 账号密码统一由 Core 管理');
   });
-  app.get('/api/v1/auth-events', async () => ({ items: auth.db.prepare('SELECT event_id, principal_id, event_type, source_address, details_json, created_at FROM edge_auth_events ORDER BY rowid DESC LIMIT 200').all() }));
+  app.get('/api/v1/auth-events', async (request, reply) => {
+    try { return queryAuthEvents(auth.db, 'edge_auth_events', request.query ?? {}); }
+    catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'audit_filter_invalid', err.message); }
+  });
 }
