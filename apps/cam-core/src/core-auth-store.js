@@ -114,11 +114,11 @@ export class AuthStore {
       const current = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(row.user_id);
       if (!current || !this.enabledForScope(current, scope) || current.locked_until > this.clock()) {
         this.event('AAA_LOGIN_FAILED', row.user_id, { reason: 'CAM_ACCOUNT_UNAVAILABLE' }, address);
-        throw failure('用户名或密码错误，连续失败后需稍后重试', 401, 'login_failed');
+        throw failure('用户名或密码错误', 401, 'login_failed');
       }
       if (!this.aaaAdapter?.enabled()) {
         this.event('AAA_LOGIN_FAILED', row.user_id, { reason: 'AAA_NOT_CONFIGURED' }, address);
-        throw failure('AAA 实时认证尚未配置，请联系 Core 管理员', 503, 'aaa_not_configured');
+        throw failure('登录暂不可用，请稍后重试', 503, 'login_unavailable');
       }
       try { await this.aaaAdapter.authenticate({ loginName: current.username, password }); }
       catch (error) {
@@ -129,13 +129,13 @@ export class AuthStore {
           this.db.prepare('UPDATE core_users SET failed_attempts = ?, locked_until = ? WHERE user_id = ?').run(failedAttempts, lock, row.user_id);
         }
         this.event('AAA_LOGIN_FAILED', row.user_id, { reason: error.code ?? 'AAA_REJECTED' }, address);
-        if (error.statusCode !== 401) throw error;
-        throw failure('AAA 用户名或密码错误', 401, 'login_failed');
+        if (error.statusCode !== 401) throw failure('登录暂不可用，请稍后重试', 503, 'login_unavailable');
+        throw failure('用户名或密码错误', 401, 'login_failed');
       }
       const latest = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(row.user_id);
       if (!latest || !this.enabledForScope(latest, scope) || latest.auth_source !== 'AAA') {
         this.event('AAA_LOGIN_FAILED', row.user_id, { reason: 'CAM_ACCOUNT_CHANGED' }, address);
-        throw failure('账号已禁用或认证来源已变更', 401, 'login_failed');
+        throw failure('用户名或密码错误', 401, 'login_failed');
       }
       return this.finishLogin(latest, { address, userAgent, scope });
     }
@@ -150,7 +150,7 @@ export class AuthStore {
         this.db.prepare('UPDATE core_users SET failed_attempts = ?, locked_until = ? WHERE user_id = ?').run(attempts, lock, current.user_id);
       }
       this.event('LOGIN_FAILED', row?.user_id, {}, address);
-      throw failure('用户名或密码错误，连续失败后需稍后重试', 401, 'login_failed');
+      throw failure('用户名或密码错误', 401, 'login_failed');
     }
     return this.finishLogin(current, { address, userAgent, scope });
   }

@@ -145,9 +145,16 @@ test('AAA accounts authenticate in real time but receive CAM roles from Core acc
     assert.equal(denied.statusCode, 403);
     const rejected = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'aaa-operator', password: 'wrong-password' } });
     assert.equal(rejected.statusCode, 401);
+    assert.equal(rejected.json().error.message, '用户名或密码错误');
+    assert.doesNotMatch(rejected.json().error.message, /AAA|本地/u);
+    const rejectedLocal = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'local-admin', password: 'wrong-password' } });
+    assert.equal(rejectedLocal.statusCode, 401);
+    assert.equal(rejectedLocal.json().error.message, rejected.json().error.message);
     aaaEnabled = false;
     const unconfigured = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'aaa-operator', password: 'AAA-password-123' } });
     assert.equal(unconfigured.statusCode, 503);
+    assert.equal(unconfigured.json().error.message, '登录暂不可用，请稍后重试');
+    assert.doesNotMatch(JSON.stringify(unconfigured.json().error), /AAA|本地/u);
     await assert.rejects(() => app.authStore.changePassword(account.id, 'Local-should-not-work-123', null), (error) => error.statusCode === 403 && error.code === 'external_password_managed');
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
