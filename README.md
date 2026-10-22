@@ -77,6 +77,15 @@ docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-core n
 
 Core 账号和会话保存在内网 Core 自己的 SQLite 文件；Edge 不保存本地账号，只缓存 Core 下发的 Edge 授权和短期会话。AAA 接入由 Core 实时认证适配器负责，不改变审批业务页面。
 
+各 Agent 有独立的本地人员授权数据库；首次部署时在对应容器里初始化系统管理员和安全管理员。两个 Agent 分开执行，账号、会话和角色彼此独立。安全管理员脚本只允许在当前没有有效安全管理员时运行，并且要求先存在有效的系统管理员；初始密码通过交互终端输入，首次登录后必须修改。Agent 人员认证配置为直接连接 AAA，不经过 Core；本地管理员用于初始化和受控应急维护。
+
+```bash
+docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-agent-1 node apps/cam-agent/src/bootstrap-admin.js
+docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-agent-1 node apps/cam-agent/src/bootstrap-security-admin.js
+docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-agent-2 node apps/cam-agent/src/bootstrap-admin.js
+docker compose --env-file deploy/.env -f compose.direct.yaml exec -it cam-agent-2 node apps/cam-agent/src/bootstrap-security-admin.js
+```
+
 `CAM_EDGE_DATA_DIR`、`CAM_CORE_DATA_DIR`、`CAM_AGENT_1_DATA_DIR` 和 `CAM_AGENT_2_DATA_DIR` 是宿主机本地目录，分别保存
 各安全区的 SQLite 数据库和制品文件。两个 Agent 使用独立数据目录，容器只把这些目录绑定到 `/data`，业务数据不再存放在
 Docker volume 中。升级镜像或重建容器前先执行 `sudo -E sh deploy/init-data-directories.sh`。
