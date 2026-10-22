@@ -50,7 +50,9 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /data-agent-permission="configRead"/);
   assert.match(html, /data-agent-permission="businessRead"/);
   assert.match(html, /function agentCan\(permission\)/);
-  assert.match(html, /const required=\{identity:'configRead',artifacts:'businessRead',tasks:'businessRead',delivery:'deliveryRead',users:'userAdmin',audit:'auditRead'\}/);
+  assert.match(html, /const required=\{identity:'configRead','aaa-config':'configRead',artifacts:'businessRead',tasks:'businessRead',delivery:'deliveryRead',users:'userAdmin',audit:'auditRead'\}/);
+  assert.match(html, /data-page="aaa-config" data-agent-permission="configRead"/);
+  assert.match(html, /mountAaaConfig/);
   assert.match(html, /agentCan\('businessWrite'\)\?async\(item\)/);
   assert.doesNotMatch(html, /window\.alert\s*\(|window\.confirm\s*\(|\balert\s*\(|\bconfirm\s*\(/);
 });

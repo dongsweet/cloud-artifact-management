@@ -9,7 +9,7 @@ import { openDatabase } from '../../../libs/cam-sqlite/src/database.js';
 import { AuthStore } from '../../cam-core/src/core-auth-store.js';
 import { AGENT_PERMISSION_ROLES, AGENT_ROLE_LABELS, hasAgentPermission } from '../../../libs/cam-auth/src/roles.js';
 import { queryAuthEvents } from '../../../libs/cam-auth/src/audit-events.js';
-import { DkeyAmAdapter } from '../../cam-core/src/aaa-adapter.js';
+import { AaaConfigStore, DkeyAmAdapter, registerAaaConfigRoutes } from '../../../libs/cam-aaa/src/adapter.js';
 import { fingerprint, randomNonce, signRequest, verifyResponse } from '../../../libs/cam-agent-auth/src/protocol.js';
 import { createIdentityRotation, loadAgentIdentity } from './identity-rotation.js';
 import { agentPage } from './web.js';
@@ -53,7 +53,8 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   let agentId = legacyAgentId;
   const db = await openDatabase(join(dataDir, 'agent.sqlite'));
   // AAA authentication is direct from Agent; Core is only the artifact source.
-  const agentAaaAdapter = aaaAdapter ?? new DkeyAmAdapter({ env: process.env });
+  const aaaConfigStore = new AaaConfigStore(db, { env: process.env, table: 'agent_aaa_config' });
+  const agentAaaAdapter = aaaAdapter ?? new DkeyAmAdapter({ config: aaaConfigStore.get().config, fetchImpl });
   const auth = new AuthStore(db, { roleSet: 'AGENT', aaaAdapter: agentAaaAdapter });
   const delivery = new AgentDeliveryStore({ db, dataDir });
   const coreConnection = new CoreConnectionStore(db, { coreUrl, corePublicKey, previousPublicKey: corePreviousPublicKey, previousPublicKeyExpiresAt: corePreviousPublicKeyExpiresAt });
@@ -87,6 +88,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   app.get('/assets/artifact-catalog.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'artifact-catalog.js'))));
   app.get('/assets/task-table.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'task-table.js'))));
   app.get('/assets/audit-events.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'audit-events.js'))));
+  app.get('/assets/aaa-config.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'aaa-config.js'))));
   app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(agentPage()));
   const core = async (path, options = {}, signer = identity) => {
     const config = coreConnection.get();
@@ -187,6 +189,14 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   };
   const admin = requirePermission('configWrite', '需要系统管理员权限');
   const userAdmin = requirePermission('userAdmin', '需要安全管理员权限');
+  registerAaaConfigRoutes(app, {
+    configStore: aaaConfigStore,
+    adapter: agentAaaAdapter,
+    readPermission: 'configRead',
+    writePermission: 'configWrite',
+    requirePermission: (permission) => requirePermission(permission, '需要系统管理员权限'),
+    audit: (type, request, details) => auth.event(type, request.principal?.id, details, request.ip)
+  });
   app.get('/api/v1/auth-events', { preHandler: requirePermission('auditRead', '需要审计管理员权限') }, async (request, reply) => {
     try { return queryAuthEvents(auth.db, 'core_auth_events', request.query ?? {}); }
     catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'audit_filter_invalid', err.message); }
@@ -434,7 +444,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   app.get('/api/v1/cache/:artifactId', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (request, reply) => { if (typeof request.params.artifactId !== 'string' || !/^[A-Za-z0-9._-]{1,255}$/.test(request.params.artifactId)) return reply.code(400).send({ ready: false }); const path = join(dataDir, 'cache', request.params.artifactId); try { const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch { return reply.code(404).send({ ready: false }); } });
   if (startWorker) { const timer = setInterval(() => { void poll(); }, Number(process.env.CAM_AGENT_POLL_MS ?? 5000)); timer.unref?.(); app.addHook('onClose', async () => clearInterval(timer)); queueMicrotask(() => { void poll(); }); }
   delivery.setLogger(app.log);
-  app.decorate('agentAuthStore', auth); app.decorate('agentDeliveryStore', delivery); app.decorate('agentPoll', poll); app.decorate('agentIdentity', { getter: () => identity }); return app;
+  app.decorate('agentAuthStore', auth); app.decorate('aaaConfigStore', aaaConfigStore); app.decorate('agentDeliveryStore', delivery); app.decorate('agentPoll', poll); app.decorate('agentIdentity', { getter: () => identity }); return app;
 }
 
 export async function createAgentServer({ port = Number(process.env.PORT ?? 3103), host = process.env.HOST ?? '127.0.0.1', ...options } = {}) { const app = await buildAgentApp(options); await app.listen({ port, host }); return app; }

@@ -128,10 +128,14 @@ test('Agent roles separate configuration, user administration, operations and au
 
     const system = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: sessions.system })).json();
     assert.equal(system.permissions.configRead, true);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/aaa/config', headers: sessions.system })).statusCode, 200);
     assert.equal(system.permissions.businessRead, false);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/identity', headers: sessions.system })).statusCode, 200);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/tasks', headers: sessions.system })).statusCode, 403);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/users', headers: sessions.system })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/aaa/config', headers: sessions.security })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/aaa/config', headers: sessions.operator })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/aaa/config', headers: sessions.auditor })).statusCode, 403);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/auth-events', headers: sessions.system })).statusCode, 403);
 
     const operator = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: sessions.operator })).json();

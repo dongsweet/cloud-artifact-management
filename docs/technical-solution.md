@@ -645,8 +645,8 @@ Core 与 Edge 各自的 Ed25519/X25519 身份密钥可按本端策略自动轮�
 | `EDGE_SECURITY_ADMIN` | 只读查看 Core 授权给 Edge 的人员及其 Edge 角色；不能修改账号、角色或平台对接配置 |
 | `EDGE_OPERATOR` | 软件产品、发布版本、候选轮次、候选包的接收、验证、固化和交付操作 |
 | `EDGE_AUDITOR` | 只读查看 Edge 业务、下载授权和审计记录；不能写业务、管理平台配置或账号 |
-| `AGENT_SYSTEM_ADMIN` | Agent Core 对接、身份轮换和平台技术配置；可执行任务与交付管理 |
-| `AGENT_SECURITY_ADMIN` | Agent 安全配置、AAA 授权映射和审计查看；不能执行制品操作 |
+| `AGENT_SYSTEM_ADMIN` | 管理 Agent/Core 对接、身份轮换和 AAA 等平台配置；不能管理账号或执行制品业务 |
+| `AGENT_SECURITY_ADMIN` | 创建和维护 Agent 本地/AAA 账号及角色；不能管理平台配置或执行制品操作 |
 | `AGENT_OPERATOR` | 查看正式制品和传输任务，发起拉取、重试和部署交付 |
 | `AGENT_AUDITOR` | 只读查看正式制品、任务、缓存和交付审计 |
 
@@ -670,6 +670,8 @@ Core 与 Edge 的统一账号授权：
 Core 是 CAM 人员账号与角色授权管理端。管理员先在 Core“账号管理”登记 AAA 用户名、显示姓名并分配 CAM 角色；只有处于启用状态且具有相应模块角色的登记账号，才可以登录对应模块。登录时 Core 调用 DKEY AM 实时校验密码。AAA 负责密码、身份状态与认证策略，Core 负责 CAM 用户登记、Core/Edge 角色和 Edge 登录资格。首期不执行用户目录同步，也不因 AAA 登录成功而自动创建 CAM 账号或授予角色。Core 不保存 AAA 用户密码；AAA 账号的本地密码修改和重置入口不可用，本地应急管理员保留独立认证。
 
 Core 的“AAA 对接配置”页面维护 AAA 地址、租户名、认证设备名、超时、API 共享密钥和 HTTPS 证书校验选项，配置测试调用 DKEY AM 的 `/am/webauth/1/strong/passwordRequirement`，使用测试用户名读取认证策略以校验站点、认证设备和共享密钥，不校验用户密码。证书校验默认开启；可显式关闭以兼容内网自签名证书，此时 Core 不校验证书颁发机构、有效期及主机名，只应在受控内网使用。共享密钥只在提交时接收并保存到 Core 数据库，读取接口和页面只返回“已配置”状态，不回显密钥；部署环境的 `CAM_AAA_SHARED_SECRET` 仍可作为首次部署或应急默认值。保存页面配置后立即作用于后续登录；配置不完整时 AAA 账号登录会被拒绝并提示管理员补齐配置。
+
+Agent 使用同一份 DKEY AM 适配器、配置校验与连接测试接口、共享 AAA 配置页面组件；Agent 系统管理员在 Agent 本机配置，参数和共享密钥保存在 Agent 自己的 SQLite 中，不读取或调用 Core 的 AAA 配置。Agent 每次登录直接向 AAA 验证密码，Core 不转发人员认证。Agent 的环境变量作为首次启动/应急默认值，页面保存后立即生效；共享密钥读取接口不回显，并可留空以保持当前值。配置测试通过 `passwordRequirement` 读取策略，不校验用户密码。
 
 Edge 登录复用既有 Edge→Core 控制地址，不增设网闸映射、网络地址、端口或另一套对接通道。浏览器将登录凭据提交给 Edge；Edge 通过已配对的 Core 控制面身份签名认证请求，凭据经 HTTPS 发送到 Core。Core 调用 AAA 校验凭据，再检查该用户的 Edge 使用资格和角色。成功时，Core 在同一控制请求响应中返回签名的短时凭证，至少包括稳定用户标识、显示名、Edge 角色、签发/过期时间、凭证 ID 和受众 cam-edge。Edge 验证 Core 签名、受众和有效期后建立本地短期会话；每个受保护请求再通过同一控制地址读取并验证 Core 当前授权，随后才执行 Edge 本地会话和 RBAC 校验。Core 不回调 Edge，Edge 不直接访问 AAA，Core 控制地址和网闸映射仍按原配置管理。
 
@@ -705,7 +707,7 @@ sequenceDiagram
 | Edge 人员认证 | Edge 只保存 Core 下发的授权缓存和短期会话，不保存密码或本地账号 | Edge 登录委托 Core/AAA；每个受保护请求通过既有控制地址刷新当前授权 | 已移除 `edge_users`、`edge_sessions`、`allowLocalAuth` 和 Edge 本地账号管理 API |
 | Core 管理 Edge 权限 | Core 用户模型保存 Edge 登录开关和 Edge 角色 | Core 账号管理统一配置 Edge 可登录资格和 CAM 角色 | Edge 页面只读展示 Core 下发的人员和角色，不提供账号编辑入口 |
 | Core/Edge 通道 | 已配置控制地址并用于已配对的签名控制消息、配对及状态交换 | 在现有控制地址上增加认证请求/响应 | 无需额外通道；当前控制 API 不含人员认证协议，需补充凭据脱敏、认证限流、防重放、短时凭证和撤销检查 |
-| Agent 人员登录 | Agent 已接入直接 AAA 适配器，并保留本地初始管理员 | Agent 使用 `AGENT_*` 四类角色，服务端逐请求执行 RBAC | Agent 不经过 Core 转发人员认证；AAA 密码不落库，角色变更由最新会话解析生效 |
+| Agent 人员登录与 AAA 管理 | Agent 已直接调用 DKEY AM 认证；系统管理员通过共享 AAA 页面管理本机配置和连接测试；本地应急管理员保留 | Agent 使用 `AGENT_*` 四类角色，服务端逐请求执行 RBAC | Core 与 Agent 复用适配器和前端配置组件，但各自独立保存配置；AAA 密码不落库，CAM 角色仍由 Agent 安全管理员分配 |
 
 建议实施顺序：先接入 Core/AAA 身份验证并扩展 Core 用户授权模型；再实现经现有签名控制地址调用的 Edge 认证 API 与 Edge 短时会话；联调并迁移账号及审计关联后，最后关闭 Edge 本地密码登录。迁移使用 AAA 稳定用户标识关联既有记录，不能仅凭用户名相同自动合并；无法可靠匹配的账号由管理员重新授权。
 

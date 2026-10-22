@@ -24,7 +24,7 @@ function agentDefaultPage() { if (agentCan('configRead')) return 'identity'; if 
 function agentShowUserAdmin() {
   document.querySelectorAll('[data-agent-permission]').forEach(item => item.classList.toggle('d-none', !agentCan(item.dataset.agentPermission)));
   $('#tasks-pull').classList.toggle('d-none', !agentCan('businessWrite'));
-  if (location.hash.slice(1) && !agentCan(({ identity: 'configRead', artifacts: 'businessRead', tasks: 'businessRead', delivery: 'deliveryRead', users: 'userAdmin', audit: 'auditRead' })[location.hash.slice(1)])) {
+  if (location.hash.slice(1) && !agentCan(({ identity: 'configRead', 'aaa-config': 'configRead', artifacts: 'businessRead', tasks: 'businessRead', delivery: 'deliveryRead', users: 'userAdmin', audit: 'auditRead' })[location.hash.slice(1)])) {
     const page = agentDefaultPage(); location.hash = '#'+page; showPage(page);
   }
 }

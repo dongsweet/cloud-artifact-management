@@ -1,5 +1,6 @@
 import { EDGE_ROLE_LABELS, ROLE_LABELS, AuthStore, hasCorePermission } from './core-auth-store.js';
 import { queryAuthEvents } from '../../../libs/cam-auth/src/audit-events.js';
+import { registerAaaConfigRoutes } from '../../../libs/cam-aaa/src/adapter.js';
 
 const fail = (reply, status, code, message) => reply.code(status).send({ error: { code, message } });
 function cookies(request) {
@@ -48,6 +49,14 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
   const requirePermission = (request, reply, permission, message) => {
     if (!hasCorePermission(request.principal?.roles, permission)) return fail(reply, 403, 'core_permission_denied', message);
   };
+  registerAaaConfigRoutes(app, {
+    configStore: aaaConfigStore,
+    adapter: aaaAdapter,
+    readPermission: 'aaaRead',
+    writePermission: 'aaaWrite',
+    requirePermission: (permission) => async (request, reply) => requirePermission(request, reply, permission, '需要系统管理员权限'),
+    audit: (type, request, details) => auth.event(type, request.principal?.id, details, request.ip)
+  });
   app.post('/api/v1/gate/authenticate', { bodyLimit: 8192 }, async (request, reply) => {
     try {
       const credentials = await keyring.openFromPeer(request.body);
@@ -82,32 +91,6 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
   app.get('/api/v1/users', async (request, reply) => {
     if (requirePermission(request, reply, 'userAdmin', '需要账号与角色管理权限')) return;
     return { items: auth.listUsers(), roles: ROLE_LABELS, edgeRoles: EDGE_ROLE_LABELS };
-  });
-  app.get('/api/v1/aaa/config', async (request, reply) => {
-    if (requirePermission(request, reply, 'aaaRead', '需要系统管理员权限')) return;
-    return { item: aaaConfigStore?.publicValue() ?? { configured: false, secretConfigured: false } };
-  });
-  app.put('/api/v1/aaa/config', { bodyLimit: 4096 }, async (request, reply) => {
-    if (requirePermission(request, reply, 'aaaWrite', '需要系统管理员权限')) return;
-    try {
-      const saved = aaaConfigStore.save(request.body ?? {}, request.principal.id);
-      aaaAdapter?.updateConfig?.(saved.config);
-      return { item: aaaConfigStore.publicValue() };
-    } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'aaa_config_invalid', err.message); }
-  });
-  app.post('/api/v1/aaa/test', { bodyLimit: 4096 }, async (request, reply) => {
-    if (requirePermission(request, reply, 'aaaRead', '需要系统管理员权限')) return;
-    try {
-      const current = aaaConfigStore.get().config;
-      const { testLoginName, ...input } = request.body ?? {};
-      const loginName = typeof testLoginName === 'string' ? testLoginName.trim() : '';
-      const candidate = { ...current, ...input, sharedSecret: String(input.sharedSecret ?? '').trim() || current.sharedSecret };
-      if (!loginName || loginName.length > 128) return fail(reply, 400, 'aaa_test_user_required', '请输入一个已存在的 AAA 测试用户名（最多 128 个字符）');
-      if (typeof aaaAdapter?.testConfiguration !== 'function') return { ok: true, item: aaaConfigStore.publicValue(), check: { valid: true, loginName, mode: 'injected' } };
-      if (!aaaAdapter?.fetch || !candidate.baseUrl || !candidate.tenantName || !candidate.accessServerName || !candidate.sharedSecret) return fail(reply, 503, 'aaa_not_configured', 'AAA 参数尚未完整配置，请先填写 API 共享密钥');
-      const result = await aaaAdapter.testConfiguration(candidate, loginName);
-      return { ok: true, item: aaaConfigStore.publicValue(), check: result };
-    } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'aaa_test_failed', err.message); }
   });
   app.post('/api/v1/users', { bodyLimit: 8192 }, async (request, reply) => {
     if (requirePermission(request, reply, 'userAdmin', '需要账号与角色管理权限')) return;
