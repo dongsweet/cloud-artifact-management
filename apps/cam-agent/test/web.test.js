@@ -39,5 +39,10 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /CamAgentDeliveryOpen/);
   assert.match(html, /下载明细/);
   assert.match(html, /下载人/);
+  assert.match(html, /data-agent-user-admin[\s\S]*?用户与角色/);
+  assert.match(html, /id="new-agent-user"[^>]*>.*?新增账号/s);
+  assert.match(html, /id="page-users"/);
+  assert.match(html, /本地账号首次登录须修改密码/);
+  assert.match(html, /AGENT_SECURITY_ADMIN/);
   assert.doesNotMatch(html, /window\.alert\s*\(|window\.confirm\s*\(|\balert\s*\(|\bconfirm\s*\(/);
 });

@@ -57,6 +57,45 @@ test('Agent AAA-backed accounts authenticate directly through the configured ada
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Agent security administrators manage local and AAA users while other roles are denied', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-user-admin-'));
+  const app = await buildAgentApp({ dataDir, startWorker: false });
+  try {
+    const securityAdmin = await app.agentAuthStore.createUser({ username: 'security1', displayName: '安全管理员', password: 'Initial-Agent-Password-2026', roles: ['AGENT_SECURITY_ADMIN'] }, null, { bootstrap: true });
+    await app.agentAuthStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE user_id = ?').run(securityAdmin.id);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'security1', password: 'Initial-Agent-Password-2026' } });
+    assert.equal(login.statusCode, 200, login.body);
+    const adminHeaders = { cookie: login.headers['set-cookie'].map((value) => value.split(';')[0]).join('; '), 'x-cam-agent-csrf': login.json().csrfToken };
+
+    const listing = await app.inject({ method: 'GET', url: '/api/v1/users', headers: adminHeaders });
+    assert.equal(listing.statusCode, 200, listing.body);
+    assert.equal(listing.json().items.length, 1);
+    assert.equal(listing.json().roles.AGENT_SECURITY_ADMIN, '安全管理员');
+
+    const created = await app.inject({ method: 'POST', url: '/api/v1/users', headers: adminHeaders, payload: { username: 'operator1', displayName: '运维操作员', password: 'Initial-Operator-Password-2026', roles: ['AGENT_OPERATOR'], authSource: 'LOCAL' } });
+    assert.equal(created.statusCode, 201, created.body);
+    const userId = created.json().user.id;
+    assert.equal(created.json().user.mustChangePassword, true);
+
+    const updated = await app.inject({ method: 'PATCH', url: `/api/v1/users/${encodeURIComponent(userId)}`, headers: adminHeaders, payload: { displayName: '云平台操作员', roles: ['AGENT_OPERATOR'], status: 'ACTIVE' } });
+    assert.equal(updated.statusCode, 200, updated.body);
+    assert.equal(updated.json().user.displayName, '云平台操作员');
+
+    const reset = await app.inject({ method: 'POST', url: `/api/v1/users/${encodeURIComponent(userId)}/password`, headers: adminHeaders, payload: { password: 'Reset-Operator-Password-2026' } });
+    assert.equal(reset.statusCode, 200, reset.body);
+    assert.equal(app.agentAuthStore.getUser(userId).mustChangePassword, true);
+
+    const selfDisable = await app.inject({ method: 'PATCH', url: `/api/v1/users/${encodeURIComponent(securityAdmin.id)}`, headers: adminHeaders, payload: { status: 'DISABLED' } });
+    assert.equal(selfDisable.statusCode, 400);
+
+    const systemAdmin = await app.agentAuthStore.createUser({ username: 'system1', displayName: '系统管理员', password: 'Initial-System-Password-2026', roles: ['AGENT_SYSTEM_ADMIN'] });
+    await app.agentAuthStore.db.prepare('UPDATE core_users SET must_change_password = 0 WHERE user_id = ?').run(systemAdmin.id);
+    const systemLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'system1', password: 'Initial-System-Password-2026' } });
+    const systemHeaders = { cookie: systemLogin.headers['set-cookie'].map((value) => value.split(';')[0]).join('; '), 'x-cam-agent-csrf': systemLogin.json().csrfToken };
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/users', headers: systemHeaders })).statusCode, 403);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Agent tests its signed Core pairing and persists a rotated identity', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-agent-core-identity-'));
   const core = await buildCoreApp({ dataDir: join(dataDir, 'core'), enableAuth: false });

@@ -183,6 +183,24 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     if (!hasAgentPermission(request.principal?.user?.roles, permission)) return fail(reply, 403, 'agent_permission_denied', message);
   };
   const admin = requirePermission('configWrite', '需要系统管理员或安全管理员权限');
+  const userAdmin = requirePermission('userAdmin', '需要安全管理员权限');
+  app.get('/api/v1/users', { preHandler: userAdmin }, async () => ({ items: auth.listUsers(), roles: AGENT_ROLE_LABELS }));
+  app.post('/api/v1/users', { bodyLimit: 8192, preHandler: userAdmin }, async (request, reply) => {
+    try {
+      const body = request.body ?? {};
+      const user = await auth.createUser({ username: body.username, displayName: body.displayName, password: body.authSource === 'AAA' ? undefined : body.password, authSource: body.authSource ?? 'LOCAL', roles: body.roles ?? [], status: body.status ?? 'ACTIVE' }, request.principal.id);
+      return reply.code(201).send({ user });
+    } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'user_create_failed', err.message); }
+  });
+  app.patch('/api/v1/users/:id', { bodyLimit: 8192, preHandler: userAdmin }, async (request, reply) => {
+    try { return { user: auth.updateUser(request.params.id, request.body ?? {}, request.principal.id) }; }
+    catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'user_update_failed', err.message); }
+  });
+  app.post('/api/v1/users/:id/password', { bodyLimit: 4096, preHandler: userAdmin }, async (request, reply) => {
+    if (request.params.id === request.principal.id) return fail(reply, 400, 'self_password_reset', '请使用页面右上角的修改密码功能修改自己的密码');
+    try { await auth.changePassword(request.params.id, request.body?.password, request.principal.id); return { ok: true }; }
+    catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'password_reset_failed', err.message); }
+  });
   app.get('/api/v1/core-config', { preHandler: admin }, async () => ({ item: coreConnection.get() }));
   app.put('/api/v1/core-config', { bodyLimit: 16 * 1024, preHandler: admin }, async (request, reply) => {
     if (running || configuring || testing || rotation.status().rotating) return fail(reply, 409, 'core_connection_busy', '正在传输或同步身份，请稍后保存配置');

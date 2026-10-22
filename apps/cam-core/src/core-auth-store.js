@@ -81,11 +81,12 @@ export class AuthStore {
     return { id: row.user_id, username: row.username, displayName: row.display_name, authSource: row.auth_source ?? 'LOCAL', roles, coreEnabled: this.roleSet === 'CORE' ? row.status === 'ACTIVE' : undefined, edgeEnabled: Boolean(row.edge_enabled), edgeProvisioned: Boolean(row.edge_provisioned), edgeRoles: normalizeEdgeRoles(JSON.parse(row.edge_roles_json ?? '[]')), status: row.status, mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at };
   }
   listUsers() { return this.db.prepare('SELECT user_id FROM core_users ORDER BY username').all().map((row) => this.getUser(row.user_id)); }
-  async createUser({ username, displayName, password, authSource = 'LOCAL', roles = [], coreEnabled = true, edgeEnabled = false, edgeRoles = [] }, actor = null, { bootstrap = false } = {}) {
+  async createUser({ username, displayName, password, authSource = 'LOCAL', roles = [], coreEnabled = true, edgeEnabled = false, edgeRoles = [], status = 'ACTIVE' }, actor = null, { bootstrap = false } = {}) {
     if (typeof username !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$/.test(username)) throw failure('用户名需为 3 至 64 位字母、数字、点、下划线或连字符');
     if (typeof displayName !== 'string' || !displayName.trim() || displayName.length > 100) throw failure('姓名不能为空且最多 100 字');
     if (!['LOCAL', 'AAA'].includes(authSource)) throw failure('认证来源无效');
     if (typeof coreEnabled !== 'boolean') throw failure('Core 登录权限无效');
+    if (!['ACTIVE', 'DISABLED'].includes(status)) throw failure('账号状态无效');
     if (authSource === 'LOCAL') passwordValid(password);
     if (bootstrap && authSource !== 'LOCAL') throw failure('初始管理员必须使用本地认证');
     const suppliedRoles = this.roleSet === 'AGENT' ? (roles ?? []).map((role) => role === 'AGENT_ADMIN' ? 'AGENT_SYSTEM_ADMIN' : role.replace(/^CORE_/, 'AGENT_')) : roles;
@@ -101,7 +102,7 @@ export class AuthStore {
       if (bootstrap && this.db.prepare('SELECT COUNT(*) AS n FROM core_users').get().n) throw failure('已经初始化，不能再次创建初始管理员');
       const id = 'USR-' + randomUUID();
       this.db.prepare('INSERT INTO core_users (user_id, username, display_name, password_hash, password_salt, password_parameters_json, roles_json, status, edge_enabled, edge_roles_json, edge_provisioned, auth_source, must_change_password, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, username.toLowerCase(), displayName.trim(), digest.toString('hex'), salt, JSON.stringify(params), JSON.stringify(coreRoles), coreEnabled ? 'ACTIVE' : 'DISABLED', edgeEnabled ? 1 : 0, JSON.stringify(normalizedEdgeRoles), edgeEnabled ? 1 : 0, authSource, authSource === 'LOCAL' ? 1 : 0, now(), now());
+        .run(id, username.toLowerCase(), displayName.trim(), digest.toString('hex'), salt, JSON.stringify(params), JSON.stringify(coreRoles), this.roleSet === 'AGENT' ? status : (coreEnabled ? 'ACTIVE' : 'DISABLED'), edgeEnabled ? 1 : 0, JSON.stringify(normalizedEdgeRoles), edgeEnabled ? 1 : 0, authSource, authSource === 'LOCAL' ? 1 : 0, now(), now());
       this.event(bootstrap ? 'ADMIN_BOOTSTRAPPED' : 'USER_CREATED', actor, { userId: id, authSource, roles: coreRoles, coreEnabled, edgeEnabled, edgeRoles: normalizedEdgeRoles });
       this.db.exec('COMMIT');
       return this.getUser(id);
@@ -217,7 +218,7 @@ export class AuthStore {
     const edgeRoles = body.edgeRoles ?? user.edgeRoles;
     const coreEnabled = this.roleSet === 'CORE' ? body.coreEnabled ?? (body.status === undefined ? user.status === 'ACTIVE' : body.status === 'ACTIVE') : undefined;
     const status = this.roleSet === 'CORE' ? (coreEnabled ? 'ACTIVE' : 'DISABLED') : body.status ?? user.status;
-    const coreRoles = normalizeAndValidateRoles(roles); const normalizedEdgeRoles = normalizeAndValidateEdgeRoles(edgeRoles);
+    const coreRoles = normalizeAndValidateRoles(roles, this.allowedRoles); const normalizedEdgeRoles = this.roleSet === 'CORE' ? normalizeAndValidateEdgeRoles(edgeRoles) : [];
     if (this.roleSet === 'CORE' && typeof coreEnabled !== 'boolean') throw failure('Core 登录权限无效');
     if (this.roleSet === 'CORE' && body.coreEnabled === undefined && body.status !== undefined && !['ACTIVE', 'DISABLED'].includes(body.status)) throw failure('Core 登录权限无效');
     if (this.roleSet !== 'CORE' && !['ACTIVE', 'DISABLED'].includes(status)) throw failure('账号状态无效');
@@ -225,8 +226,9 @@ export class AuthStore {
     if (typeof display !== 'string' || !display.trim() || display.length > 100) throw failure('姓名不能为空且最多 100 字');
     return this.transaction(() => {
     if (id === actor && ((this.roleSet === 'CORE' && !coreEnabled) || (this.roleSet !== 'CORE' && status !== 'ACTIVE') || !coreRoles.length)) throw failure('不能禁用自己或移除自己的 Core 角色');
-    const systemAdmins = this.listUsers().filter((u) => u.status === 'ACTIVE' && u.roles.includes('CORE_SYSTEM_ADMIN'));
-    if (systemAdmins.length === 1 && systemAdmins[0].id === id && ((this.roleSet === 'CORE' && !coreEnabled) || status !== 'ACTIVE' || !coreRoles.includes('CORE_SYSTEM_ADMIN'))) throw failure('至少保留一个有效系统管理员');
+    const protectedRole = this.roleSet === 'AGENT' ? 'AGENT_SECURITY_ADMIN' : 'CORE_SYSTEM_ADMIN';
+    const protectedAdmins = this.listUsers().filter((u) => u.status === 'ACTIVE' && u.roles.includes(protectedRole));
+    if (protectedAdmins.length === 1 && protectedAdmins[0].id === id && (status !== 'ACTIVE' || !coreRoles.includes(protectedRole))) throw failure(this.roleSet === 'AGENT' ? '至少保留一个有效安全管理员' : '至少保留一个有效系统管理员');
     this.db.prepare('UPDATE core_users SET roles_json = ?, edge_enabled = ?, edge_roles_json = ?, edge_provisioned = MAX(edge_provisioned, ?), status = ?, display_name = ?, locked_until = NULL, failed_attempts = 0, updated_at = ? WHERE user_id = ?')
       .run(JSON.stringify(coreRoles), edgeEnabled ? 1 : 0, JSON.stringify(normalizedEdgeRoles), edgeEnabled ? 1 : 0, status, display.trim(), now(), id);
     this.revoke(id);

@@ -34,7 +34,8 @@ export const AGENT_PERMISSION_ROLES = Object.freeze({
   configRead: ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN', 'AGENT_AUDITOR'],
   configWrite: ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN'],
   deliveryRead: ['AGENT_SYSTEM_ADMIN', 'AGENT_SECURITY_ADMIN', 'AGENT_OPERATOR', 'AGENT_AUDITOR'],
-  deliveryWrite: ['AGENT_SYSTEM_ADMIN', 'AGENT_OPERATOR']
+  deliveryWrite: ['AGENT_SYSTEM_ADMIN', 'AGENT_OPERATOR'],
+  userAdmin: ['AGENT_SECURITY_ADMIN']
 });
 
 // Core 与 Edge 共用同一套职责边界：业务由操作员维护，系统管理员负责平台配置，
