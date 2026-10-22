@@ -122,8 +122,8 @@
 .cam-confirm-modal { width: min(480px, calc(100vw - 2rem)); max-width: none; padding: 0; border: 0; border-radius: .5rem; color: inherit; background: transparent; box-shadow: 0 1rem 3rem rgb(0 0 0 / 25%); }
 .cam-confirm-modal::backdrop { background: rgb(0 0 0 / 55%); }
 .cam-confirm-modal .card { min-width: 0 !important; margin: 0; }
-.cam-user-modal { width: min(560px, calc(100vw - 2rem)); max-width: none; max-height: min(90vh, 820px); padding: 0; border: 0; border-radius: .5rem; color: inherit; background: transparent; box-shadow: 0 1rem 3rem rgb(0 0 0 / 25%); }
+.cam-user-modal { box-sizing: border-box; width: min(560px, calc(100vw - 2rem)); max-width: none; max-height: min(90vh, 820px); padding: 0; border: 0; border-radius: .5rem; color: inherit; background: transparent; box-shadow: 0 1rem 3rem rgb(0 0 0 / 25%); }
 .cam-user-modal::backdrop { background: rgb(0 0 0 / 55%); }
-.cam-user-modal > .card { max-height: inherit; overflow-y: auto; margin: 0; }
+.cam-user-modal > .card { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; max-height: inherit; overflow-y: auto; margin: 0; }
 
 .app-main .cam-gate-card { min-width: 0; }
