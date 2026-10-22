@@ -70,7 +70,7 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
       const credentials = await keyring.openFromPeer(request.body);
       const checked = await auth.login(credentials.username, credentials.oldPassword, { address: request.ip, scope: 'EDGE' });
       if (!checked.user.edgeEnabled || !checked.user.edgeRoles.length) throw Object.assign(new Error('此账号当前未获准登录 CAM Edge'), { statusCode: 403, code: 'edge_access_denied' });
-      await auth.changePassword(checked.user.id, credentials.password, checked.user.id, credentials.oldPassword);
+      await auth.changePassword(checked.user.id, credentials.password, checked.user.id, credentials.oldPassword, { scope: 'EDGE' });
       const issuedAt = Date.now();
       const assertion = await keyring.signAssertion({ schemaVersion: 1, audience: 'cam-edge', issuedAt, expiresAt: issuedAt + 60_000, nonce: credentials.nonce, changed: true });
       return { assertion };

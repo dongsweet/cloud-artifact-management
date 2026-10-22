@@ -78,18 +78,19 @@ export class AuthStore {
     if (!row) return null;
     let roles = normalizeCoreRoles(JSON.parse(row.roles_json));
     if (this.roleSet === 'AGENT') roles = roles.map((role) => role.replace(/^CORE_/, 'AGENT_'));
-    return { id: row.user_id, username: row.username, displayName: row.display_name, authSource: row.auth_source ?? 'LOCAL', roles, edgeEnabled: Boolean(row.edge_enabled), edgeProvisioned: Boolean(row.edge_provisioned), edgeRoles: normalizeEdgeRoles(JSON.parse(row.edge_roles_json ?? '[]')), status: row.status, mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at };
+    return { id: row.user_id, username: row.username, displayName: row.display_name, authSource: row.auth_source ?? 'LOCAL', roles, coreEnabled: this.roleSet === 'CORE' ? row.status === 'ACTIVE' : undefined, edgeEnabled: Boolean(row.edge_enabled), edgeProvisioned: Boolean(row.edge_provisioned), edgeRoles: normalizeEdgeRoles(JSON.parse(row.edge_roles_json ?? '[]')), status: row.status, mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, lockedUntil: row.locked_until, createdAt: row.created_at };
   }
   listUsers() { return this.db.prepare('SELECT user_id FROM core_users ORDER BY username').all().map((row) => this.getUser(row.user_id)); }
-  async createUser({ username, displayName, password, authSource = 'LOCAL', roles = [], edgeEnabled = false, edgeRoles = [] }, actor = null, { bootstrap = false } = {}) {
+  async createUser({ username, displayName, password, authSource = 'LOCAL', roles = [], coreEnabled = true, edgeEnabled = false, edgeRoles = [] }, actor = null, { bootstrap = false } = {}) {
     if (typeof username !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$/.test(username)) throw failure('用户名需为 3 至 64 位字母、数字、点、下划线或连字符');
     if (typeof displayName !== 'string' || !displayName.trim() || displayName.length > 100) throw failure('姓名不能为空且最多 100 字');
     if (!['LOCAL', 'AAA'].includes(authSource)) throw failure('认证来源无效');
+    if (typeof coreEnabled !== 'boolean') throw failure('Core 登录权限无效');
     if (authSource === 'LOCAL') passwordValid(password);
     if (bootstrap && authSource !== 'LOCAL') throw failure('初始管理员必须使用本地认证');
     const suppliedRoles = this.roleSet === 'AGENT' ? (roles ?? []).map((role) => role.replace(/^CORE_/, 'AGENT_')) : roles;
     const coreRoles = normalizeAndValidateRoles(suppliedRoles, this.allowedRoles); const normalizedEdgeRoles = this.roleSet === 'AGENT' ? [] : normalizeAndValidateEdgeRoles(edgeRoles);
-    if ((!coreRoles.length && !(edgeEnabled && normalizedEdgeRoles.length)) || (normalizedEdgeRoles.length && !edgeEnabled)) throw failure('账号至少需要一个已启用的 CAM 角色');
+    if (!coreRoles.length && !normalizedEdgeRoles.length) throw failure('账号至少需要一个 CAM 角色');
     const salt = randomBytes(16).toString('hex');
     // Keep the legacy non-null password hash column populated for AAA users,
     // but never use this random, undisclosed value for AAA-backed logins.
@@ -100,8 +101,8 @@ export class AuthStore {
       if (bootstrap && this.db.prepare('SELECT COUNT(*) AS n FROM core_users').get().n) throw failure('已经初始化，不能再次创建初始管理员');
       const id = 'USR-' + randomUUID();
       this.db.prepare('INSERT INTO core_users (user_id, username, display_name, password_hash, password_salt, password_parameters_json, roles_json, status, edge_enabled, edge_roles_json, edge_provisioned, auth_source, must_change_password, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, username.toLowerCase(), displayName.trim(), digest.toString('hex'), salt, JSON.stringify(params), JSON.stringify(coreRoles), 'ACTIVE', edgeEnabled ? 1 : 0, JSON.stringify(normalizedEdgeRoles), edgeEnabled ? 1 : 0, authSource, authSource === 'LOCAL' ? 1 : 0, now(), now());
-      this.event(bootstrap ? 'ADMIN_BOOTSTRAPPED' : 'USER_CREATED', actor, { userId: id, authSource, roles: coreRoles, edgeEnabled, edgeRoles: normalizedEdgeRoles });
+        .run(id, username.toLowerCase(), displayName.trim(), digest.toString('hex'), salt, JSON.stringify(params), JSON.stringify(coreRoles), coreEnabled ? 'ACTIVE' : 'DISABLED', edgeEnabled ? 1 : 0, JSON.stringify(normalizedEdgeRoles), edgeEnabled ? 1 : 0, authSource, authSource === 'LOCAL' ? 1 : 0, now(), now());
+      this.event(bootstrap ? 'ADMIN_BOOTSTRAPPED' : 'USER_CREATED', actor, { userId: id, authSource, roles: coreRoles, coreEnabled, edgeEnabled, edgeRoles: normalizedEdgeRoles });
       this.db.exec('COMMIT');
       return this.getUser(id);
     } catch (err) { this.db.exec('ROLLBACK'); throw err; }
@@ -111,7 +112,7 @@ export class AuthStore {
     const row = this.db.prepare('SELECT * FROM core_users WHERE username = ?').get(username.toLowerCase());
     if (row?.auth_source === 'AAA') {
       const current = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(row.user_id);
-      if (!current || current.status !== 'ACTIVE' || current.locked_until > this.clock()) {
+      if (!current || !this.enabledForScope(current, scope) || current.locked_until > this.clock()) {
         this.event('AAA_LOGIN_FAILED', row.user_id, { reason: 'CAM_ACCOUNT_UNAVAILABLE' }, address);
         throw failure('用户名或密码错误，连续失败后需稍后重试', 401, 'login_failed');
       }
@@ -122,7 +123,7 @@ export class AuthStore {
       try { await this.aaaAdapter.authenticate({ loginName: current.username, password }); }
       catch (error) {
         const latest = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(row.user_id);
-        if (error.statusCode === 401 && latest?.status === 'ACTIVE') {
+        if (error.statusCode === 401 && latest && this.enabledForScope(latest, scope)) {
           const failedAttempts = latest.failed_attempts + 1;
           const lock = failedAttempts >= 5 ? this.clock() + Math.min(60, 2 ** (failedAttempts - 5)) * 60_000 : null;
           this.db.prepare('UPDATE core_users SET failed_attempts = ?, locked_until = ? WHERE user_id = ?').run(failedAttempts, lock, row.user_id);
@@ -132,7 +133,7 @@ export class AuthStore {
         throw failure('AAA 用户名或密码错误', 401, 'login_failed');
       }
       const latest = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(row.user_id);
-      if (!latest || latest.status !== 'ACTIVE' || latest.auth_source !== 'AAA') {
+      if (!latest || !this.enabledForScope(latest, scope) || latest.auth_source !== 'AAA') {
         this.event('AAA_LOGIN_FAILED', row.user_id, { reason: 'CAM_ACCOUNT_CHANGED' }, address);
         throw failure('账号已禁用或认证来源已变更', 401, 'login_failed');
       }
@@ -142,8 +143,8 @@ export class AuthStore {
     const valid = row && timingSafeEqual(digest, Buffer.from(row.password_hash, 'hex'));
     // Re-read after asynchronous password derivation to avoid bypassing concurrent lockout/disable.
     const current = row && this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(row.user_id);
-    if (!valid || !current || current.status !== 'ACTIVE' || current.locked_until > this.clock() || current.password_hash !== row.password_hash) {
-      if (current && current.status === 'ACTIVE' && !(current.locked_until > this.clock())) {
+    if (!valid || !current || !this.enabledForScope(current, scope) || current.locked_until > this.clock() || current.password_hash !== row.password_hash) {
+      if (current && this.enabledForScope(current, scope) && !(current.locked_until > this.clock())) {
         const attempts = current.failed_attempts + 1;
         const lock = attempts >= 5 ? this.clock() + Math.min(60, 2 ** (attempts - 5)) * 60_000 : null;
         this.db.prepare('UPDATE core_users SET failed_attempts = ?, locked_until = ? WHERE user_id = ?').run(attempts, lock, current.user_id);
@@ -152,6 +153,11 @@ export class AuthStore {
       throw failure('用户名或密码错误，连续失败后需稍后重试', 401, 'login_failed');
     }
     return this.finishLogin(current, { address, userAgent, scope });
+  }
+  enabledForScope(row, scope) {
+    // The legacy status column now controls Core access only; Edge checks its own
+    // edgeEnabled flag and role assignment after the shared credential check.
+    return scope === 'EDGE' && this.roleSet === 'CORE' ? true : row.status === 'ACTIVE';
   }
   finishLogin(row, { address = null, userAgent = null, scope = 'CORE' } = {}) {
     if (scope === 'EDGE') {
@@ -209,24 +215,26 @@ export class AuthStore {
     const roles = body.roles ?? user.roles;
     const edgeEnabled = body.edgeEnabled ?? user.edgeEnabled;
     const edgeRoles = body.edgeRoles ?? user.edgeRoles;
-    const status = body.status ?? user.status;
+    const coreEnabled = this.roleSet === 'CORE' ? body.coreEnabled ?? (body.status === undefined ? user.status === 'ACTIVE' : body.status === 'ACTIVE') : undefined;
+    const status = this.roleSet === 'CORE' ? (coreEnabled ? 'ACTIVE' : 'DISABLED') : body.status ?? user.status;
     const coreRoles = normalizeAndValidateRoles(roles); const normalizedEdgeRoles = normalizeAndValidateEdgeRoles(edgeRoles);
-    if (normalizedEdgeRoles.length && !edgeEnabled) throw failure('未启用 Edge 时不能分配 Edge 角色');
-    if (!['ACTIVE', 'DISABLED'].includes(status)) throw failure('账号状态无效');
+    if (this.roleSet === 'CORE' && typeof coreEnabled !== 'boolean') throw failure('Core 登录权限无效');
+    if (this.roleSet === 'CORE' && body.coreEnabled === undefined && body.status !== undefined && !['ACTIVE', 'DISABLED'].includes(body.status)) throw failure('Core 登录权限无效');
+    if (this.roleSet !== 'CORE' && !['ACTIVE', 'DISABLED'].includes(status)) throw failure('账号状态无效');
     const display = body.displayName ?? user.displayName;
     if (typeof display !== 'string' || !display.trim() || display.length > 100) throw failure('姓名不能为空且最多 100 字');
     return this.transaction(() => {
-    if (id === actor && (status !== 'ACTIVE' || !coreRoles.length)) throw failure('不能禁用自己或移除自己的 Core 角色');
+    if (id === actor && ((this.roleSet === 'CORE' && !coreEnabled) || (this.roleSet !== 'CORE' && status !== 'ACTIVE') || !coreRoles.length)) throw failure('不能禁用自己或移除自己的 Core 角色');
     const systemAdmins = this.listUsers().filter((u) => u.status === 'ACTIVE' && u.roles.includes('CORE_SYSTEM_ADMIN'));
-    if (systemAdmins.length === 1 && systemAdmins[0].id === id && (status !== 'ACTIVE' || !coreRoles.includes('CORE_SYSTEM_ADMIN'))) throw failure('至少保留一个有效系统管理员');
+    if (systemAdmins.length === 1 && systemAdmins[0].id === id && ((this.roleSet === 'CORE' && !coreEnabled) || status !== 'ACTIVE' || !coreRoles.includes('CORE_SYSTEM_ADMIN'))) throw failure('至少保留一个有效系统管理员');
     this.db.prepare('UPDATE core_users SET roles_json = ?, edge_enabled = ?, edge_roles_json = ?, edge_provisioned = MAX(edge_provisioned, ?), status = ?, display_name = ?, locked_until = NULL, failed_attempts = 0, updated_at = ? WHERE user_id = ?')
       .run(JSON.stringify(coreRoles), edgeEnabled ? 1 : 0, JSON.stringify(normalizedEdgeRoles), edgeEnabled ? 1 : 0, status, display.trim(), now(), id);
     this.revoke(id);
-    this.event('USER_UPDATED', actor, { userId: id, roles: coreRoles, edgeEnabled, edgeRoles: normalizedEdgeRoles, status });
+    this.event('USER_UPDATED', actor, { userId: id, roles: coreRoles, coreEnabled, edgeEnabled, edgeRoles: normalizedEdgeRoles, status });
     return this.getUser(id);
     });
   }
-  async changePassword(id, password, actor, oldPassword = null) {
+  async changePassword(id, password, actor, oldPassword = null, { scope = 'CORE' } = {}) {
     passwordValid(password);
     const row = this.db.prepare('SELECT * FROM core_users WHERE user_id = ?').get(id);
     if (!row) throw failure('账号不存在', 404);
@@ -241,7 +249,7 @@ export class AuthStore {
     const digest = await scrypt(password, salt, 64, params);
     return this.transaction(() => {
     const current = this.db.prepare('SELECT password_hash, status FROM core_users WHERE user_id = ?').get(id);
-    if (current?.password_hash !== row.password_hash || (actor === id && current.status !== 'ACTIVE')) throw failure('账号或密码已被其他操作修改，请重试', 409);
+    if (current?.password_hash !== row.password_hash || (actor === id && scope !== 'EDGE' && current.status !== 'ACTIVE')) throw failure('账号或密码已被其他操作修改，请重试', 409);
     this.db.prepare('UPDATE core_users SET password_hash = ?, password_salt = ?, password_parameters_json = ?, must_change_password = ?, failed_attempts = 0, locked_until = NULL, password_changed_at = ?, updated_at = ? WHERE user_id = ?')
       .run(digest.toString('hex'), salt, JSON.stringify(params), actor === id ? 0 : 1, now(), now(), id);
     this.revoke(id);

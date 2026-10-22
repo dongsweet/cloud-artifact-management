@@ -55,7 +55,7 @@ test('Edge 委托 Core 登录，且角色变更对已有会话立即生效', asy
   try {
     const admin = await core.authStore.createUser({ username: 'core-admin', displayName: 'Core Admin', password: 'Core-Admin-Password-2026', roles: ['CORE_SYSTEM_ADMIN'] });
     await core.authStore.changePassword(admin.id, 'Core-Admin-Password-2027', admin.id, 'Core-Admin-Password-2026');
-    const operator = await core.authStore.createUser({ username: 'edge-operator', displayName: 'Edge Operator', password: 'Edge-Operator-Password-2026', roles: [], edgeEnabled: true, edgeRoles: ['EDGE_OPERATOR'] });
+    const operator = await core.authStore.createUser({ username: 'edge-operator', displayName: 'Edge Operator', password: 'Edge-Operator-Password-2026', roles: ['CORE_OPERATOR'], edgeEnabled: true, edgeRoles: ['EDGE_OPERATOR'] });
     await core.authStore.changePassword(operator.id, 'Edge-Operator-Password-2027', operator.id, 'Edge-Operator-Password-2026');
     const loginResponse = await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-operator', password: 'Edge-Operator-Password-2027' } });
     assert.equal(loginResponse.statusCode, 200, loginResponse.body);
@@ -64,13 +64,20 @@ test('Edge 委托 Core 登录，且角色变更对已有会话立即生效', asy
     const products = await edge.inject({ method: 'POST', url: '/api/v1/products', headers: sessionHeaders, payload: { name: 'role-test' } });
     assert.equal(products.statusCode, 201, products.body);
 
+    core.authStore.updateUser(operator.id, { coreEnabled: false }, admin.id);
+    assert.equal((await core.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-operator', password: 'Edge-Operator-Password-2027' } })).statusCode, 401);
+    assert.equal((await edge.inject({ method: 'GET', url: '/api/v1/auth/me', headers: sessionHeaders })).statusCode, 200, '关闭 Core 登录不应影响独立启用的 Edge 权限');
+    core.authStore.updateUser(operator.id, { coreEnabled: true }, admin.id);
+    assert.equal((await core.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-operator', password: 'Edge-Operator-Password-2027' } })).statusCode, 200);
+
     core.authStore.updateUser(operator.id, { edgeRoles: ['EDGE_AUDITOR'] }, admin.id);
     assert.equal((await edge.inject({ method: 'POST', url: '/api/v1/products', headers: sessionHeaders, payload: { name: 'should-deny' } })).statusCode, 403);
     const productRead = await edge.inject({ url: '/api/v1/products', headers: sessionHeaders });
     assert.equal(productRead.statusCode, 200, productRead.body);
 
-    core.authStore.updateUser(operator.id, { edgeEnabled: false, edgeRoles: [] }, admin.id);
+    core.authStore.updateUser(operator.id, { edgeEnabled: false }, admin.id);
     assert.equal((await edge.inject({ url: '/api/v1/auth/me', headers: sessionHeaders })).statusCode, 401);
+    assert.equal((await core.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-operator', password: 'Edge-Operator-Password-2027' } })).statusCode, 200, '关闭 Edge 登录不应影响独立启用的 Core 权限');
   } finally { await edge.close(); await core.close(); await rm(coreData, { recursive: true, force: true }); await rm(edgeData, { recursive: true, force: true }); }
 });
 
@@ -78,6 +85,7 @@ test('Edge 账号密码修改仍由 Core 完成', async () => {
   const { core, edge, coreData, edgeData } = await createPair();
   try {
     const operator = await core.authStore.createUser({ username: 'edge-password', displayName: 'Edge Password', password: 'Initial-Password-2026', roles: [], edgeEnabled: true, edgeRoles: ['EDGE_OPERATOR'] });
+    core.authStore.updateUser(operator.id, { coreEnabled: false });
     const response = await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-password', password: 'Initial-Password-2026' } });
     assert.equal(response.statusCode, 200);
     const sessionHeaders = headers(response);
@@ -85,7 +93,7 @@ test('Edge 账号密码修改仍由 Core 完成', async () => {
     const changed = await edge.inject({ method: 'POST', url: '/api/v1/auth/password', headers: sessionHeaders, payload: { oldPassword: 'Initial-Password-2026', password: 'Permanent-Password-2026' } });
     assert.equal(changed.statusCode, 200, changed.body);
     assert.equal((await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-password', password: 'Permanent-Password-2026' } })).statusCode, 200);
-    assert.equal((await core.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-password', password: 'Permanent-Password-2026' } })).statusCode, 403);
+    assert.equal((await core.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-password', password: 'Permanent-Password-2026' } })).statusCode, 401);
     assert.ok(operator.id);
   } finally { await edge.close(); await core.close(); await rm(coreData, { recursive: true, force: true }); await rm(edgeData, { recursive: true, force: true }); }
 });

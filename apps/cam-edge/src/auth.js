@@ -39,7 +39,7 @@ export function registerAuth(app, { auth, principalProvider, keyring, gateConfig
     const jar = cookies(request);
     request.principal = principalProvider ? await principalProvider(request) : auth.resolve(jar.cam_session);
     // Edge 会话不把角色当作永久快照。每个受保护请求都从 Core 获取当前授权，
-    // 因而 Core 禁用账号、撤销 Edge 资格或调整角色后立即影响已有会话。
+    // 因而 Edge 权限或角色调整后会立即影响已有会话；Core 登录开关只控制 Core 本身。
     if (!principalProvider && request.principal?.type === 'CORE_USER') {
       try {
         const current = (await coreExchange('GET', '/api/v1/gate/users')).items.find((item) => item.id === request.principal.id);
@@ -118,7 +118,7 @@ export function registerAuth(app, { auth, principalProvider, keyring, gateConfig
     return fail(reply, 403, 'core_account_required', '账号密码由 CAM Core 管理，请登录 Core 修改或联系管理员重置');
   });
   app.get('/api/v1/validators', async (_request, reply) => {
-    try { return { items: (await coreExchange('GET', '/api/v1/gate/users')).items.filter((user) => user.edgeEnabled && user.status === 'ACTIVE' && !user.mustChangePassword && !(user.lockedUntil > Date.now()) && user.roles.includes('EDGE_OPERATOR')) }; }
+    try { return { items: (await coreExchange('GET', '/api/v1/gate/users')).items.filter((user) => user.edgeEnabled && !user.mustChangePassword && !(user.lockedUntil > Date.now()) && user.roles.includes('EDGE_OPERATOR')) }; }
     catch (err) { return fail(reply, err.statusCode ?? 502, err.code ?? 'core_request_failed', err.message); }
   });
   app.get('/api/v1/users', async (_request, reply) => {

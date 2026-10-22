@@ -42,7 +42,7 @@ export class AuthStore {
     const session = this.db.prepare('SELECT * FROM edge_core_sessions WHERE token_sha256 = ?').get(hash(token));
     if (!session || session.revoked_at || session.expires_at <= this.clock() || session.last_seen_at + this.idleMs <= this.clock()) return null;
     const user = this.getUser(session.core_user_id);
-    if (!user || user.status !== 'ACTIVE' || !user.edgeEnabled || user.lockedUntil > this.clock()) return null;
+    if (!user || !user.edgeEnabled || user.lockedUntil > this.clock()) return null;
     this.db.prepare('UPDATE edge_core_sessions SET last_seen_at = ? WHERE session_id = ?').run(this.clock(), session.session_id);
     return this.principalFromSession(session, user);
   }
@@ -70,7 +70,7 @@ export class AuthStore {
 
   /** 用 Core 当前下发的授权刷新会话，角色/禁用变更立即生效。 */
   refreshCoreSession(principal, current) {
-    if (!principal || principal.type !== 'CORE_USER' || !current || current.id !== principal.id || current.status !== 'ACTIVE' || !current.edgeEnabled || current.lockedUntil > this.clock()) {
+    if (!principal || principal.type !== 'CORE_USER' || !current || current.id !== principal.id || !current.edgeEnabled || current.lockedUntil > this.clock()) {
       if (principal?.sessionId) this.db.prepare('UPDATE edge_core_sessions SET revoked_at = ? WHERE session_id = ? AND revoked_at IS NULL').run(this.clock(), principal.sessionId);
       return null;
     }

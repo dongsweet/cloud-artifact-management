@@ -65,9 +65,15 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
     const created = await app.inject({ method: 'POST', url: '/api/v1/users', headers: { cookie: securityCookie, 'x-cam-core-csrf': securityCsrf }, payload: { username: 'operator1', displayName: '发布操作员', password: 'Operator-Password-123', roles: ['CORE_OPERATOR'] } });
     assert.equal(created.statusCode, 201, created.body);
     const userId = created.json().user.id;
-    const updated = await app.inject({ method: 'PATCH', url: `/api/v1/users/${encodeURIComponent(userId)}`, headers: { cookie: securityCookie, 'x-cam-core-csrf': securityCsrf }, payload: { displayName: '云管审批操作员', roles: ['CORE_OPERATOR'], status: 'ACTIVE' } });
+    assert.equal(created.json().user.coreEnabled, true);
+    const updated = await app.inject({ method: 'PATCH', url: `/api/v1/users/${encodeURIComponent(userId)}`, headers: { cookie: securityCookie, 'x-cam-core-csrf': securityCsrf }, payload: { displayName: '云管审批操作员', roles: ['CORE_OPERATOR'], coreEnabled: true } });
     assert.equal(updated.statusCode, 200, updated.body);
     assert.equal(updated.json().user.displayName, '云管审批操作员');
+    assert.equal(updated.json().user.coreEnabled, true);
+    const coreDisabled = await app.inject({ method: 'PATCH', url: `/api/v1/users/${encodeURIComponent(userId)}`, headers: { cookie: securityCookie, 'x-cam-core-csrf': securityCsrf }, payload: { coreEnabled: false } });
+    assert.equal(coreDisabled.statusCode, 200, coreDisabled.body);
+    assert.equal(coreDisabled.json().user.status, 'DISABLED');
+    assert.equal(coreDisabled.json().user.coreEnabled, false);
     const reset = await app.inject({ method: 'POST', url: `/api/v1/users/${encodeURIComponent(userId)}/password`, headers: { cookie: securityCookie, 'x-cam-core-csrf': securityCsrf }, payload: { password: 'Reset-Password-789' } });
     assert.equal(reset.statusCode, 200, reset.body);
     assert.equal(reset.json().mustChangePassword, true);
