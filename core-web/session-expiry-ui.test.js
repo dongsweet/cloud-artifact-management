@@ -13,3 +13,10 @@ test('Core session expiry returns to a usable login screen', async () => {
   assert.match(script, /document\.querySelectorAll\('\.modal-backdrop'\)\.forEach\(\(backdrop\) => backdrop\.remove\(\)\)/u);
   assert.match(script, /if \(response\.status === 401[^\n]+showLogin\(\)/u);
 });
+
+test('Core login screen contains no account type explanation', async () => {
+  const html = await read('./index.html');
+  const login = html.slice(html.indexOf('<div id="login"'), html.indexOf('<div id="password-change"'));
+  assert.match(login, /id="login-form"/u);
+  assert.doesNotMatch(login, /Core 本地应急账号|AAA 账号/u);
+});
