@@ -21,6 +21,7 @@ test('Core account editor uses a single-column form and explicit local/AAA contr
   assert.match(html, /id="reset-password" type="text"/u);
   assert.match(css, /\.cam-user-modal \{[^}]*width: min\(560px/u);
   assert.match(css, /\.cam-user-modal > \.card \{[^}]*width: 100%; min-width: 0; max-width: 100%;/u);
+  assert.match(script, /user-password-field'\)\.classList\.toggle\('d-none', editing\)/u);
   assert.match(script, /password\.disabled = editing \|\| aaa/u);
   assert.match(script, /password\.required = !editing && !aaa/u);
   assert.match(script, /coreEnabled: \$\('#user-core-enabled'\)\.checked/u);

@@ -451,7 +451,7 @@ function selectedUserAuthSource() { return document.querySelector('input[name="u
 function updateUserCredentialFields(editing = Boolean($('#user-form').dataset.userId)) {
   const aaa = selectedUserAuthSource() === 'AAA';
   const password = $('#user-password');
-  $('#user-password-field').classList.toggle('d-none', editing || aaa);
+  $('#user-password-field').classList.toggle('d-none', editing);
   password.disabled = editing || aaa;
   password.required = !editing && !aaa;
   if (aaa) password.value = '';
