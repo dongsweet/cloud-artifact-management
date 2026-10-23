@@ -12,7 +12,7 @@ export const currentUser = () => user;
 // Human-facing labels keep internal UUIDs out of normal business screens.
 export function userLabel(id) {
   if (!id) return '-';
-  const known = users.find((item) => item.id === id) ?? (user?.id === id ? user : null);
+  const known = users.find((item) => item.id === id || item.username === id) ?? (user?.id === id || user?.username === id ? user : null);
   return known ? `${known.displayName}（${known.username}）` : '未知账号';
 }
 export const hasRole = (...roles) => roles.some((r) => user?.roles?.includes(r));
