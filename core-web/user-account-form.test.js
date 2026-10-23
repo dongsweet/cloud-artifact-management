@@ -22,6 +22,8 @@ test('Core account editor uses a single-column form and explicit local/AAA contr
   const sharedLayout = await read('../web-shared/layout.css');
   assert.match(sharedLayout, /\.cam-account-modal \{[^}]*width: min\(560px/u);
   assert.match(sharedLayout, /\.cam-account-modal > \.card \{[^}]*width: 100%; min-width: 0; max-width: 100%;/u);
+  const coreCss = await read('./core.css');
+  assert.match(coreCss, /\.app-main \.cam-account-modal > \.card \{ min-width: 0; \}/u);
   assert.match(script, /user-password-field'\)\.classList\.toggle\('d-none', editing\)/u);
   assert.match(script, /password\.disabled = editing \|\| aaa/u);
   assert.match(script, /password\.required = !editing && !aaa/u);

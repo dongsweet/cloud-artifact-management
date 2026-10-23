@@ -1,4 +1,5 @@
 .app-main .card { min-width: 900px; }
+.app-main .cam-account-modal > .card { min-width: 0; }
 .font-monospace { font-size: .82rem; }
 
 /* AdminLTE card-title floats can absorb the header width and displace actions. */
