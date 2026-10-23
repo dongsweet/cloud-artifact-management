@@ -84,7 +84,7 @@ function showLogin() {
 function showPasswordChange(forced) { forcedPasswordChange = forced; $('#password-title').textContent = forced ? '修改初始密码' : '修改密码'; $('#password-help').textContent = forced ? '首次登录必须修改初始密码。' : '修改密码后需要重新登录。'; $('#password-cancel').classList.remove('d-none'); $('#password-error').classList.add('d-none'); const dialog = $('#password-change'); if (!dialog.open) dialog.showModal(); }
 function showApp(user) { currentUser = user; forcedPasswordChange = Boolean(user.mustChangePassword); $('#login').classList.add('d-none'); $('#app').classList.remove('d-none'); $('#change-password').classList.toggle('d-none', user.authSource === 'AAA'); clearMessage(); $('#user-label').textContent = `${user.displayName}（${user.username}）`; applyRoleMenu(); if (user.mustChangePassword) showPasswordChange(true); else startRequestPolling(); return user; }
 function statusBadge(value) { const kind = value === 'APPROVED' ? 'success' : value === 'REJECTED' ? 'danger' : 'warning'; return `<span class="badge text-bg-${kind}">${escapeHtml(statusLabels[value] ?? value)}</span>`; }
-const cloudStatusLabels = { APPROVED: '审批通过', REJECTED: '已拒绝', PENDING: '审批中', PROCESSING: '处理中', UNKNOWN: '待确认' };
+const cloudStatusLabels = { APPROVED: '审批通过', REJECTED: '已拒绝', PENDING: '审批中', PROCESSING: '处理中', UNKNOWN: '待确认', CLOUD_STATUS_UNCONFIRMED: '待确认' };
 function cloudStatusBadge(value) {
   if (!value) return '<span class="badge text-bg-secondary">未提交</span>';
   const kind = value === 'APPROVED' ? 'success' : value === 'REJECTED' ? 'danger' : value === 'UNKNOWN' ? 'warning' : 'info';
@@ -245,10 +245,11 @@ async function updateAgentStatus(button) {
 async function showDetail(id) {
   const item = (await api(`/api/v1/approval-requests/${encodeURIComponent(id)}`)).item;
   const dialog = $('#detail');
+  const openDetailSections = new Set([...dialog.querySelectorAll('details[data-detail-key]')].filter((section) => section.open).map((section) => section.dataset.detailKey));
   dialog.dataset.requestId = id;
   $('#detail .card-title').textContent = requestSubject(item);
-  $('#detail-status').className = 'd-flex align-items-center justify-content-end gap-2 flex-wrap';
-  $('#detail-status').innerHTML = `${statusBadge(item.status)}${cloudStatusBadge(item.cloudStatus)}`;
+  $('#detail-kicker').innerHTML = `固化申请详情 <span class="badge text-bg-${item.cloudStatus === 'APPROVED' ? 'success' : item.cloudStatus === 'REJECTED' ? 'danger' : 'warning'} ms-2">${escapeHtml(cloudStatusLabels[item.cloudStatus] ? `云管：${cloudStatusLabels[item.cloudStatus]}` : '云管：未提交')}</span>`;
+  $('#detail-request-id').textContent = item.requestId ?? '';
   const cloudRetryStatus = item.status === 'CLOUD_PENDING'
     ? `${submissionStateLabels[item.cloudSubmissionState] ?? '等待提交'}（累计 ${item.cloudSubmissionAttempts ?? 0} 次）`
     : '-';
@@ -263,7 +264,7 @@ async function showDetail(id) {
     : `<div class="text-body-secondary">${item.transferTaskId ? '正式制品明细尚未同步，Edge 后续传输时会按原获批 SHA-256 补齐清单。' : '该申请尚未关联正式制品清单。'}</div>`;
   const retryPanel = item.status === 'CLOUD_PENDING'
     ? `<div class="cam-retry-panel"><div><span class="fw-semibold">${escapeHtml(cloudRetryStatus)}</span>${item.cloudSubmissionAttemptedAt ? `<span class="small text-body-secondary ms-2">最近尝试：${escapeHtml(displayTime(item.cloudSubmissionAttemptedAt))}</span>` : ''}</div>${item.cloudRetryAt ? `<div class="small text-warning-emphasis mt-1"><i class="bi bi-clock me-1"></i>${escapeHtml(retryCountdown(item.cloudRetryAt))} · ${escapeHtml(displayTime(item.cloudRetryAt))}</div>` : ''}${item.lastError ? `<div class="small text-danger mt-2"><i class="bi bi-exclamation-circle me-1"></i>${escapeHtml(item.lastError)}</div>` : ''}</div>`
-    : `<div class="cam-retry-panel cam-retry-panel-muted">${escapeHtml(statusLabels[item.status] ?? item.status)}${item.cloudWorkflowStep ? ` · 云管环节：${escapeHtml(item.cloudWorkflowStep)}` : ''}${item.lastError ? `<div class="small text-danger mt-2"><i class="bi bi-exclamation-circle me-1"></i>${escapeHtml(item.lastError)}</div>` : ''}</div>`;
+    : `<div class="cam-retry-panel cam-retry-panel-muted">${escapeHtml(item.cloudApprovalId ? '云管工单已提交' : (statusLabels[item.status] ?? item.status))}${item.cloudWorkflowStep ? ` · 云管环节：${escapeHtml(item.cloudWorkflowStep)}` : ''}${item.lastError ? `<div class="small text-danger mt-2"><i class="bi bi-exclamation-circle me-1"></i>${escapeHtml(item.lastError)}</div>` : ''}</div>`;
   const transferLabel = item.transferStatus === 'RECEIVED'
     ? '传输完成，Core 已收到回执'
     : item.transferTaskId
@@ -273,21 +274,23 @@ async function showDetail(id) {
         : '审批通过后可准备传输';
   const notificationFailed = ['SENDING', 'RETRY_WAIT'].includes(item.transferNotificationState);
   const transferPanel = `<div class="cam-transfer-state"><span class="badge text-bg-${item.transferStatus === 'RECEIVED' ? 'success' : item.transferTaskId ? 'primary' : item.status === 'APPROVED' ? 'warning' : 'secondary'}">${escapeHtml(transferLabel)}</span>${item.transferTaskId && item.transferNotificationAttempts ? `<div class="small text-body-secondary mt-1">授权通知 Edge：${item.transferNotificationState === 'DELIVERED' ? '已送达' : item.transferNotificationState === 'RETRY_WAIT' ? '等待自动重试' : item.transferNotificationState === 'SENDING' ? '发送中' : '准备中'} · 已尝试 ${item.transferNotificationAttempts} 次</div>` : ''}${notificationFailed && item.transferNotificationLastError ? `<div class="small text-danger mt-1">${escapeHtml(item.transferNotificationLastError)}</div>` : ''}${item.transferStatus === 'RECEIVED' && item.updatedAt ? `<div class="small text-body-secondary mt-1">最近更新：${escapeHtml(displayTime(item.updatedAt))}</div>` : ''}${item.status === 'APPROVED' && !item.transferTaskId ? '<div class="small text-body-secondary mt-1">准备动作会绑定云管审批返回的任务编号和已批准清单，不会修改制品内容。</div>' : ''}</div>`;
-  const cloudApprovalPanel = `<div class="cam-status-panel">${cloudStatusBadge(item.cloudStatus)}${item.cloudApprovalId ? `<span class="small text-body-secondary font-monospace ms-2">${escapeHtml(item.cloudApprovalId)}</span>` : '<span class="small text-body-secondary ms-2">尚未创建云管工单</span>'}${item.cloudWorkflowStep ? `<div class="small text-body-secondary mt-1">当前环节：${escapeHtml(item.cloudWorkflowStep)}</div>` : ''}<div class="small mt-1">${item.cloudResponseSummary ? escapeHtml(item.cloudResponseSummary) : '<span class="text-body-secondary">尚未返回处理意见</span>'}</div></div>`;
+  const cloudApprovalPanel = `<div class="cam-status-panel">${item.cloudApprovalId ? `<div class="small text-body-secondary font-monospace text-break">${escapeHtml(item.cloudApprovalId)}</div>` : '<div class="small text-body-secondary">尚未创建云管工单</div>'}${item.cloudWorkflowStep ? `<div class="small text-body-secondary mt-1">当前环节：${escapeHtml(item.cloudWorkflowStep)}</div>` : ''}<div class="small mt-1">${item.cloudResponseSummary ? escapeHtml(item.cloudResponseSummary) : '<span class="text-body-secondary">尚未返回处理意见</span>'}</div></div>`;
   const reportPanel = `<div>${reportLink}</div><div class="small text-body-secondary mt-1">${item.reportReceived ? 'Core 已校验' : '待从 Edge 接收'}</div>`;
+  const versionPanel = `<div>${escapeHtml(item.displayVersion ?? item.version ?? '-')}<div class="small text-body-secondary font-monospace mt-1">${escapeHtml(item.releaseId ?? '-')}</div></div>`;
+  const roundPanel = `<div>${escapeHtml(item.roundNo ? `第 ${item.roundNo} 轮` : '-')}<div class="small text-body-secondary font-monospace mt-1">${escapeHtml(item.roundId ?? '-')}</div></div>`;
+  const storedFiles = files.filter((file) => file.stored).length;
   $('#fields').innerHTML = `
     <section class="cam-detail-section"><h4><i class="bi bi-box-seam me-2"></i>发布信息</h4><div class="cam-detail-grid">
-      ${textField('软件产品', item.productName)}${textField('软件版本', item.displayVersion ?? item.version)}${textField('候选轮次', item.roundNo ? `第 ${item.roundNo} 轮` : '-')}${textField('验证报告标题', item.reportTitle ?? '旧版请求未携带')}
+      ${textField('软件产品', item.productName)}${detailField('软件版本', versionPanel)}${detailField('候选轮次', roundPanel)}${textField('验证报告标题', item.reportTitle ?? '旧版请求未携带')}
     </div></section>
     <section class="cam-detail-section"><h4><i class="bi bi-arrow-left-right me-2"></i>处理状态</h4><div class="cam-detail-grid">
       ${detailField('云管审批', cloudApprovalPanel)}${detailField('云管提交', retryPanel)}${detailField('正式制品传输', transferPanel)}${detailField('验证报告', reportPanel)}
-      ${detailField('正式制品', files.length ? `${files.filter((file) => file.stored).length} / ${files.length} 个文件已入库` : (item.transferTaskId ? '明细尚未同步' : '尚未关联制品清单'))}
     </div></section>
-    <details class="cam-detail-advanced"><summary><i class="bi bi-chevron-right me-2"></i>技术标识与摘要</summary><div class="cam-detail-grid">
-      ${textField('申请编号', item.requestId, { mono: true })}${textField('发布版本标识', item.releaseId, { mono: true })}${textField('候选轮次标识', item.roundId, { mono: true })}${textField('传输任务 ID', item.cloudTransferTaskId, { mono: true })}
-      ${textField('清单 SHA-256', item.manifestSha256, { mono: true, wide: true })}${textField('报告 SHA-256', item.reportSha256, { mono: true })}${textField('云管附件标识', item.cloudAttachmentId ?? '待上传', { mono: true })}${textField('审批暗号', item.approvalCodeConfigured ? '已生成（详情中隐藏）' : '旧版申请未生成')}
-    </div></details>
-    <details class="cam-detail-advanced"><summary><i class="bi bi-chevron-right me-2"></i>正式制品文件清单${files.length ? `（${files.length} 个）` : ''}</summary><div class="cam-detail-advanced-body">${fileList}</div></details>`;
+    <section class="cam-detail-section"><h4><i class="bi bi-shield-check me-2"></i>完整性摘要</h4><div class="cam-detail-grid">
+      ${textField('清单 SHA-256', item.manifestSha256, { mono: true })}${textField('报告 SHA-256', item.reportSha256, { mono: true })}
+    </div></section>
+    <details class="cam-detail-advanced" data-detail-key="artifacts"><summary><i class="bi bi-chevron-right me-2"></i>正式制品文件清单 <span class="small text-body-secondary fw-normal">${files.length ? `（${storedFiles} / ${files.length} 个文件已入库）` : '（暂无文件）'}</span></summary><div class="cam-detail-advanced-body">${fileList}</div></details>`;
+  dialog.querySelectorAll('details[data-detail-key]').forEach((section) => { section.open = openDetailSections.has(section.dataset.detailKey); });
   const actions = [];
   if (item.status === 'CLOUD_PENDING' && canCore('businessWrite')) {
     const busy = ['QUEUED', 'SUBMITTING'].includes(item.cloudSubmissionState);

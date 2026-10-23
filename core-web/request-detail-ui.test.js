@@ -4,12 +4,17 @@ import test from 'node:test';
 
 const read = (name) => readFile(new URL(name, import.meta.url), 'utf8');
 
-test('Core approval details keep the primary workflow visible and technical data collapsed', async () => {
+test('Core approval details keep the primary workflow visible and the file list compact', async () => {
   const [html, css, script] = await Promise.all([read('./index.html'), read('./core.css'), read('./core.js')]);
   assert.match(html, /<th>清单摘要<\/th><th>更新时间<\/th><th class="text-end">云管审批<\/th><th>操作<\/th>/u);
-  assert.match(script, /cloudStatusBadge\(item\.cloudStatus\)/u);
-  assert.match(script, /技术标识与摘要/u);
+  assert.match(html, /id="detail-kicker"/u);
+  assert.match(html, /id="detail-request-id"/u);
+  assert.match(script, /detail-kicker.*cloudStatusLabels/su);
+  assert.doesNotMatch(script, /技术标识与摘要/u);
+  assert.doesNotMatch(script, /审批暗号/u);
+  assert.doesNotMatch(script, /云管附件标识/u);
   assert.match(script, /正式制品文件清单/u);
   assert.match(script, /cloudResponseSummary/u);
+  assert.match(script, /openDetailSections/u);
   assert.match(css, /\.cam-detail-advanced > summary \{[\s\S]*?cursor: pointer/u);
 });
