@@ -1,4 +1,4 @@
-import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js?v=20261023-password-flow';
+import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js?v=20261023-menu-groups';
 import { renderGatePairing } from './gate-pairing.js?v=20261020-peer-save-feedback';
 import { refreshPaginatedTables } from './table-pagination.js?v=20261020-table-pagination';
 import { canEdgePage } from './role-permissions.js?v=20261023-auditor-scope';
