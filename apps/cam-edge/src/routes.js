@@ -347,10 +347,18 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     const user = auth.getUser(grant.principalId);
     return user?.source === 'CORE' ? user.edgeEnabled && !user.mustChangePassword && !(user.lockedUntil > Date.now()) && user.roles.includes('EDGE_OPERATOR') : user?.status === 'ACTIVE' && !user.mustChangePassword && user.roles.includes('EDGE_OPERATOR');
   };
+  const grantResponse = (grant) => {
+    if (!grant) return grant;
+    const person = auth.getUser(grant.principalId) ?? auth.getUser(grant.createdBy);
+    return {
+      ...grant,
+      responsiblePerson: person ? { id: person.id, displayName: person.displayName, username: person.username } : { id: grant.principalId, displayName: null, username: null }
+    };
+  };
   app.get('/api/v1/download-grants', async (request) => {
     const audit = request.principal.roles?.includes('EDGE_AUDITOR');
     const rows = downloadGrants.db.prepare(audit ? 'SELECT grant_id FROM download_grants ORDER BY created_at DESC LIMIT 200' : 'SELECT grant_id FROM download_grants WHERE created_by = ? OR principal_id = ? ORDER BY created_at DESC LIMIT 200');
-    return { items: (audit ? rows.all() : rows.all(request.principal.id, request.principal.id)).map((r) => downloadGrants.getGrant(r.grant_id)) };
+    return { items: (audit ? rows.all() : rows.all(request.principal.id, request.principal.id)).map((r) => grantResponse(downloadGrants.getGrant(r.grant_id))) };
   });
   app.post('/api/v1/download-grants', async (request, reply) => {
     if (!downloadGrants) return error(reply, 503, 'download_grants_unavailable', 'download grants are not configured');
@@ -372,12 +380,13 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
         principalId: actor.principalId,
         principalType: actor.principalType,
         createdBy: actor.principalId,
+        roundId: body.roundId || null,
         expiresAt: body.expiresAt,
         maxTotalSessions: Array.isArray(body.candidateIds) ? body.candidateIds.length * body.maxSessionsPerFile : body.maxTotalSessions,
         maxSessionsPerFile: body.maxSessionsPerFile
       });
       return reply.code(201).send({
-        ...grant,
+        ...grantResponse(grant),
         items: grant.items.map((item) => ({ ...item, downloadUrl: `/api/v1/downloads/${encodeURIComponent(item.candidateId)}/content?token=${encodeURIComponent(grant.token)}` }))
       });
     } catch (err) {
@@ -391,7 +400,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const actor = principal(request);
       const grant = downloadGrants.getGrant(request.params.grantId);
       if (!grant || (grant.createdBy !== actor.principalId && grant.principalId !== actor.principalId && !request.principal.roles?.includes('EDGE_AUDITOR'))) return error(reply, 404, 'download_grant_not_found', 'download grant not found');
-      return reply.send({ ...grant, sessions: downloadGrants.db.prepare('SELECT session_id, candidate_id, status, bytes_sent, covered_bytes, source_address, started_at, updated_at FROM download_sessions WHERE grant_id = ? ORDER BY rowid DESC LIMIT 200').all(grant.grantId) });
+      return reply.send({ ...grantResponse(grant), sessions: downloadGrants.db.prepare('SELECT session_id, candidate_id, status, bytes_sent, covered_bytes, source_address, started_at, updated_at FROM download_sessions WHERE grant_id = ? ORDER BY rowid DESC LIMIT 200').all(grant.grantId) });
     } catch (err) {
       return error(reply, err.code === 'principal_required' ? 401 : 400, err.code ?? 'download_grant_query_failed', err.message);
     }

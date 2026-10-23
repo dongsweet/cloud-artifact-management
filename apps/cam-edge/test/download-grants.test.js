@@ -10,7 +10,7 @@ import test from 'node:test';
 import { DownloadGrantStore } from '../src/download-grant-store.js';
 import { buildEdgeApp } from '../src/app.js';
 
-function setup() {
+function setup(round = null) {
   const db = new DatabaseSync(':memory:');
   db.exec(`CREATE TABLE candidates (
     candidate_id TEXT PRIMARY KEY, file_name TEXT NOT NULL, expected_size INTEGER NOT NULL,
@@ -23,7 +23,9 @@ function setup() {
   for (const candidate of candidates.values()) db.prepare(`INSERT INTO candidates
     (candidate_id, file_name, expected_size, final_md5, final_sha256, status) VALUES (?, ?, ?, ?, ?, ?)`)
     .run(candidate.candidate_id, candidate.file_name, candidate.expected_size, candidate.final_md5 ?? null, candidate.final_sha256 ?? null, candidate.status);
-  const store = new DownloadGrantStore({ db, candidateStore: { get: (candidateId) => candidates.get(candidateId) ?? null } });
+  const candidateStore = { get: (candidateId) => candidates.get(candidateId) ?? null };
+  if (round) candidateStore.getRound = (roundId) => roundId === round.roundId ? round : null;
+  const store = new DownloadGrantStore({ db, candidateStore });
   return { db, store };
 }
 
@@ -34,6 +36,16 @@ test('download grants bind a completed-file allowlist to a principal and persist
   assert.equal(store.getGrantByToken(grant.token).principalId, 'user-42');
   assert.equal(db.prepare('SELECT token_sha256 FROM download_grants WHERE grant_id = ?').get(grant.grantId).token_sha256.includes(grant.token), false);
   assert.throws(() => store.createGrant({ candidateIds: ['CAND-2'], principalId: 'user-42', principalType: 'LOCAL_PENDING', expiresAt: new Date(Date.now() + 60_000).toISOString(), maxTotalSessions: 1, maxSessionsPerFile: 1 }), /not a verified completed file/);
+  db.close();
+});
+
+test('download grants preserve the selected round for the Edge authorization list', () => {
+  const round = { roundId: 'ROUND-1', roundNo: 3, productName: '曙光云 Stack', displayVersion: '8.0.6.2-r1' };
+  const { db, store } = setup(round);
+  const grant = store.createGrant({ candidateIds: ['CAND-1'], principalId: 'user-42', principalType: 'LOCAL_PENDING', roundId: round.roundId, expiresAt: new Date(Date.now() + 60_000).toISOString(), maxTotalSessions: 3, maxSessionsPerFile: 2 });
+  assert.deepEqual({ roundId: grant.roundId, roundNo: grant.roundNo, productName: grant.productName, displayVersion: grant.displayVersion }, round);
+  assert.deepEqual({ roundId: store.getGrant(grant.grantId).roundId, roundNo: store.getGrant(grant.grantId).roundNo }, { roundId: 'ROUND-1', roundNo: 3 });
+  assert.equal(db.prepare('SELECT round_id, round_no, product_name, display_version FROM download_grants WHERE grant_id = ?').get(grant.grantId).round_id, 'ROUND-1');
   db.close();
 });
 

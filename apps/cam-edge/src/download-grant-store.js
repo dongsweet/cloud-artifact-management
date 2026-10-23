@@ -21,6 +21,10 @@ export class DownloadGrantStore {
         principal_id TEXT NOT NULL,
         principal_type TEXT NOT NULL,
         created_by TEXT NOT NULL,
+        round_id TEXT,
+        round_no INTEGER,
+        product_name TEXT,
+        display_version TEXT,
         expires_at TEXT NOT NULL,
         max_total_sessions INTEGER NOT NULL,
         revoked_at TEXT,
@@ -63,6 +67,13 @@ export class DownloadGrantStore {
       );
       CREATE INDEX IF NOT EXISTS download_events_grant_idx ON download_events(grant_id, created_at);
     `);
+    // Keep existing Edge databases compatible with the round-aware grant list.
+    // Old grants intentionally remain without a round because their original
+    // request did not carry enough information to reconstruct one safely.
+    const grantColumns = new Set(db.prepare('PRAGMA table_info(download_grants)').all().map((column) => column.name));
+    for (const [name, definition] of [['round_id', 'TEXT'], ['round_no', 'INTEGER'], ['product_name', 'TEXT'], ['display_version', 'TEXT']]) {
+      if (!grantColumns.has(name)) db.exec(`ALTER TABLE download_grants ADD COLUMN ${name} ${definition}`);
+    }
     if (!db.prepare('PRAGMA table_info(download_sessions)').all().some((column) => column.name === 'covered_bytes')) {
       db.exec('ALTER TABLE download_sessions ADD COLUMN covered_bytes INTEGER NOT NULL DEFAULT 0; UPDATE download_sessions SET covered_bytes = bytes_sent');
     }
@@ -86,7 +97,7 @@ export class DownloadGrantStore {
     this.logger.info({ downloadEvent: { eventId, grantId, candidateId, sessionId, principalId, eventType: type, details, createdAt } }, 'download event');
   }
 
-  createGrant({ candidateIds, principalId, principalType, createdBy = principalId, expiresAt, maxTotalSessions, maxSessionsPerFile }) {
+  createGrant({ candidateIds, principalId, principalType, createdBy = principalId, roundId = null, expiresAt, maxTotalSessions, maxSessionsPerFile }) {
     if (typeof principalId !== 'string' || !principalId.trim()) throw new Error('principalId is required');
     if (typeof principalType !== 'string' || !principalType.trim()) throw new Error('principalType is required');
     if (typeof createdBy !== 'string' || !createdBy.trim()) throw new Error('createdBy is required');
@@ -96,6 +107,8 @@ export class DownloadGrantStore {
     const expiry = new Date(expiresAt);
     const now = Date.now();
     if (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= now || expiry.getTime() > now + 30 * 24 * 60 * 60 * 1000) throw new Error('expiresAt must be within the next 30 days');
+    const round = roundId ? this.candidateStore.getRound?.(roundId) : null;
+    if (roundId && !round) throw new Error(`round not found: ${roundId}`);
     const candidates = candidateIds.map((candidateId) => {
       const candidate = this.candidateStore.get(candidateId);
       if (!candidate) throw new Error(`candidate not found: ${candidateId}`);
@@ -108,8 +121,8 @@ export class DownloadGrantStore {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.db.prepare(`INSERT INTO download_grants
-        (grant_id, token_sha256, principal_id, principal_type, created_by, expires_at, max_total_sessions, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(grantId, tokenHash(token), principalId, principalType, createdBy, expiry.toISOString(), totalLimit, createdAt);
+        (grant_id, token_sha256, principal_id, principal_type, created_by, round_id, round_no, product_name, display_version, expires_at, max_total_sessions, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(grantId, tokenHash(token), principalId, principalType, createdBy, round?.roundId ?? roundId ?? null, round?.roundNo ?? null, round?.productName ?? null, round?.displayVersion ?? round?.version ?? null, expiry.toISOString(), totalLimit, createdAt);
       const insertItem = this.db.prepare('INSERT INTO download_grant_items (grant_id, candidate_id, max_sessions) VALUES (?, ?, ?)');
       for (const candidate of candidates) insertItem.run(grantId, candidate.candidate_id ?? candidate.candidateId, fileLimit);
       this.recordEvent({ grantId, principalId: createdBy, type: 'GRANT_CREATED', details: { itemCount: candidates.length, expiresAt: expiry.toISOString(), maxTotalSessions: totalLimit, maxSessionsPerFile: fileLimit } });
@@ -118,7 +131,7 @@ export class DownloadGrantStore {
       this.db.exec('ROLLBACK');
       throw error;
     }
-    return { grantId, token, expiresAt: expiry.toISOString(), maxTotalSessions: totalLimit, maxSessionsPerFile: fileLimit, items: candidates.map((candidate) => ({ candidateId: candidate.candidate_id ?? candidate.candidateId, fileName: candidate.file_name ?? candidate.fileName, size: candidate.expected_size ?? candidate.size, sha256: candidate.final_sha256 ?? candidate.finalSha256, md5: candidate.final_md5 ?? candidate.finalMd5 ?? null })) };
+    return { grantId, token, principalId, principalType, createdBy, roundId: round?.roundId ?? roundId ?? null, roundNo: round?.roundNo ?? null, productName: round?.productName ?? null, displayVersion: round?.displayVersion ?? round?.version ?? null, expiresAt: expiry.toISOString(), maxTotalSessions: totalLimit, maxSessionsPerFile: fileLimit, items: candidates.map((candidate) => ({ candidateId: candidate.candidate_id ?? candidate.candidateId, fileName: candidate.file_name ?? candidate.fileName, size: candidate.expected_size ?? candidate.size, sha256: candidate.final_sha256 ?? candidate.finalSha256, md5: candidate.final_md5 ?? candidate.finalMd5 ?? null })) };
   }
 
   getGrantByToken(token) {
@@ -138,7 +151,7 @@ export class DownloadGrantStore {
     const items = this.db.prepare(`SELECT i.candidate_id, i.max_sessions, c.file_name, c.expected_size, c.final_md5, c.final_sha256,
       (SELECT COUNT(*) FROM download_sessions s WHERE s.grant_id = i.grant_id AND s.candidate_id = i.candidate_id AND (s.bytes_sent > 0 OR s.status = 'COMPLETED')) AS used_sessions
       FROM download_grant_items i JOIN candidates c ON c.candidate_id = i.candidate_id WHERE i.grant_id = ?`).all(row.grant_id);
-    return { grantId: row.grant_id, principalId: row.principal_id, principalType: row.principal_type, createdBy: row.created_by, createdAt: row.created_at, expiresAt: row.expires_at, maxTotalSessions: row.max_total_sessions, usedTotalSessions: usedTotal, remainingTotalSessions: Math.max(0, row.max_total_sessions - usedTotal), revokedAt: row.revoked_at, items: items.map((item) => ({ candidateId: item.candidate_id, fileName: item.file_name, size: item.expected_size, sha256: item.final_sha256, md5: item.final_md5, maxSessions: item.max_sessions, usedSessions: item.used_sessions, remainingSessions: Math.max(0, item.max_sessions - item.used_sessions) })) };
+    return { grantId: row.grant_id, principalId: row.principal_id, principalType: row.principal_type, createdBy: row.created_by, roundId: row.round_id ?? null, roundNo: row.round_no ?? null, productName: row.product_name ?? null, displayVersion: row.display_version ?? null, createdAt: row.created_at, expiresAt: row.expires_at, maxTotalSessions: row.max_total_sessions, usedTotalSessions: usedTotal, remainingTotalSessions: Math.max(0, row.max_total_sessions - usedTotal), revokedAt: row.revoked_at, items: items.map((item) => ({ candidateId: item.candidate_id, fileName: item.file_name, size: item.expected_size, sha256: item.final_sha256, md5: item.final_md5, maxSessions: item.max_sessions, usedSessions: item.used_sessions, remainingSessions: Math.max(0, item.max_sessions - item.used_sessions) })) };
   }
 
   revokeGrant(grantId, principalId) {
