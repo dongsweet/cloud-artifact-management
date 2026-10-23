@@ -631,7 +631,11 @@ export class CoreStore {
     const task = this.db.prepare(`SELECT t.*, r.status AS approval_status, r.envelope_json
       FROM core_transfer_tasks t JOIN core_approval_requests r ON r.request_id = t.request_id
       WHERE t.transfer_task_id = ?`).get(transferTaskId);
-    if (!task || task.approval_status !== 'APPROVED') throw Object.assign(new Error('transfer task is not approved'), { code: 'approval_required' });
+    // A closed approval remains readable for idempotent reconciliation. Edge may
+    // have retried its manifest/receipt after Core closed the cloud work order;
+    // rejecting those retries would incorrectly turn an already received transfer
+    // into a failed one. Creation and approval actions still require APPROVED.
+    if (!task || !['APPROVED', 'CLOSED'].includes(task.approval_status)) throw Object.assign(new Error('transfer task is not approved'), { code: 'approval_required' });
     const envelope = JSON.parse(task.envelope_json ?? '{}');
     const manifest = envelope.manifest;
     if (!manifest || !Array.isArray(manifest.items)) return { requestId: task.request_id, manifestSha256: task.manifest_sha256, items: [] };
@@ -641,7 +645,7 @@ export class CoreStore {
     const task = this.db.prepare(`SELECT t.*, r.status AS approval_status, r.envelope_json
       FROM core_transfer_tasks t JOIN core_approval_requests r ON r.request_id = t.request_id
       WHERE t.transfer_task_id = ?`).get(transferTaskId);
-    if (!task || task.approval_status !== 'APPROVED') throw Object.assign(new Error('transfer task is not approved'), { code: 'approval_required' });
+    if (!task || !['APPROVED', 'CLOSED'].includes(task.approval_status)) throw Object.assign(new Error('transfer task is not approved'), { code: 'approval_required' });
     if (!manifest || typeof manifest !== 'object' || !Array.isArray(manifest.items) || manifest.items.length === 0 || manifest.items.length > 20_000) throw Object.assign(new Error('manifest.items must contain 1 to 20000 entries'), { code: 'artifact_manifest_invalid' });
     if (digest(JSON.stringify(manifest)) !== task.manifest_sha256) throw Object.assign(new Error('manifest content does not match approved SHA-256'), { code: 'manifest_mismatch' });
     const packageKeys = new Set();
@@ -893,7 +897,9 @@ export class CoreStore {
     const transferTaskId = required(input.transferTaskId, 'transferTaskId');
     const current = this.get(requestId);
     if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
-    if (current.status !== 'APPROVED') throw Object.assign(new Error('cloud approval is not confirmed'), { code: 'approval_required' });
+    // CLOSED is a terminal cloud state, but receipt delivery is deliberately
+    // idempotent so a late/retried Edge receipt can reconcile successfully.
+    if (!['APPROVED', 'CLOSED'].includes(current.status)) throw Object.assign(new Error('cloud approval is not confirmed'), { code: 'approval_required' });
     if (current.cloudTransferTaskId !== transferTaskId) throw Object.assign(new Error('transfer task does not match cloud approval'), { code: 'transfer_task_mismatch' });
     if (input.manifestSha256?.toLowerCase() !== current.manifestSha256) throw Object.assign(new Error('received manifest does not match approved manifest'), { code: 'manifest_mismatch' });
     const existing = this.db.prepare('SELECT * FROM core_transfer_tasks WHERE request_id = ?').get(requestId);
