@@ -38,6 +38,8 @@ test('Edge, Core and Agent shell branding and navigation labels are aligned', as
   assert.match(agent, /id="identity-center-id"/);
   assert.match(agent, /id="identity-agent-name"/);
   assert.match(agent, /id="identity-fingerprint" class="form-text font-monospace text-break mt-2"/);
+  assert.doesNotMatch(agent, /statusItem\('配置来源'/);
+  assert.match(agent, /statusItem\('过渡公钥指纹'/);
   assert.match(agent, /<p>Agent 接入<\/p>/);
   assert.match(agent, /<h3 class="card-title">正式制品<\/h3>/);
   assert.match(agent, /if\(deliveryPage\)\$\('#page-tasks'\)\.after\(deliveryPage\)/);
