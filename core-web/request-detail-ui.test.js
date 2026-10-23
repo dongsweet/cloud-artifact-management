@@ -18,6 +18,9 @@ test('Core approval details keep the primary workflow visible and the file list 
   assert.match(script, /WITHDRAWN:'已撤回'/u);
   assert.match(script, /approval-requests\/\$\{encodeURIComponent\(id\)\}\/withdraw/u);
   assert.match(script, /撤回只改变 Core 本地审批状态/u);
+  assert.match(script, /const parentDialog = \[\.\.\.document\.querySelectorAll\('dialog\[open\]'\)\]/u);
+  assert.match(script, /if \(parentDialog\) parentDialog\.close\('confirmation'\)/u);
+  assert.match(script, /if \(parentDialog && !parentDialog\.open\) parentDialog\.showModal\(\)/u);
   assert.match(script, /openDetailSections/u);
   assert.match(css, /\.cam-detail-advanced > summary \{[\s\S]*?cursor: pointer/u);
 });

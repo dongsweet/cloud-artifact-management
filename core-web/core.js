@@ -94,14 +94,30 @@ function cloudStatusBadge(value, localStatus = null) {
 function message(text, type = 'success') { const el = $('#alert'); el.className = `alert alert-${type}`; el.textContent = text; }
 function confirmDialog({ title, text, confirmLabel = '确认', confirmClass = 'btn-primary' }) {
   const dialog = $('#confirm-dialog');
+  // A modal dialog makes its siblings inert in some browsers. Close the
+  // current detail dialog before opening this confirmation dialog, then put
+  // it back after the user makes a choice.
+  const parentDialog = [...document.querySelectorAll('dialog[open]')].find((item) => item !== dialog);
+  if (parentDialog) parentDialog.close('confirmation');
   $('#confirm-title').textContent = title;
   $('#confirm-text').textContent = text;
   const confirmButton = $('#confirm-submit');
   confirmButton.textContent = confirmLabel;
   confirmButton.className = `btn ${confirmClass}`;
   return new Promise((resolve) => {
-    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true });
-    dialog.showModal();
+    const finish = () => {
+      const accepted = dialog.returnValue === 'confirm';
+      if (parentDialog && !parentDialog.open) parentDialog.showModal();
+      resolve(accepted);
+    };
+    dialog.addEventListener('close', finish, { once: true });
+    try { dialog.showModal(); }
+    catch (error) {
+      dialog.removeEventListener('close', finish);
+      if (parentDialog && !parentDialog.open) parentDialog.showModal();
+      message('确认窗口无法打开，请刷新页面后重试。', 'danger');
+      resolve(false);
+    }
   });
 }
 function renderCloudMappings(mappings = null) {
