@@ -4,6 +4,7 @@ import { agentPage } from '../src/web.js';
 
 test('Agent identity page makes trust direction and Core-owned rotation policy explicit', () => {
   const html = agentPage();
+  assert.match(html, /path\.startsWith\('\/api\/v1'\)\?path\.slice\(7\):path/);
   assert.match(html, /Agent 身份公钥/);
   assert.match(html, /Core 服务公钥/);
   assert.match(html, /Agent 接入与 Core 身份/);
