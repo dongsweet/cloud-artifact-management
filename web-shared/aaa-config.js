@@ -40,7 +40,7 @@ export function mountAaaConfig(root, { request, csrf = () => '', csrfHeader = 'x
     const button = $('#aaa-test-submit'); const testLoginName = $('#aaa-test-login-name').value.trim();
     if (!testLoginName) { setResult('danger', '请输入测试用户名。'); $('#aaa-test-login-name').focus(); return; }
     button.disabled = true; setResult('info', '正在校验 AAA 用户和配置…');
-    try { await request('/api/v1/aaa/test', { method: 'POST', headers: headers(), body: JSON.stringify({ ...configBody(), testLoginName }) }); setResult('success', `校验成功，已读取用户“${testLoginName}”的认证策略。配置尚未保存；确认无误后请保存配置。`); }
+    try { await request('/api/v1/aaa/test', { method: 'POST', headers: headers(), body: JSON.stringify({ ...configBody(), testLoginName }) }); setResult('success', `校验成功，已读取用户“${testLoginName}”的认证策略。`); }
     catch (error) { setResult('danger', error.message); } finally { button.disabled = false; }
   });
   return { load };

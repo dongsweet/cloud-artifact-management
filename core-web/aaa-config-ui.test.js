@@ -15,6 +15,7 @@ test('Core and Agent use a single AAA config UI module', async () => {
   assert.match(sharedUi, /id="aaa-test-result" class="alert d-none mt-3 mb-0"[^]*role="status"/u);
   assert.match(sharedUi, /正在校验 AAA 用户和配置/u);
   assert.match(sharedUi, /校验成功，已读取用户/u);
+  assert.doesNotMatch(sharedUi, /配置尚未保存/u);
   assert.match(coreCss, /\.cam-aaa-test-modal/u);
   assert.match(agentScript, /\.cam-aaa-test-modal/u);
 });
