@@ -469,6 +469,15 @@ export class CandidateStore {
       changeNote: row.change_note ?? '',
       createdBy: row.created_by ?? null,
       status: row.status,
+      // A round keeps its own lifecycle status for write guards, while the
+      // status shown to users follows the release-level approval lifecycle.
+      // Approval seals the release as a whole, so every round in that release
+      // must be shown as sealed instead of remaining misleadingly "open".
+      effectiveStatus: row.release_status === 'SEALED'
+        ? 'SEALED'
+        : row.approval_pending
+          ? 'PENDING_APPROVAL'
+          : row.status,
       candidateCount: row.candidate_count ?? 0,
       completedCandidateCount: row.completed_candidate_count ?? 0,
       createdAt: row.created_at,

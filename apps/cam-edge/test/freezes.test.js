@@ -47,6 +47,8 @@ test('completed round report stays immutable while approval is pending and Edge 
   const submitted = await app.inject({ method: 'POST', url: `/api/v1/freezes/${draft.freezeId}/submit`, payload: {} });
   assert.equal(submitted.statusCode, 200, submitted.body);
   assert.equal(submitted.json().status, 'PENDING_APPROVAL');
+  const pendingRounds = await app.inject({ method: 'GET', url: `/api/v1/releases/${release.releaseId}/rounds` });
+  assert.equal(pendingRounds.json().items[0].effectiveStatus, 'PENDING_APPROVAL');
   const freezeDetail = (await app.inject({ method: 'GET', url: `/api/v1/rounds/${round.roundId}/freezes` })).json().item;
   assert.deepEqual([freezeDetail.reportTitle, freezeDetail.conclusion, freezeDetail.environment, freezeDetail.submittedBy], ['Stack 8.0.6.2 验证报告', 'PASS', '验证环境 A', 'validator-1']);
   assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/rounds/${round.roundId}/candidates/${candidate.candidateId}` })).statusCode, 409);
@@ -114,6 +116,8 @@ test('Edge accepts only authenticated, idempotent Core approval-result callbacks
     assert.equal(replay.json().idempotent, true);
     const status = await app.inject({ method: 'GET', url: `/api/v1/rounds/${release.initialRound.roundId}/freezes` });
     assert.equal(status.json().item.status, 'APPROVED');
+    const sealedRounds = await app.inject({ method: 'GET', url: `/api/v1/releases/${release.releaseId}/rounds` });
+    assert.equal(sealedRounds.json().items[0].effectiveStatus, 'SEALED');
     assert.equal((await app.inject({ method: 'GET', url: `/api/v1/releases/${release.releaseId}` })).json().status, 'SEALED');
     const nextRound = await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: { changeNote: '封存后不允许继续开轮次' } });
     assert.equal(nextRound.statusCode, 409);
