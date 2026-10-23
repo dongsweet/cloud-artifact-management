@@ -442,11 +442,11 @@ export class CoreStore {
     this.db.prepare('UPDATE core_approval_result_outbox SET last_error = ?, next_attempt_at = ?, updated_at = ? WHERE event_id = ? AND delivered_at IS NULL')
       .run(String(error?.message ?? error).slice(0, 1000), retryAt, now(), eventId);
   }
-  listArtifacts() {
+  listArtifacts({ includeRoundMetadata = false } = {}) {
     return this.db.prepare(`SELECT r.*, t.status AS transfer_status, t.updated_at AS transfer_received_at
       FROM core_approval_requests r JOIN core_transfer_tasks t ON t.request_id = r.request_id
       WHERE r.status IN ('APPROVED', 'CLOSED') AND t.status = 'RECEIVED'
-      ORDER BY t.updated_at DESC LIMIT 500`).all().map((row) => this.serializeArtifact(row));
+      ORDER BY t.updated_at DESC LIMIT 500`).all().map((row) => this.serializeArtifact(row, { includeRoundMetadata }));
   }
   getArtifact(artifactId) {
     const prefix = 'BASELINE-';
@@ -456,7 +456,7 @@ export class CoreStore {
       WHERE r.request_id = ? AND r.status IN ('APPROVED', 'CLOSED') AND t.status = 'RECEIVED'`).get(artifactId.slice(prefix.length));
     return row ? this.serializeArtifact(row) : null;
   }
-  serializeArtifact(row) {
+  serializeArtifact(row, { includeRoundMetadata = false } = {}) {
     const files = this.listReleaseArtifacts(row.request_id).map((file) => ({
       packageKey: file.packageKey,
       candidateId: file.candidateId,
@@ -468,7 +468,7 @@ export class CoreStore {
       downloadUrl: file.stored ? `/api/v1/artifacts/${file.sha256}/content` : null
     }));
     const metadata = response(row);
-    return {
+    const artifact = {
       artifactId: `BASELINE-${row.request_id}`,
       artifactType: 'RELEASE_BASELINE',
       requestId: metadata.requestId,
@@ -486,6 +486,15 @@ export class CoreStore {
       receivedAt: row.transfer_received_at,
       files
     };
+    // The generic formal-artifact API intentionally keeps Edge collection
+    // round metadata private for backward compatibility. Agent's dedicated
+    // catalog endpoint opts in because delivery and cache views need to show
+    // the authorization round.
+    if (includeRoundMetadata) {
+      artifact.roundId = metadata.roundId;
+      artifact.roundNo = metadata.roundNo;
+    }
+    return artifact;
   }
   listReleaseArtifacts(requestId) {
     return this.db.prepare(`SELECT ra.package_key AS packageKey, ra.candidate_id AS candidateId,

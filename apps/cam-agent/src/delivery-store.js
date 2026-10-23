@@ -26,6 +26,8 @@ export class AgentDeliveryStore {
         grant_id TEXT PRIMARY KEY,
         token_sha256 TEXT NOT NULL UNIQUE,
         artifact_id TEXT NOT NULL,
+        round_id TEXT,
+        round_no INTEGER,
         principal_id TEXT NOT NULL,
         created_by TEXT NOT NULL,
         expires_at TEXT NOT NULL,
@@ -73,6 +75,9 @@ export class AgentDeliveryStore {
       );
       CREATE INDEX IF NOT EXISTS agent_delivery_events_grant_idx ON agent_delivery_events(grant_id, created_at);
     `);
+    const grantColumns = new Set(this.db.prepare('PRAGMA table_info(agent_delivery_grants)').all().map((column) => column.name));
+    if (!grantColumns.has('round_id')) this.db.exec('ALTER TABLE agent_delivery_grants ADD COLUMN round_id TEXT');
+    if (!grantColumns.has('round_no')) this.db.exec('ALTER TABLE agent_delivery_grants ADD COLUMN round_no INTEGER');
     this.db.prepare("UPDATE agent_delivery_sessions SET status = 'INTERRUPTED' WHERE status = 'ACTIVE'").run();
     this.activeTransfers = new Set();
   }
@@ -105,8 +110,8 @@ export class AgentDeliveryStore {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.db.prepare(`INSERT INTO agent_delivery_grants
-        (grant_id, token_sha256, artifact_id, principal_id, created_by, expires_at, max_total_sessions, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(grantId, tokenHash(token), artifactId, principalId, createdBy, expiry.toISOString(), totalLimit, createdAt);
+        (grant_id, token_sha256, artifact_id, round_id, round_no, principal_id, created_by, expires_at, max_total_sessions, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(grantId, tokenHash(token), artifactId, artifact.roundId ?? null, Number.isSafeInteger(artifact.roundNo) ? artifact.roundNo : null, principalId, createdBy, expiry.toISOString(), totalLimit, createdAt);
       const insert = this.db.prepare(`INSERT INTO agent_delivery_items
         (grant_id, file_sha256, package_key, file_name, size_bytes, max_sessions) VALUES (?, ?, ?, ?, ?, ?)`);
       for (const file of files) insert.run(grantId, file.sha256, file.packageKey ?? '-', file.fileName ?? file.sha256, file.sizeBytes, fileLimit);
@@ -141,7 +146,7 @@ export class AgentDeliveryStore {
       WHERE s.grant_id = i.grant_id AND s.file_sha256 = i.file_sha256 AND (s.bytes_sent > 0 OR s.status = 'COMPLETED')) AS used_sessions
       FROM agent_delivery_items i WHERE i.grant_id = ? ORDER BY rowid`).all(row.grant_id);
     return {
-      grantId: row.grant_id, artifactId: row.artifact_id, principalId: row.principal_id, createdBy: row.created_by,
+      grantId: row.grant_id, artifactId: row.artifact_id, roundId: row.round_id ?? null, roundNo: Number.isSafeInteger(row.round_no) ? row.round_no : row.round_no === null ? null : Number(row.round_no), principalId: row.principal_id, createdBy: row.created_by,
       createdAt: row.created_at, expiresAt: row.expires_at, maxTotalSessions: row.max_total_sessions,
       usedTotalSessions: usedTotal, remainingTotalSessions: Math.max(0, row.max_total_sessions - usedTotal), revokedAt: row.revoked_at,
       activeSessions: Number(sessionSummary.active ?? 0), failedSessions: Number(sessionSummary.failed ?? 0), completedSessions: Number(sessionSummary.completed ?? 0),

@@ -373,9 +373,38 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   };
   const deliveryItem = (grant, sha256) => grant.items.find((item) => item.fileSha256 === sha256) ?? null;
   const deliveryGrantResponse = (grant, token = null) => ({ ...grant, items: grant.items.map((item) => ({ ...item, downloadUrl: token ? `/api/v1/delivery-grants/${encodeURIComponent(grant.grantId)}/files/${encodeURIComponent(item.fileSha256)}/content?token=${encodeURIComponent(token)}` : undefined })) });
+  const deliveryArtifactMetadata = async () => {
+    try {
+      const response = await core('/api/v1/agent/available-artifacts');
+      const body = await response.json();
+      return new Map((body.items ?? []).map((item) => [item.artifactId, item]));
+    } catch {
+      // Delivery history must remain readable when Core is temporarily down.
+      return new Map();
+    }
+  };
+  const decorateDeliveryGrant = (grant, artifacts) => {
+    const artifact = artifacts.get(grant.artifactId);
+    const responsibleId = grant.createdBy || grant.principalId || null;
+    const user = responsibleId ? auth.getUser(responsibleId) : null;
+    return {
+      ...grant,
+      roundId: grant.roundId ?? artifact?.roundId ?? null,
+      roundNo: grant.roundNo ?? (Number.isSafeInteger(artifact?.roundNo) ? artifact.roundNo : null),
+      productName: artifact?.productName ?? null,
+      displayVersion: artifact?.displayVersion ?? artifact?.version ?? null,
+      responsiblePerson: user
+        ? { id: user.id, displayName: user.displayName, username: user.username }
+        : { id: responsibleId, displayName: null, username: null }
+    };
+  };
   const deliveryStatus = (err) => err.statusCode ?? (err.code === 'delivery_grant_invalid' ? 403 : 400);
 
-  app.get('/api/v1/delivery-grants', { preHandler: requirePermission('deliveryRead', '需要部署交付查看权限') }, async (request) => ({ items: delivery.listGrants(hasAgentPermission(request.principal.user.roles, 'auditRead') ? null : request.principal.id) }));
+  app.get('/api/v1/delivery-grants', { preHandler: requirePermission('deliveryRead', '需要部署交付查看权限') }, async (request) => {
+    const grants = delivery.listGrants(hasAgentPermission(request.principal.user.roles, 'auditRead') ? null : request.principal.id);
+    const artifacts = await deliveryArtifactMetadata();
+    return { items: grants.map((grant) => decorateDeliveryGrant(grant, artifacts)) };
+  });
   app.post('/api/v1/delivery-grants', { bodyLimit: 32 * 1024, preHandler: requirePermission('deliveryWrite', '需要操作员权限') }, async (request, reply) => {
     try {
       const body = request.body ?? {}; const artifactId = body.artifactId;
@@ -388,7 +417,8 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     try {
       const grant = delivery.getGrant(request.params.grantId);
       if (!grant || (!hasAgentPermission(request.principal.user.roles, 'auditRead') && grant.createdBy !== request.principal.id && grant.principalId !== request.principal.id)) return fail(reply, 404, 'delivery_grant_not_found', '交付授权不存在');
-      return reply.send({ ...grant, sessions: delivery.getSessions(grant.grantId) });
+      const artifacts = await deliveryArtifactMetadata();
+      return reply.send({ ...decorateDeliveryGrant(grant, artifacts), sessions: delivery.getSessions(grant.grantId) });
     } catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_grant_query_failed', err.message); }
   });
   app.get('/api/v1/delivery-grants/:grantId/manifest', async (request, reply) => {
