@@ -278,6 +278,26 @@ test('release rounds inherit unchanged candidate packages and replace only updat
   await app.close();
 });
 
+test('batch round and candidate filters avoid per-release list queries', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-batch-filters-'));
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] }), dataDir });
+  const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: '批量查询产品' } })).json();
+  const first = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } })).json();
+  const second = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '2.0' } })).json();
+  await app.inject({ method: 'POST', url: `/api/v1/rounds/${first.initialRound.roundId}/candidates`, payload: { packageKey: 'one', sourceUrl: 'http://127.0.0.1/one.tar', size: 0 } });
+  await app.inject({ method: 'POST', url: `/api/v1/rounds/${second.initialRound.roundId}/candidates`, payload: { packageKey: 'two', sourceUrl: 'http://127.0.0.1/two.tar', size: 0 } });
+
+  const rounds = await app.inject({ method: 'GET', url: `/api/v1/rounds?productId=${product.productId}` });
+  assert.equal(rounds.statusCode, 200);
+  assert.deepEqual(rounds.json().items.map((item) => item.releaseId).sort(), [first.releaseId, second.releaseId].sort());
+  const candidates = await app.inject({ method: 'GET', url: `/api/v1/candidates?productId=${product.productId}&limit=200` });
+  assert.equal(candidates.statusCode, 200);
+  assert.deepEqual(candidates.json().items.map((item) => item.packageKey).sort(), ['one', 'two']);
+  const onlySecond = await app.inject({ method: 'GET', url: `/api/v1/rounds?releaseId=${second.releaseId}` });
+  assert.deepEqual(onlySecond.json().items.map((item) => item.releaseId), [second.releaseId]);
+  await app.close();
+});
+
 test('release creation atomically creates the first round and server calculates the next round', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-release-round-atomic-'));
   const app = await buildEdgeApp({ principalProvider: () => ({ id: 'release-operator', type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] }), dataDir });

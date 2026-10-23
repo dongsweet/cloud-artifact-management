@@ -522,6 +522,18 @@ export class CandidateStore {
     return this.db.prepare('SELECT round_id FROM release_rounds WHERE release_id = ? ORDER BY round_no DESC').all(releaseId).map(({ round_id: roundId }) => this.getRound(roundId));
   }
 
+  listRoundsByFilter({ productId = null, releaseId = null } = {}) {
+    const conditions = [];
+    const args = [];
+    if (productId) { conditions.push('r.product_id = ?'); args.push(productId); }
+    if (releaseId) { conditions.push('r.release_id = ?'); args.push(releaseId); }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = this.db.prepare(`SELECT rr.round_id
+      FROM release_rounds rr JOIN releases r ON r.release_id = rr.release_id
+      ${where} ORDER BY r.created_at DESC, rr.round_no DESC`).all(...args);
+    return rows.map(({ round_id: roundId }) => this.getRound(roundId));
+  }
+
   roundCreationPreview(releaseId) {
     const release = this.getRelease(releaseId);
     if (!release) return null;
@@ -789,12 +801,13 @@ export class CandidateStore {
     return parseCandidate(row);
   }
 
-  list({ limit = 50, offset = 0, releaseId = null, status = null } = {}) {
+  list({ limit = 50, offset = 0, releaseId = null, productId = null, status = null } = {}) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('limit must be between 1 and 200');
     if (!Number.isInteger(offset) || offset < 0) throw new Error('offset must be a non-negative integer');
     if (status && !['CREATED', 'RECEIVING', 'PARTIAL', 'ASSEMBLING', 'FAILED', 'COMPLETED'].includes(status)) throw new Error('invalid candidate status');
     const conditions = [], args = [];
     if (releaseId) { conditions.push('(c.release_id = ? OR EXISTS (SELECT 1 FROM round_candidates rc JOIN release_rounds rr ON rr.round_id = rc.round_id WHERE rc.candidate_id = c.candidate_id AND rr.release_id = ?))'); args.push(releaseId, releaseId); }
+    if (productId) { conditions.push('(r.product_id = ? OR EXISTS (SELECT 1 FROM round_candidates rc JOIN release_rounds rr ON rr.round_id = rc.round_id JOIN releases rp ON rp.release_id = rr.release_id WHERE rc.candidate_id = c.candidate_id AND rp.product_id = ?))'); args.push(productId, productId); }
     if (status) { conditions.push('c.status = ?'); args.push(status); }
     const filter = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     args.push(limit, offset);

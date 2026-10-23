@@ -112,8 +112,12 @@ async function getReleases(productId = null) {
   return (await api(`/api/v1/releases${query}`)).items;
 }
 
-async function getRounds(releaseId) {
-  return (await api(`/api/v1/releases/${encodeURIComponent(releaseId)}/rounds`)).items;
+async function getRoundsByFilter({ productId = null, releaseId = null } = {}) {
+  const query = new URLSearchParams();
+  if (productId) query.set('productId', productId);
+  if (releaseId) query.set('releaseId', releaseId);
+  const suffix = query.toString() ? `?${query}` : '';
+  return (await api(`/api/v1/rounds${suffix}`)).items;
 }
 
 async function loadGateConfig() {
@@ -233,10 +237,8 @@ async function loadRounds(generation = state.routeGeneration) {
   state.releases = releases;
   state.currentRelease = releases.find((item) => item.releaseId === state.releaseId) ?? null;
   setOptions($('#round-release-filter'), releaseFilterItems(releases), state.releaseId, (item) => item.name);
-  const selectedReleases = state.releaseId ? releases.filter((item) => item.releaseId === state.releaseId) : releases;
-  const roundsByRelease = await Promise.all(selectedReleases.map((release) => getRounds(release.releaseId)));
+  const rounds = await getRoundsByFilter({ productId: state.productId, releaseId: state.releaseId });
   if (generation !== state.routeGeneration) return;
-  const rounds = roundsByRelease.flat();
   $('#round-rows').innerHTML = rounds.length ? rounds.map((round) => { const displayStatus = round.effectiveStatus ?? (round.releaseStatus === 'SEALED' ? 'SEALED' : round.approvalPending ? 'PENDING_APPROVAL' : round.status); return `<tr><td>${escapeHtml(round.productName)}</td><td>${escapeHtml(round.displayVersion ?? round.version)}</td><td class="fw-semibold">第 ${round.roundNo} 轮</td><td>${round.completedCandidateCount}/${round.candidateCount}</td><td><span class="badge ${statusClass(displayStatus)}">${statusLabel(displayStatus)}</span></td><td>${new Date(round.createdAt).toLocaleString()}</td><td><button class="btn btn-outline-primary btn-sm" data-round-candidates="${escapeHtml(round.roundId)}" data-product="${escapeHtml(round.productId)}" data-release="${escapeHtml(round.releaseId)}" title="查看轮次详情和候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看轮次详情和候选包</span></button></td></tr>`; }).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">暂无候选轮次</td></tr>';
   document.querySelectorAll('[data-round-candidates]').forEach((button) => button.addEventListener('click', () => navigate('release-detail', { productId: button.dataset.product, releaseId: button.dataset.release, roundId: button.dataset.roundCandidates })));
 }
@@ -268,15 +270,14 @@ async function loadCandidates(generation = state.routeGeneration) {
   state.currentRelease = releases.find((item) => item.releaseId === state.releaseId) ?? null;
   setOptions($('#candidate-release-filter'), releaseFilterItems(releases), state.releaseId, (item) => item.name);
   const selectedReleases = state.releaseId ? releases.filter((item) => item.releaseId === state.releaseId) : releases;
-  const roundsByRelease = await Promise.all(selectedReleases.map((release) => getRounds(release.releaseId)));
+  const rounds = await getRoundsByFilter({ productId: state.productId, releaseId: state.releaseId });
   if (generation !== state.routeGeneration) return;
-  const rounds = roundsByRelease.flat();
   setOptions($('#candidate-round-filter'), roundFilterItems(rounds), state.roundId, (item) => item.name, '全部');
 
   let candidates;
   if (state.roundId) candidates = (await api(`/api/v1/rounds/${encodeURIComponent(state.roundId)}/candidates`)).items;
   else if (state.releaseId) candidates = await candidateRowsFor(state.releaseId);
-  else if (state.productId) candidates = (await Promise.all(selectedReleases.map((release) => candidateRowsFor(release.releaseId)))).flat();
+  else if (state.productId) candidates = (await api(`/api/v1/candidates?productId=${encodeURIComponent(state.productId)}&limit=200`)).items;
   else candidates = (await api('/api/v1/candidates?limit=200')).items;
   if (generation !== state.routeGeneration) return;
   state.currentRound = selectedRound;

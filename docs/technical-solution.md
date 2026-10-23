@@ -480,6 +480,7 @@ transfer-bundle/
 | `cam-edge` | `POST /api/v1/products/:productId/releases` | 创建产品发布版本 |
 | `cam-edge` | `DELETE /api/v1/releases/:releaseId` | 删除没有候选包的开放发布版本 |
 | `cam-edge` | `POST /api/v1/releases/:releaseId/rounds` | 创建候选收集轮次，可继承基线轮次 |
+| `cam-edge` | `GET /api/v1/rounds?productId=&releaseId=` | 按软件产品或发布版本一次查询候选轮次，供列表筛选使用 |
 | `cam-edge` | `GET /api/v1/rounds/:roundId/candidates` | 查询轮次候选包清单及继承来源 |
 | `cam-edge` | `POST /api/v1/rounds/:roundId/candidates` | 在轮次中新增或替换候选包 |
 | `cam-edge` | `POST /api/v1/rounds/:roundId/import-preview` | 解析 Excel 并返回列映射、逐行校验和候选预览，不创建任务 |
@@ -487,6 +488,7 @@ transfer-bundle/
 | `cam-edge` | `POST /api/v1/rounds/:roundId/import-preview` | 解析 Excel 并返回列映射、逐行校验和候选预览，不创建任务 |
 | `cam-edge` | `POST /api/v1/rounds/:roundId/import` | 将用户确认的候选行创建到指定轮次；重复包标识不覆盖已有映射 |
 | `cam-edge` | `GET /api/v1/candidates/:id` | 查询候选元数据、状态和摘要 |
+| `cam-edge` | `GET /api/v1/candidates?productId=&releaseId=` | 按软件产品或发布版本查询候选包列表，避免前端按版本逐个请求 |
 | `cam-edge` | `GET /api/v1/candidates/:id/parts` | 查询候选分块进度 |
 | `cam-edge` | `PUT /api/v1/candidates/:id/parts/:partIndex` | 接收一个带 SHA-256 校验的候选分块 |
 | `cam-edge` | `POST /api/v1/candidates/:id/receive` | 按研发地址和 HTTP Range 异步接收候选文件 |

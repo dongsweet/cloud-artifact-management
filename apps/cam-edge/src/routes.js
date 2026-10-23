@@ -596,6 +596,14 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     catch (err) { return error(reply, 400, 'invalid_round_query', err.message); }
   });
 
+  app.get('/api/v1/rounds', async (request, reply) => {
+    try {
+      const productId = request.query?.productId ?? null;
+      const releaseId = request.query?.releaseId ?? null;
+      return reply.send({ items: store.listRoundsByFilter({ productId, releaseId }) });
+    } catch (err) { return error(reply, 400, 'invalid_round_query', err.message); }
+  });
+
   app.get('/api/v1/rounds/:roundId', async (request, reply) => {
     const round = store.getRound(request.params.roundId);
     if (!round) return error(reply, 404, 'round_not_found', 'round not found');
@@ -726,7 +734,8 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const limit = request.query?.limit === undefined ? 50 : Number(request.query.limit);
       const offset = request.query?.offset === undefined ? 0 : Number(request.query.offset);
       const releaseId = request.query?.releaseId ?? null;
-      return reply.send({ items: store.list({ limit, offset, releaseId, status: request.query?.status ?? null }).map(candidateResponse), limit, offset });
+      const productId = request.query?.productId ?? null;
+      return reply.send({ items: store.list({ limit, offset, releaseId, productId, status: request.query?.status ?? null }).map(candidateResponse), limit, offset });
     } catch (err) {
       return error(reply, 400, 'invalid_query', err.message);
     }
