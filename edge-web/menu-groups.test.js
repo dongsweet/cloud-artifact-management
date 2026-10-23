@@ -14,10 +14,11 @@ test('Edge sidebar groups business, management, security and audit pages like Co
   for (const [group, label] of [['security', '账号安全'], ['audit', '审计']]) {
     assert.match(script, new RegExp(`data-menu-group="${group}">${label}</li>`, 'u'));
   }
-  for (const route of ['products', 'releases', 'rounds', 'candidates']) {
+  for (const route of ['products', 'releases', 'rounds']) {
     assert.match(html, new RegExp(`data-menu-group-item="business"><a href="#${route}"`, 'u'));
   }
   assert.match(html, /id="gate-config-nav" data-menu-group-item="management"/u);
+  assert.doesNotMatch(html, /data-menu-group-item="business"><a href="#candidates"/u);
   assert.match(script, /id="grants-nav" data-menu-group-item="business"/u);
   assert.match(script, /id="users-nav" data-menu-group-item="security"/u);
   assert.match(script, /id="audit-nav" data-menu-group-item="audit"/u);
