@@ -38,7 +38,7 @@ function agentUserEditor(user = null) {
   $('#agent-user-editor').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 async function agentLoadUsers() {
-  if (!agentIsSecurityAdmin()) return;
+  if (!agentCan('userAdmin')) return;
   try {
     const response = await api('/users'); const result = await response.json(); if (!response.ok) throw Error(result.error?.message || '读取 Agent 账号失败');
     agentUsers = result.items ?? []; agentUserRoles = result.roles ?? {};
