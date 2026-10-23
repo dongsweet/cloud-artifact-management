@@ -22,11 +22,16 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
     const account = await app.authStore.createUser({ username: 'core-admin', displayName: 'Core Admin', password: 'Initial-Password-123', roles: ['CORE_SYSTEM_ADMIN'] }, null, { bootstrap: true });
     assert.equal(account.mustChangePassword, true);
 
-    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'core-admin', password: 'Initial-Password-123' } });
+    let login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'core-admin', password: 'Initial-Password-123' } });
     assert.equal(login.statusCode, 200, login.body);
-    const cookie = cookies(login);
-    const csrf = login.json().csrfToken;
+    let cookie = cookies(login);
+    let csrf = login.json().csrfToken;
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests', headers: { cookie } })).statusCode, 403);
+    const cancelled = await app.inject({ method: 'POST', url: '/api/v1/auth/logout', headers: { cookie, 'x-cam-core-csrf': csrf } });
+    assert.equal(cancelled.statusCode, 200, cancelled.body);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie } })).statusCode, 401, '取消初始密码修改后会话应失效');
+    login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'core-admin', password: 'Initial-Password-123' } });
+    cookie = cookies(login); csrf = login.json().csrfToken;
     const changed = await app.inject({ method: 'POST', url: '/api/v1/auth/password', headers: { cookie, 'x-cam-core-csrf': csrf }, payload: { oldPassword: 'Initial-Password-123', password: 'Updated-Password-456' } });
     assert.equal(changed.statusCode, 200, changed.body);
 
@@ -200,7 +205,8 @@ test('Core roles separate business operations, platform configuration, and accou
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/users', headers: { cookie: security.cookie } })).statusCode, 200);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/aaa/config', headers: { cookie: security.cookie } })).statusCode, 403);
     const auditor = await login('business-auditor', 'Role-account-123');
-    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/artifacts', headers: { cookie: auditor.cookie } })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/artifacts', headers: { cookie: auditor.cookie } })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests', headers: { cookie: auditor.cookie } })).statusCode, 403);
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/approval-requests/unknown/retry', headers: { cookie: auditor.cookie }, payload: {} })).statusCode, 403);
     const events = await app.inject({ url: '/api/v1/auth-events', headers: { cookie: auditor.cookie } });
     assert.equal(events.statusCode, 200, events.body);

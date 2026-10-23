@@ -5,6 +5,7 @@
 }
 
 .app-header .navbar-brand { color: var(--cam-accent); }
+.cam-password-dialog .modal-content { min-width: 0; }
 .app-sidebar { background-color: var(--cam-sidebar) !important; }
 .sidebar-brand { min-height: 3.5rem; display: flex; align-items: center; padding: 0 1rem; }
 .sidebar-menu .nav-link.active { background: var(--cam-accent); }

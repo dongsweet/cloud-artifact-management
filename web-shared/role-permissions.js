@@ -1,4 +1,4 @@
-import { hasCorePermission, hasEdgePermission } from './cam-auth-roles.js?v=20261022-role-matrix';
+import { hasCorePermission, hasEdgePermission } from './cam-auth-roles.js?v=20261023-auditor-scope';
 
 export { hasCorePermission, hasEdgePermission };
 

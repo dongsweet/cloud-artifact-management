@@ -1,5 +1,5 @@
 import { auditEventsMarkup, mountAuditEvents } from './audit-events.js?v=20261022-audit-permissions';
-import { canEdgePage } from './role-permissions.js?v=20261022-audit-permissions';
+import { canEdgePage } from './role-permissions.js?v=20261023-auditor-scope';
 import { renderRoleGroups } from './role-display.js?v=20261022-role-display';
 
 let user = null, api, refresh, context, alert, labels = {}, users = [], exported = null;
@@ -18,15 +18,17 @@ export function showLogin() {
   if (context) { window.clearInterval(context().pollTimer); window.clearInterval(context().queueTimer); }
   stopGrantDetailPolling();
   user = null; $('.app-wrapper').classList.add('d-none'); $('#account-login')?.classList.remove('d-none');
+  $('#password-form')?.reset();
+  const loginPassword = $('#login-password'); if (loginPassword) loginPassword.value = '';
   document.querySelectorAll('.modal.show').forEach((e) => bootstrap.Modal.getInstance(e)?.hide());
 }
 const input = (id, label, type = 'text', extra = '') => `<label for="${id}" class="form-label">${label}</label><input id="${id}" type="${type}" class="form-control mb-3" ${extra}>`;
 function markup() {
-  function dialog(id, title, fields) {
-    return `<div class="modal fade" id="${id}-modal" tabindex="-1" aria-label="${title}" aria-hidden="true"><div class="modal-dialog modal-lg"><div class="modal-content"><form id="${id}-form"><div class="modal-header"><h5 class="modal-title" id="${id}-title">${title}</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div><div class="modal-body"><div id="${id}-error" class="alert alert-danger d-none"></div>${fields}</div><div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button><button type="submit" class="btn btn-primary">确定</button></div></form></div></div></div>`;
+  function dialog(id, title, fields, dialogClass = 'modal-dialog modal-lg') {
+    return `<div class="modal fade" id="${id}-modal" tabindex="-1" aria-label="${title}" aria-hidden="true"><div class="${dialogClass}"><div class="modal-content"><form id="${id}-form"><div class="modal-header"><h5 class="modal-title" id="${id}-title">${title}</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div><div class="modal-body"><div id="${id}-error" class="alert alert-danger d-none"></div>${fields}</div><div class="modal-footer"><button id="${id}-cancel" type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button><button type="submit" class="btn btn-primary">${id === 'password' ? '<i class="bi bi-check-lg me-1"></i>' : ''}确定</button></div></form></div></div></div>`;
   }
   document.body.insertAdjacentHTML('beforeend', `<div id="account-login" class="position-fixed top-0 start-0 w-100 h-100 bg-body-tertiary d-flex align-items-center justify-content-center" style="z-index:2000"><div class="card shadow" style="width:380px;max-width:95vw"><div class="card-header"><h3 class="card-title">CAM Edge · 制品管理</h3></div><form id="login-form"><div class="card-body"><div id="login-error" class="alert alert-danger d-none"></div>${input('login-name', '用户名', 'text', 'autocomplete="username" required')}${input('login-password', '密码', 'password', 'autocomplete="current-password" required')}<p class="small text-body-secondary">使用 CAM Core 中创建并获准登录 Edge 的账号。</p></div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">登录</button></div></form></div></div>`
-    + dialog('password', '修改密码', `<p>首次登录或重置密码后须先修改密码，修改后重新登录。</p>${input('old-password', '原密码', 'password', 'autocomplete="current-password" required')}${input('new-password', '新密码（至少 12 个字符）', 'password', 'autocomplete="new-password" minlength="12" required')}${input('repeat-password', '确认新密码', 'password', 'autocomplete="new-password" minlength="12" required')}`)
+    + dialog('password', '修改密码', `<div id="password-help" class="alert alert-info">首次登录必须修改初始密码。</div>${input('old-password', '当前密码', 'password', 'autocomplete="current-password" required')}${input('new-password', '新密码（至少 12 个字符）', 'password', 'autocomplete="new-password" minlength="12" required')}${input('repeat-password', '确认新密码', 'password', 'autocomplete="new-password" minlength="12" required')}`, 'modal-dialog modal-dialog-centered cam-password-dialog')
     + dialog('grant', '创建下载授权', `<div id="grant-round-filters"><div class="row"><div class="col-md-4"><label for="grant-product" class="form-label">软件产品</label><select id="grant-product" class="form-select mb-3"><option value="">请选择软件产品</option></select></div><div class="col-md-4"><label for="grant-release" class="form-label">发布版本</label><select id="grant-release" class="form-select mb-3" disabled><option value="">请先选择软件产品</option></select></div><div class="col-md-4"><label for="grant-round" class="form-label">候选轮次</label><select id="grant-round" class="form-select mb-3" disabled><option value="">请先选择发布版本</option></select></div></div></div><div id="grant-candidate-summary" class="alert alert-light border d-none"></div><label for="grant-recipient" class="form-label">下载责任人</label><select id="grant-recipient" class="form-select mb-3" required></select><div class="row"><div class="col-md-4">${input('grant-days', '有效天数（1–30）', 'number', 'min="1" max="30" value="1" required')}</div><div class="col-md-4">${input('grant-total', '累计会话次数', 'number', 'min="1" max="10000" value="20" required')}</div><div class="col-md-4">${input('grant-per-file', '每文件会话次数', 'number', 'min="1" max="10000" value="2" required')}</div></div><p class="small text-body-secondary">续传携带同一会话 ID 不重复扣次数。只可选择当前候选轮次中已完成并通过摘要校验的文件。</p><div id="grant-files" style="max-height:300px;overflow:auto"></div>`)
     + `<div class="modal fade" id="grant-export-modal" tabindex="-1" aria-label="授权清单" aria-hidden="true"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">下载授权清单</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div><div class="modal-body"><div class="alert alert-warning">带 Token 链接只在本次创建后显示，请及时导出并交给责任人。数据库不保存明文 Token；持有链接者可使用下载授权。</div><div id="grant-links"></div><p class="small mt-3">测试服务器下载：首次保存响应头 X-CAM-Download-Session；续传使用 Range 与同名请求头携带会话 ID。也可使用 Authorization: Bearer 传 Token。下载完成请核对 SHA-256。</p></div><div class="modal-footer"><button id="export-grant-json" class="btn btn-outline-primary"><i class="bi bi-filetype-json me-1"></i>导出 JSON</button><button id="export-grant-text" class="btn btn-outline-primary"><i class="bi bi-download me-1"></i>导出链接列表</button><button id="redownload-grant-list" class="btn btn-primary"><i class="bi bi-arrow-repeat me-1"></i>重新下载列表文件</button></div></div></div></div>`);
   $('#account-login .card-title').textContent = 'CAM Edge · 制品管理';
@@ -48,6 +50,10 @@ function applyPermissions() {
   $('#audit-nav').classList.toggle('d-none', !canEdgePage(user?.roles ?? [], 'audit'));
   $('#gate-config-nav').classList.toggle('d-none', !canEdgePage(user?.roles ?? [], 'gate-config'));
   $('#grants-nav').classList.toggle('d-none', !canEdgePage(user?.roles ?? [], 'grants'));
+  document.querySelectorAll('.sidebar-menu a').forEach((link) => {
+    const route = link.dataset.route ?? link.hash.slice(1);
+    link.parentElement.classList.toggle('d-none', !canEdgePage(user?.roles ?? [], route));
+  });
   for (const id of ['round-grant', 'candidate-grant', 'new-grant']) $(`#${id}`).classList.toggle('d-none', !hasRole('EDGE_OPERATOR'));
   $('#candidate-grant').classList.toggle('d-none', !hasRole('EDGE_OPERATOR') || context().currentCandidate?.status !== 'COMPLETED');
 }
@@ -55,6 +61,9 @@ async function acceptSession(result) {
   user = result.user; labels = result.roles;
   $('#account-name').textContent = `${user.displayName} (${user.username})`;
   $('#account-login').classList.add('d-none'); $('.app-wrapper').classList.remove('d-none'); applyPermissions();
+  $('#password-title').textContent = user.mustChangePassword ? '修改初始密码' : '修改密码';
+  $('#password-help').textContent = user.mustChangePassword ? '首次登录必须修改初始密码。' : '修改密码后需要重新登录。';
+  $('#password-modal .btn-close').classList.toggle('d-none', Boolean(user.mustChangePassword));
   if (user.mustChangePassword) bootstrap.Modal.getOrCreateInstance($('#password-modal'), { backdrop: 'static', keyboard: false }).show();
   else if (!canEdgePage(user.roles ?? [], context().view)) { window.location.hash = `#${['products', 'gate-config', 'users', 'audit', 'grants'].find((view) => canEdgePage(user.roles ?? [], view)) ?? 'products'}`; await refresh(); }
   else await refresh();
@@ -66,11 +75,19 @@ async function submit(form, action, id) {
 export async function initAccountUI(options) {
   ({ api, refresh, context, alert } = options); markup();
   loadAuditEvents = mountAuditEvents($('#view-audit'), api, (error) => alert(error.message, 'danger'));
+  $('#password-modal').addEventListener('hide.bs.modal', (event) => { if (user?.mustChangePassword) event.preventDefault(); });
   new MutationObserver(applyPermissions).observe($('.app-main'), { childList: true, subtree: true });
   $('#login-form').onsubmit = (e) => { e.preventDefault(); submit(e.target, async () => { const r = await api('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ username: $('#login-name').value, password: $('#login-password').value }) }); $('#login-password').value = ''; await acceptSession(r); }, 'login'); };
   $('#logout').onclick = async () => { try { await api('/api/v1/auth/logout', { method: 'POST' }); showLogin(); } catch (e) { alert(e.message, 'danger'); } };
   $('#change-password').classList.add('d-none');
-  $('#password-form').onsubmit = (e) => { e.preventDefault(); submit(e.target, async () => { if ($('#new-password').value !== $('#repeat-password').value) throw new Error('两次新密码不一致'); await api('/api/v1/auth/password', { method: 'POST', body: JSON.stringify({ oldPassword: $('#old-password').value, password: $('#new-password').value }) }); e.target.reset(); modal('password').hide(); showLogin(); }, 'password'); };
+  $('#password-cancel').onclick = async () => {
+    if (!user?.mustChangePassword) { $('#password-form').reset(); modal('password').hide(); return; }
+    const button = $('#password-cancel'); button.disabled = true; $('#password-error').classList.add('d-none');
+    try { await api('/api/v1/auth/logout', { method: 'POST' }); showLogin(); }
+    catch (err) { $('#password-error').textContent = err.message; $('#password-error').classList.remove('d-none'); }
+    finally { button.disabled = false; }
+  };
+  $('#password-form').onsubmit = (e) => { e.preventDefault(); submit(e.target, async () => { if ($('#new-password').value !== $('#repeat-password').value) throw new Error('两次新密码不一致'); await api('/api/v1/auth/password', { method: 'POST', body: JSON.stringify({ oldPassword: $('#old-password').value, password: $('#new-password').value }) }); showLogin(); }, 'password'); };
   $('#new-grant').onclick = () => openGrant().catch((e) => alert(e.message, 'danger'));
   $('#round-grant').onclick = () => openGrant(context().roundId).catch((e) => alert(e.message, 'danger'));
   $('#candidate-grant').onclick = () => openGrant(null, context().candidateId).catch((e) => alert(e.message, 'danger'));

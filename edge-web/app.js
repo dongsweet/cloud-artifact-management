@@ -1,7 +1,7 @@
-import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js?v=20261021-unified-identity';
+import { initAccountUI, currentUser, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js?v=20261023-password-flow';
 import { renderGatePairing } from './gate-pairing.js?v=20261020-peer-save-feedback';
 import { refreshPaginatedTables } from './table-pagination.js?v=20261020-table-pagination';
-import { canEdgePage } from './role-permissions.js?v=20261022-audit-permissions';
+import { canEdgePage } from './role-permissions.js?v=20261023-auditor-scope';
 const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, currentRoundCandidates: [], currentRoundQueue: [], batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null, nextRoundPreview: null };
 document.querySelector('#gate-pairing-mount').innerHTML = renderGatePairing('edge');
 let importPreviewRequestId = 0;

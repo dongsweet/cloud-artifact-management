@@ -11,14 +11,16 @@ test('Core and Edge roles follow the agreed module separation', () => {
   assert.equal(hasCorePermission(['CORE_SECURITY_ADMIN'], 'userAdmin'), true);
   assert.equal(hasCorePermission(['CORE_SYSTEM_ADMIN'], 'businessWrite'), false);
   assert.equal(hasCorePermission(['CORE_OPERATOR'], 'businessWrite'), true);
-  assert.equal(hasCorePermission(['CORE_AUDITOR'], 'businessRead'), true);
+  assert.equal(hasCorePermission(['CORE_AUDITOR'], 'businessRead'), false);
   assert.equal(hasCorePermission(['CORE_AUDITOR'], 'businessWrite'), false);
+  assert.equal(hasCorePermission(['CORE_AUDITOR'], 'auditRead'), true);
 
   assert.equal(hasEdgePermission(['EDGE_SYSTEM_ADMIN'], 'configWrite'), true);
   assert.equal(hasEdgePermission(['EDGE_SECURITY_ADMIN'], 'configWrite'), false);
   assert.equal(hasEdgePermission(['EDGE_SECURITY_ADMIN'], 'userAdminRead'), true);
   assert.equal(hasEdgePermission(['EDGE_AUDITOR'], 'auditRead'), true);
-  assert.equal(hasEdgePermission(['EDGE_AUDITOR'], 'candidateRead'), true);
+  assert.equal(hasEdgePermission(['EDGE_AUDITOR'], 'candidateRead'), false);
+  assert.equal(hasEdgePermission(['EDGE_AUDITOR'], 'validatorRead'), false);
   assert.equal(hasEdgePermission(['EDGE_AUDITOR'], 'candidateWrite'), false);
 });
 

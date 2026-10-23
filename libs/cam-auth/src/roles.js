@@ -40,9 +40,9 @@ export const AGENT_PERMISSION_ROLES = Object.freeze({
 });
 
 // Core 与 Edge 共用同一套职责边界：业务由操作员维护，系统管理员负责平台配置，
-// 安全管理员管理账号，审计管理员只读查看业务和审计记录。
+// 安全管理员管理账号，审计管理员只读查看审计记录。
 export const CORE_PERMISSION_ROLES = Object.freeze({
-  businessRead: ['CORE_OPERATOR', 'CORE_AUDITOR'],
+  businessRead: ['CORE_OPERATOR'],
   businessWrite: ['CORE_OPERATOR'],
   configRead: ['CORE_SYSTEM_ADMIN'],
   configWrite: ['CORE_SYSTEM_ADMIN'],
@@ -55,9 +55,9 @@ export const CORE_PERMISSION_ROLES = Object.freeze({
 // Edge 账号由 Core 统一维护；Edge 只提供安全管理员的只读账号清单。
 export const EDGE_PERMISSION_ROLES = Object.freeze({
   candidateWrite: ['EDGE_OPERATOR'],
-  candidateRead: ['EDGE_OPERATOR', 'EDGE_AUDITOR'],
+  candidateRead: ['EDGE_OPERATOR'],
   validatorWrite: ['EDGE_OPERATOR'],
-  validatorRead: ['EDGE_OPERATOR', 'EDGE_AUDITOR'],
+  validatorRead: ['EDGE_OPERATOR'],
   releaseDecision: ['EDGE_OPERATOR'],
   configWrite: ['EDGE_SYSTEM_ADMIN'],
   configRead: ['EDGE_SYSTEM_ADMIN'],

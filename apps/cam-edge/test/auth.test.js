@@ -71,7 +71,8 @@ test('Edge 最近认证及操作审计只对审计管理员开放', async () => 
     assert.equal(auditPage.statusCode, 200, auditPage.body);
     assert.equal(auditPage.json().total, 1);
     assert.equal(auditPage.json().items.length, 1);
-    assert.equal((await app.inject({ url: '/api/v1/products' })).statusCode, 200, '审计管理员可只读追溯业务信息');
+    assert.equal((await app.inject({ url: '/api/v1/products' })).statusCode, 403, '审计管理员不能读取业务数据');
+    assert.equal((await app.inject({ url: '/api/v1/validators' })).statusCode, 403, '审计管理员不能读取下载授权人员清单');
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'denied' } })).statusCode, 403, '审计管理员不能写业务数据');
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
@@ -99,7 +100,7 @@ test('Edge 委托 Core 登录，且角色变更对已有会话立即生效', asy
     core.authStore.updateUser(operator.id, { edgeRoles: ['EDGE_AUDITOR'] }, admin.id);
     assert.equal((await edge.inject({ method: 'POST', url: '/api/v1/products', headers: sessionHeaders, payload: { name: 'should-deny' } })).statusCode, 403);
     const productRead = await edge.inject({ url: '/api/v1/products', headers: sessionHeaders });
-    assert.equal(productRead.statusCode, 200, productRead.body);
+    assert.equal(productRead.statusCode, 403, '审计角色变更应立即禁止业务读取');
 
     core.authStore.updateUser(operator.id, { edgeEnabled: false }, admin.id);
     assert.equal((await edge.inject({ url: '/api/v1/auth/me', headers: sessionHeaders })).statusCode, 401);
@@ -116,7 +117,13 @@ test('Edge 账号密码修改仍由 Core 完成', async () => {
     assert.equal(response.statusCode, 200);
     const sessionHeaders = headers(response);
     assert.equal(response.json().user.mustChangePassword, true);
-    const changed = await edge.inject({ method: 'POST', url: '/api/v1/auth/password', headers: sessionHeaders, payload: { oldPassword: 'Initial-Password-2026', password: 'Permanent-Password-2026' } });
+    const cancelled = await edge.inject({ method: 'POST', url: '/api/v1/auth/logout', headers: sessionHeaders });
+    assert.equal(cancelled.statusCode, 200, cancelled.body);
+    assert.equal((await edge.inject({ url: '/api/v1/auth/me', headers: sessionHeaders })).statusCode, 401, '取消初始密码修改后 Edge 会话应失效');
+    const relogin = await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-password', password: 'Initial-Password-2026' } });
+    assert.equal(relogin.statusCode, 200, relogin.body);
+    const changedSessionHeaders = headers(relogin);
+    const changed = await edge.inject({ method: 'POST', url: '/api/v1/auth/password', headers: changedSessionHeaders, payload: { oldPassword: 'Initial-Password-2026', password: 'Permanent-Password-2026' } });
     assert.equal(changed.statusCode, 200, changed.body);
     assert.equal((await edge.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-password', password: 'Permanent-Password-2026' } })).statusCode, 200);
     assert.equal((await core.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'edge-password', password: 'Permanent-Password-2026' } })).statusCode, 401);
