@@ -798,7 +798,8 @@ export class CandidateStore {
       (c.chunk_count - (SELECT COUNT(*) FROM candidate_parts p2 WHERE p2.candidate_id = c.candidate_id AND p2.status = 'COMPLETED')) AS missing_parts
       FROM candidates c LEFT JOIN releases r ON r.release_id = c.release_id LEFT JOIN products p ON p.product_id = r.product_id
       WHERE c.candidate_id = ?`).get(candidateId);
-    return parseCandidate(row);
+    const candidate = parseCandidate(row);
+    return candidate ? this.withRoundMetadata([candidate])[0] : null;
   }
 
   list({ limit = 50, offset = 0, releaseId = null, productId = null, status = null } = {}) {
@@ -817,7 +818,40 @@ export class CandidateStore {
       (c.chunk_count - (SELECT COUNT(*) FROM candidate_parts p2 WHERE p2.candidate_id = c.candidate_id AND p2.status = 'COMPLETED')) AS missing_parts
       FROM candidates c LEFT JOIN releases r ON r.release_id = c.release_id LEFT JOIN products p ON p.product_id = r.product_id
       ${filter} ORDER BY c.created_at DESC LIMIT ? OFFSET ?`).all(...args);
-    return rows.map(parseCandidate);
+    return this.withRoundMetadata(rows.map(parseCandidate));
+  }
+
+  withRoundMetadata(candidates) {
+    if (!candidates.length) return candidates;
+    const ids = candidates.map((candidate) => candidate.candidate_id);
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db.prepare(`SELECT rc.candidate_id, rc.package_key, rr.round_id, rr.round_no,
+      r.release_id, r.version, r.revision, p.product_id, p.name AS product_name
+      FROM round_candidates rc
+      JOIN release_rounds rr ON rr.round_id = rc.round_id
+      JOIN releases r ON r.release_id = rr.release_id
+      JOIN products p ON p.product_id = r.product_id
+      WHERE rc.candidate_id IN (${placeholders})
+      ORDER BY r.version, r.revision, rr.round_no, rc.package_key`).all(...ids);
+    const grouped = new Map();
+    for (const row of rows) {
+      const list = grouped.get(row.candidate_id) ?? [];
+      if (!list.some((item) => item.roundId === row.round_id && item.packageKey === row.package_key)) {
+        list.push({
+          roundId: row.round_id,
+          roundNo: row.round_no,
+          releaseId: row.release_id,
+          version: row.version,
+          revision: row.revision ?? 0,
+          displayVersion: row.revision > 0 ? `${row.version}-r${row.revision}` : row.version,
+          productId: row.product_id,
+          productName: row.product_name,
+          packageKey: row.package_key
+        });
+      }
+      grouped.set(row.candidate_id, list);
+    }
+    return candidates.map((candidate) => ({ ...candidate, rounds: grouped.get(candidate.candidate_id) ?? [] }));
   }
 
   enqueueReceive(candidateId) {

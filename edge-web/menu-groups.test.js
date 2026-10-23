@@ -28,7 +28,7 @@ test('Edge sidebar groups business, management, security and audit pages like Co
 });
 
 test('download grant form binds the current operator and derives its total session limit', async () => {
-  const [script, routes] = await Promise.all([read('./account-ui.js'), read('../apps/cam-edge/src/routes.js')]);
+  const [script, appScript, routes] = await Promise.all([read('./account-ui.js'), read('./app.js'), read('../apps/cam-edge/src/routes.js')]);
   assert.match(script, /id="grant-owner" class="form-control bg-body-secondary mb-3" readonly/u);
   assert.doesNotMatch(script, /id="grant-recipient"/u);
   assert.match(script, /input\('grant-total',[^\n]*readonly/u);
@@ -42,6 +42,8 @@ test('download grant form binds the current operator and derives its total sessi
   assert.match(script, /grant-actions/u);
   assert.match(script, /const candidateReadOnly = context\(\)\.view === 'candidate-detail' && !context\(\)\.roundId/u);
   assert.match(script, /candidateReadOnly \|\| context\(\)\.currentCandidate\?\.status !== 'COMPLETED'/u);
+  assert.match(appScript, /function candidateInventoryItems\(candidates, selectedRound = null\)/u);
+  assert.match(appScript, /const key = digest \? `sha256:\$\{digest\}`/u);
   assert.doesNotMatch(script, /redownload-grant-list/u);
   assert.doesNotMatch(script, /测试服务器下载/u);
   assert.doesNotMatch(script, /recipientId: \$\('#grant-recipient'\)\.value/u);

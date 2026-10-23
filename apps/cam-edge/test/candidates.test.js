@@ -293,6 +293,8 @@ test('batch round and candidate filters avoid per-release list queries', async (
   const candidates = await app.inject({ method: 'GET', url: `/api/v1/candidates?productId=${product.productId}&limit=200` });
   assert.equal(candidates.statusCode, 200);
   assert.deepEqual(candidates.json().items.map((item) => item.packageKey).sort(), ['one', 'two']);
+  assert.deepEqual(candidates.json().items.find((item) => item.packageKey === 'one').rounds.map((round) => ({ releaseId: round.releaseId, roundNo: round.roundNo, packageKey: round.packageKey })), [{ releaseId: first.releaseId, roundNo: 1, packageKey: 'one' }]);
+  assert.deepEqual(candidates.json().items.find((item) => item.packageKey === 'two').rounds.map((round) => ({ releaseId: round.releaseId, roundNo: round.roundNo, packageKey: round.packageKey })), [{ releaseId: second.releaseId, roundNo: 1, packageKey: 'two' }]);
   const onlySecond = await app.inject({ method: 'GET', url: `/api/v1/rounds?releaseId=${second.releaseId}` });
   assert.deepEqual(onlySecond.json().items.map((item) => item.releaseId), [second.releaseId]);
   await app.close();

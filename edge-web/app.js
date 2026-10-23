@@ -247,6 +247,25 @@ async function candidateRowsFor(releaseId) {
   return (await api(`/api/v1/candidates?releaseId=${encodeURIComponent(releaseId)}&limit=200`)).items;
 }
 
+function candidateInventoryItems(candidates, selectedRound = null) {
+  const grouped = new Map();
+  for (const candidate of candidates) {
+    const digest = candidate.status === 'COMPLETED' && candidate.finalSha256 ? candidate.finalSha256.toLowerCase() : null;
+    const key = digest ? `sha256:${digest}` : `candidate:${candidate.candidateId}`;
+    const current = grouped.get(key) ?? { ...candidate, references: [], candidateIds: [] };
+    current.candidateIds.push(candidate.candidateId);
+    const references = selectedRound
+      ? [{ roundId: selectedRound.roundId, roundNo: selectedRound.roundNo, releaseId: selectedRound.releaseId, displayVersion: selectedRound.displayVersion, productName: selectedRound.productName, packageKey: candidate.packageKey }]
+      : (candidate.rounds ?? []);
+    for (const reference of references) {
+      const signature = `${reference.roundId ?? ''}:${reference.packageKey ?? ''}`;
+      if (!current.references.some((item) => `${item.roundId ?? ''}:${item.packageKey ?? ''}` === signature)) current.references.push(reference);
+    }
+    grouped.set(key, current);
+  }
+  return [...grouped.values()].map((item) => ({ ...item, references: item.references.sort((a, b) => `${a.displayVersion ?? ''}:${a.roundNo ?? ''}:${a.packageKey ?? ''}`.localeCompare(`${b.displayVersion ?? ''}:${b.roundNo ?? ''}:${b.packageKey ?? ''}`)) }));
+}
+
 async function loadCandidates(generation = state.routeGeneration) {
   const products = await getProducts();
   if (generation !== state.routeGeneration) return;
@@ -281,6 +300,7 @@ async function loadCandidates(generation = state.routeGeneration) {
   else candidates = (await api('/api/v1/candidates?limit=200')).items;
   if (generation !== state.routeGeneration) return;
   state.currentRound = selectedRound;
+  const inventory = candidateInventoryItems(candidates, selectedRound);
   const completed = candidates.filter((item) => item.status === 'COMPLETED' && item.finalSha256);
   const uniqueDigests = new Set(completed.map((item) => item.finalSha256.toLowerCase()));
   const pending = candidates.filter((item) => item.status !== 'COMPLETED');
@@ -291,9 +311,13 @@ async function loadCandidates(generation = state.routeGeneration) {
     ['重复引用', Math.max(0, completed.length - uniqueDigests.size)],
     ['待接收 / 异常', pending.length]
   ].map(([label, value]) => `<div class="col-6 col-md"><div class="border rounded p-2 h-100"><div class="small text-body-secondary">${escapeHtml(label)}</div><div class="h5 mb-0 mt-1">${escapeHtml(value)}</div></div></div>`).join('');
-  $('#candidate-rows').innerHTML = candidates.length ? candidates.map((item) => {
-    const release = state.releaseId ? selectedReleases[0] : selectedReleases.find((entry) => entry.releaseId === item.releaseId);
-    return `<tr><td>${escapeHtml(item.productName ?? release?.productName ?? '-')}</td><td>${escapeHtml(release?.displayVersion ?? item.releaseDisplayVersion ?? item.releaseVersion ?? '-')}</td><td>${selectedRound ? `第 ${selectedRound.roundNo} 轮` : '-'}</td><td>${escapeHtml(item.type ?? '-')}</td><td>${escapeHtml(item.packageKey ?? '-')}</td><td class="file-name text-break">${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><button class="btn btn-outline-primary btn-sm" data-candidate-open="${escapeHtml(item.candidateId)}" title="查看候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button></td></tr>`;
+  $('#candidate-rows').innerHTML = inventory.length ? inventory.map((item) => {
+    const references = item.references;
+    const products = [...new Set(references.map((reference) => reference.productName).filter(Boolean))];
+    const versions = [...new Set(references.map((reference) => reference.displayVersion ?? '-'))];
+    const rounds = [...new Set(references.map((reference) => `${reference.displayVersion ?? '-'} · 第 ${reference.roundNo ?? '-'} 轮`))];
+    const packageKeys = [...new Set(references.map((reference) => reference.packageKey).filter(Boolean))];
+    return `<tr><td>${escapeHtml(products.join('、') || item.productName || '-')}</td><td>${escapeHtml(versions.join('、') || item.releaseDisplayVersion || item.releaseVersion || '-')}</td><td class="small">${rounds.length ? rounds.map((round) => escapeHtml(round)).join('<br>') : '-'}</td><td>${escapeHtml(item.type ?? '-')}</td><td class="text-break">${escapeHtml(packageKeys.join('、') || item.packageKey || '-')}</td><td class="file-name text-break">${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span>${item.candidateIds.length > 1 ? `<div class="small text-body-secondary mt-1">${item.candidateIds.length} 条候选记录共用此 SHA-256</div>` : ''}</td><td><button class="btn btn-outline-primary btn-sm" data-candidate-open="${escapeHtml(item.candidateId)}" title="查看文件"><i class="bi bi-eye"></i><span class="visually-hidden">查看文件</span></button></td></tr>`;
   }).join('') : '<tr><td colspan="9" class="text-center text-body-secondary py-4">暂无候选包</td></tr>';
   document.querySelectorAll('[data-candidate-open]').forEach((button) => button.addEventListener('click', () => navigate('candidate-detail', { candidateId: button.dataset.candidateOpen, ...paramsForState() })));
 }

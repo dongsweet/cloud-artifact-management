@@ -102,7 +102,18 @@ function candidateResponse(candidate) {
     updatedAt: candidate.updated_at,
     completedAt: candidate.completed_at,
     error: candidate.error_message,
-    metadata: candidate.metadata ?? {}
+    metadata: candidate.metadata ?? {},
+    rounds: (candidate.rounds ?? []).map((round) => ({
+      roundId: round.roundId,
+      roundNo: round.roundNo,
+      releaseId: round.releaseId,
+      version: round.version,
+      revision: round.revision ?? 0,
+      displayVersion: round.displayVersion ?? (round.revision > 0 ? `${round.version}-r${round.revision}` : round.version),
+      productId: round.productId,
+      productName: round.productName,
+      packageKey: round.packageKey
+    }))
   };
 }
 
