@@ -136,6 +136,8 @@ export class CoreStore {
         artifact_id TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, files_json TEXT NOT NULL,
         status TEXT NOT NULL, progress_json TEXT NOT NULL DEFAULT '{}', last_error TEXT,
         attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT NOT NULL,
+        scheduled_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
+        chunk_concurrency INTEGER NOT NULL DEFAULT 4,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT
       );
       CREATE INDEX IF NOT EXISTS core_distribution_queue_idx ON core_distribution_tasks(agent_id, status, created_at);
@@ -162,6 +164,8 @@ export class CoreStore {
     const distributionColumns = new Set(db.prepare('PRAGMA table_info(core_distribution_tasks)').all().map((column) => column.name));
     if (!distributionColumns.has('attempts')) db.exec('ALTER TABLE core_distribution_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
     if (!distributionColumns.has('retry_at')) db.exec(`ALTER TABLE core_distribution_tasks ADD COLUMN retry_at TEXT NOT NULL DEFAULT '${now()}'`);
+    if (!distributionColumns.has('scheduled_at')) db.exec("ALTER TABLE core_distribution_tasks ADD COLUMN scheduled_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
+    if (!distributionColumns.has('chunk_concurrency')) db.exec('ALTER TABLE core_distribution_tasks ADD COLUMN chunk_concurrency INTEGER NOT NULL DEFAULT 4');
     if (!columns.has('cloud_mapping_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_mapping_json TEXT');
     if (!columns.has('cloud_request_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_request_json TEXT');
     if (!columns.has('cloud_workflow_step')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_workflow_step TEXT');
@@ -285,26 +289,41 @@ export class CoreStore {
     }
     return true;
   }
-  createDistributionTask({ agentId, artifactId }) {
+  createDistributionTask({ agentId, artifactId, scheduledAt = null, chunkConcurrency = 4 }) {
     const agent = this.db.prepare("SELECT agent_id FROM core_agents WHERE agent_id = ? AND status = 'ACTIVE'").get(agentId);
     if (!agent) throw Object.assign(new Error('active agent not found'), { code: 'agent_not_found' });
     const artifact = this.getArtifact(artifactId);
     if (!artifact) throw Object.assign(new Error('正式制品版本不存在或尚未完成入库'), { code: 'artifact_not_found' });
     const files = artifact.files.map(({ packageKey, fileName, sizeBytes, sha256 }) => ({ packageKey, fileName, sizeBytes, sha256 }));
     if (!files.length || files.some((file) => !this.artifactPath(file.sha256))) throw Object.assign(new Error('正式制品文件未全部入库'), { code: 'artifact_incomplete' });
+    const parsedSchedule = scheduledAt == null || scheduledAt === '' ? Date.now() : Date.parse(scheduledAt);
+    if (!Number.isFinite(parsedSchedule)) throw Object.assign(new Error('开始时间无效'), { code: 'distribution_schedule_invalid' });
+    const concurrency = Number(chunkConcurrency);
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) throw Object.assign(new Error('并发线程数必须是 1 到 16 之间的整数'), { code: 'distribution_concurrency_invalid' });
+    const scheduled = new Date(parsedSchedule).toISOString();
     const taskId = `DIST-${randomUUID()}`;
     const timestamp = now();
-    this.db.prepare("INSERT INTO core_distribution_tasks (task_id, agent_id, artifact_id, manifest_sha256, files_json, status, retry_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'QUEUED', ?, ?, ?)")
-      .run(taskId, agentId, artifactId, artifact.manifestSha256, JSON.stringify(files), timestamp, timestamp, timestamp);
+    this.db.prepare("INSERT INTO core_distribution_tasks (task_id, agent_id, artifact_id, manifest_sha256, files_json, status, retry_at, scheduled_at, chunk_concurrency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'SCHEDULED', ?, ?, ?, ?, ?)")
+      .run(taskId, agentId, artifactId, artifact.manifestSha256, JSON.stringify(files), timestamp, scheduled, concurrency, timestamp, timestamp);
     return this.getDistributionTask(taskId);
   }
   getDistributionTask(taskId) {
     const row = this.db.prepare('SELECT * FROM core_distribution_tasks WHERE task_id = ?').get(taskId);
-    return row ? { taskId: row.task_id, agentId: row.agent_id, artifactId: row.artifact_id, manifestSha256: row.manifest_sha256, files: JSON.parse(row.files_json), status: row.status, progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, lastError: row.last_error, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at } : null;
+    return row ? { taskId: row.task_id, agentId: row.agent_id, artifactId: row.artifact_id, manifestSha256: row.manifest_sha256, files: JSON.parse(row.files_json), status: row.status, progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, scheduledAt: row.scheduled_at, chunkConcurrency: row.chunk_concurrency, lastError: row.last_error, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at } : null;
+  }
+  listLatestAgentDistributionTasks(agentId) {
+    const latest = new Map();
+    for (const { task_id: taskId } of this.db.prepare('SELECT task_id FROM core_distribution_tasks WHERE agent_id = ? ORDER BY updated_at DESC').all(agentId)) {
+      const task = this.getDistributionTask(taskId);
+      if (task && !latest.has(task.artifactId)) latest.set(task.artifactId, task);
+    }
+    return latest;
   }
   listDistributionTasks() { return this.db.prepare('SELECT task_id FROM core_distribution_tasks ORDER BY created_at DESC LIMIT 500').all().map(({ task_id }) => this.getDistributionTask(task_id)); }
   listAgentTasks(agentId) {
-    return this.db.prepare("SELECT task_id FROM core_distribution_tasks WHERE agent_id = ? AND status IN ('QUEUED','RUNNING') AND retry_at <= ? ORDER BY created_at LIMIT 20").all(agentId, now()).map(({ task_id }) => this.getDistributionTask(task_id));
+    const timestamp = now();
+    this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', updated_at = ? WHERE agent_id = ? AND status = 'SCHEDULED' AND scheduled_at <= ? AND retry_at <= ?").run(timestamp, agentId, timestamp, timestamp);
+    return this.db.prepare("SELECT task_id FROM core_distribution_tasks WHERE agent_id = ? AND status IN ('QUEUED','RUNNING') AND scheduled_at <= ? AND retry_at <= ? ORDER BY created_at LIMIT 20").all(agentId, timestamp, timestamp).map(({ task_id }) => this.getDistributionTask(task_id));
   }
   updateDistributionTask(agentId, taskId, { status, progress = {}, error = null }) {
     const task = this.getDistributionTask(taskId);

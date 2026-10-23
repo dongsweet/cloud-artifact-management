@@ -89,7 +89,10 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /data-agent-menu-group="audit">审计/);
   assert.match(html, /data-agent-mobile-group="business"/);
   assert.match(html, /mountAaaConfig/);
-  assert.match(html, /agentCan\('businessWrite'\)\?async\(item\)/);
+  assert.match(html, /传输计划由 Core 统一安排，Agent 到时自动主动下载/);
+  assert.match(html, /distributionAuthorized/);
+  assert.match(html, /canDeliver:item=>Boolean\(item\.distributionAuthorized\)/);
+  assert.doesNotMatch(html, /agentCan\('businessWrite'\)\?async\(item\)/);
   assert.doesNotMatch(html, /window\.alert\s*\(|window\.confirm\s*\(|\balert\s*\(|\bconfirm\s*\(/);
 });
 

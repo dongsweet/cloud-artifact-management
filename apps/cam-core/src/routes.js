@@ -298,12 +298,24 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
     return { items: store.listDistributionTasks() };
   });
+  app.get('/api/v1/distribution-tasks/:taskId', async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
+    const item = store.getDistributionTask(request.params.taskId);
+    if (!item) return error(reply, 404, 'distribution_task_not_found', '分发任务不存在');
+    return { item };
+  });
   app.post('/api/v1/distribution-tasks', { bodyLimit: 8192 }, async (request, reply) => {
     if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
     try { return reply.code(201).send({ item: store.createDistributionTask(request.body ?? {}) }); }
     catch (err) { return error(reply, err.code === 'artifact_not_found' ? 404 : 409, err.code ?? 'distribution_task_invalid', err.message); }
   });
-  app.get('/api/v1/agent/available-artifacts', async (_request, reply) => reply.send({ items: store.listArtifacts({ includeRoundMetadata: true }).map(({ artifactId, productName, displayVersion, version, revision, releaseId, roundId, roundNo, manifestSha256, cloudApprovalId, transferTaskId, files, receivedAt }) => ({ artifactId, productName, displayVersion, version, revision, releaseId, roundId, roundNo, manifestSha256, cloudApprovalId, transferTaskId, files: files.map(({ packageKey, fileName, sizeBytes, sha256, source, stored }) => ({ packageKey, fileName, sizeBytes, sha256, source, stored })), receivedAt })) }));
+  app.get('/api/v1/agent/available-artifacts', async (request, reply) => {
+    const taskByArtifact = store.listLatestAgentDistributionTasks(request.agentPrincipal.agentId);
+    return reply.send({ items: store.listArtifacts({ includeRoundMetadata: true }).map(({ artifactId, productName, displayVersion, version, revision, releaseId, roundId, roundNo, manifestSha256, cloudApprovalId, transferTaskId, files, receivedAt }) => {
+      const task = taskByArtifact.get(artifactId);
+      return { artifactId, productName, displayVersion, version, revision, releaseId, roundId, roundNo, manifestSha256, cloudApprovalId, transferTaskId, distributionAuthorized: Boolean(task), distributionTask: task ? { taskId: task.taskId, status: task.status, scheduledAt: task.scheduledAt, chunkConcurrency: task.chunkConcurrency, attempts: task.attempts, retryAt: task.retryAt, lastError: task.lastError, updatedAt: task.updatedAt, completedAt: task.completedAt } : null, files: files.map(({ packageKey, fileName, sizeBytes, sha256, source, stored }) => ({ packageKey, fileName, sizeBytes, sha256, source, stored })), receivedAt };
+    }) });
+  });
   app.post('/api/v1/agent/distribution-tasks', { bodyLimit: 8192 }, async (request, reply) => {
     try { return reply.code(201).send({ item: store.createDistributionTask({ agentId: request.agentPrincipal.agentId, artifactId: request.body?.artifactId }) }); }
     catch (err) { return error(reply, err.code === 'artifact_not_found' ? 404 : 409, err.code ?? 'distribution_task_invalid', err.message); }

@@ -61,7 +61,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   let running = false;
   let configuring = false;
   let testing = false;
-  db.exec(`CREATE TABLE IF NOT EXISTS agent_tasks (task_id TEXT PRIMARY KEY, artifact_id TEXT NOT NULL, status TEXT NOT NULL, progress_json TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT, last_error TEXT, updated_at TEXT NOT NULL);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS agent_tasks (task_id TEXT PRIMARY KEY, artifact_id TEXT NOT NULL, status TEXT NOT NULL, progress_json TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT, scheduled_at TEXT, chunk_concurrency INTEGER NOT NULL DEFAULT 4, last_error TEXT, updated_at TEXT NOT NULL);`);
   db.exec(`CREATE TABLE IF NOT EXISTS agent_task_files (
     task_id TEXT NOT NULL, sha256 TEXT NOT NULL, package_key TEXT, file_name TEXT NOT NULL,
     size_bytes INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', reused INTEGER NOT NULL DEFAULT 0,
@@ -72,6 +72,8 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   const taskColumns = new Set(db.prepare('PRAGMA table_info(agent_tasks)').all().map((column) => column.name));
   if (!taskColumns.has('attempts')) db.exec('ALTER TABLE agent_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
   if (!taskColumns.has('retry_at')) db.exec('ALTER TABLE agent_tasks ADD COLUMN retry_at TEXT');
+  if (!taskColumns.has('scheduled_at')) db.exec("ALTER TABLE agent_tasks ADD COLUMN scheduled_at TEXT");
+  if (!taskColumns.has('chunk_concurrency')) db.exec('ALTER TABLE agent_tasks ADD COLUMN chunk_concurrency INTEGER NOT NULL DEFAULT 4');
   const app = await buildServer({ service: 'cam-agent', configure: async (server) => { registerAuth(server, auth); server.addHook('onClose', async () => db.close()); } });
   const sharedAssetRoot = resolve(process.cwd(), 'web-shared', 'assets');
   app.get('/assets/:file', async (request, reply) => {
@@ -147,9 +149,10 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   };
   const taskForArtifact = (artifactId) => db.prepare('SELECT * FROM agent_tasks WHERE artifact_id = ? ORDER BY updated_at DESC LIMIT 1').get(artifactId);
   const displayTaskStatus = (task) => {
-    if (!task) return 'NOT_CACHED';
+    if (!task) return 'NOT_SCHEDULED';
     if (task.status === 'COMPLETED') return 'CACHED';
-    if (task.last_error && task.retry_at && Date.parse(task.retry_at) > Date.now()) return 'RETRY_WAIT';
+    if (task.status === 'SCHEDULED') return 'SCHEDULED';
+    if ((task.last_error ?? task.lastError) && (task.retry_at ?? task.retryAt) && Date.parse(task.retry_at ?? task.retryAt) > Date.now()) return 'RETRY_WAIT';
     if (task.status === 'RUNNING') return 'RUNNING';
     return 'QUEUED';
   };
@@ -157,14 +160,15 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     const response = await core('/api/v1/agent/available-artifacts'); const catalog = await response.json();
     return Promise.all((catalog.items ?? []).map(async (item) => {
       const files = await Promise.all((item.files ?? []).map(inspectCachedFile));
-      const task = taskForArtifact(item.artifactId);
+      const localTask = taskForArtifact(item.artifactId);
+      const task = localTask ?? item.distributionTask;
       const cachedFiles = files.filter((file) => file.cached);
       const allCached = files.length > 0 && cachedFiles.length === files.length;
       const taskState = displayTaskStatus(task);
-      const agentStatus = allCached ? 'CACHED' : taskState === 'RETRY_WAIT' ? 'RETRY_WAIT' : taskState === 'RUNNING' ? 'RUNNING' : taskState === 'QUEUED' ? 'QUEUED' : cachedFiles.length ? 'PARTIAL' : 'NOT_CACHED';
-      const agentStatusLabel = { CACHED: '已缓存', PARTIAL: '部分缓存', RETRY_WAIT: '重试等待', RUNNING: '传输中', QUEUED: '排队中', NOT_CACHED: '未拉取' }[agentStatus];
-      const agentStatusDetail = task?.last_error ?? (allCached && !task ? '未创建本版本传输任务，文件已通过 SHA-256 复用' : null);
-      return { ...item, files, cachedFileCount: cachedFiles.length, cachedBytes: files.reduce((sum, file) => sum + (file.cachedBytes || 0), 0), totalBytes: files.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0), agentStatus, agentStatusLabel, agentStatusDetail, lastTransferAt: task?.updated_at ?? null, taskId: task?.task_id ?? null };
+      const agentStatus = !task ? 'NOT_SCHEDULED' : allCached ? 'CACHED' : taskState === 'RETRY_WAIT' ? 'RETRY_WAIT' : taskState === 'RUNNING' ? 'RUNNING' : taskState === 'SCHEDULED' ? 'SCHEDULED' : taskState === 'QUEUED' ? 'QUEUED' : cachedFiles.length ? 'PARTIAL' : 'NOT_CACHED';
+      const agentStatusLabel = { CACHED: '已就绪', PARTIAL: '部分缓存', RETRY_WAIT: '重试等待', RUNNING: '传输中', QUEUED: '排队中', SCHEDULED: '已计划', NOT_SCHEDULED: '未调度', NOT_CACHED: '未缓存' }[agentStatus];
+      const agentStatusDetail = task?.last_error ?? task?.lastError ?? (!task && allCached ? '未安排本 Agent 传输，文件已通过 SHA-256 复用' : !task ? '等待 Core 安排传输' : taskState === 'SCHEDULED' ? `计划开始：${task.scheduled_at ?? task.scheduledAt}` : null);
+      return { ...item, files, cachedFileCount: cachedFiles.length, cachedBytes: files.reduce((sum, file) => sum + (file.cachedBytes || 0), 0), totalBytes: files.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0), agentStatus, agentStatusLabel, agentStatusDetail, lastTransferAt: task?.updated_at ?? task?.updatedAt ?? null, taskId: task?.task_id ?? task?.taskId ?? null, distributionAuthorized: Boolean(item.distributionAuthorized || localTask) };
     }));
   };
   const cacheSummary = async (items) => {
@@ -269,11 +273,11 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
   const localTask = (task) => {
     const timestamp = nowIso();
     const lastError = Object.hasOwn(task, 'lastError') ? task.lastError : null;
-    db.prepare(`INSERT INTO agent_tasks (task_id, artifact_id, status, progress_json, attempts, retry_at, last_error, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    db.prepare(`INSERT INTO agent_tasks (task_id, artifact_id, status, progress_json, attempts, retry_at, scheduled_at, chunk_concurrency, last_error, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(task_id) DO UPDATE SET artifact_id=excluded.artifact_id, status=excluded.status, progress_json=excluded.progress_json,
-      attempts=excluded.attempts, retry_at=excluded.retry_at, last_error=excluded.last_error, updated_at=excluded.updated_at`)
-      .run(task.taskId, task.artifactId, task.status, JSON.stringify(task.progress ?? {}), task.attempts ?? 0, task.retryAt ?? null, lastError, timestamp);
+      attempts=excluded.attempts, retry_at=excluded.retry_at, scheduled_at=excluded.scheduled_at, chunk_concurrency=excluded.chunk_concurrency, last_error=excluded.last_error, updated_at=excluded.updated_at`)
+      .run(task.taskId, task.artifactId, task.status, JSON.stringify(task.progress ?? {}), task.attempts ?? 0, task.retryAt ?? null, task.scheduledAt ?? null, task.chunkConcurrency ?? CONCURRENCY, lastError, timestamp);
     upsertTaskFiles(task);
   };
   const updateTaskFile = (taskId, file, fields = {}) => {
@@ -296,7 +300,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     const totalBytes = files.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0);
     const completedBytes = files.reduce((sum, file) => sum + Number(file.bytesDownloaded || 0), 0);
     const displayStatus = row.status === 'COMPLETED' ? 'CACHED' : row.last_error && row.retry_at && Date.parse(row.retry_at) > Date.now() ? 'RETRY_WAIT' : row.status === 'RUNNING' ? 'RUNNING' : 'QUEUED';
-    return { taskId: row.task_id, artifactId: row.artifact_id, status: row.status, displayStatus, progress, files, fileCount: files.length, completedFiles, totalBytes, completedBytes, attempts: row.attempts, retryAt: row.retry_at, lastError: row.last_error, updatedAt: row.updated_at };
+    return { taskId: row.task_id, artifactId: row.artifact_id, status: row.status, displayStatus, progress, files, fileCount: files.length, completedFiles, totalBytes, completedBytes, attempts: row.attempts, retryAt: row.retry_at, scheduledAt: row.scheduled_at, chunkConcurrency: row.chunk_concurrency, lastError: row.last_error, updatedAt: row.updated_at };
   };
   const update = async (taskId, body) => { const response = await core(`/api/v1/agent/tasks/${encodeURIComponent(taskId)}/progress`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return response.json(); };
   async function downloadTask(task) {
@@ -323,7 +327,8 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
         let cursor = 0; let completedParts = count - pending.length;
         updateTaskFile(task.taskId, file, { status: 'RUNNING', reused: 0, completedParts, totalParts: count, bytesDownloaded: completedBytes, lastError: null });
         const worker = async () => { while (cursor < pending.length) { const index = pending[cursor++]; const start = index * CHUNK_SIZE; const end = Math.min(file.sizeBytes - 1, start + CHUNK_SIZE - 1); const response = await core(`/api/v1/agent/tasks/${encodeURIComponent(task.taskId)}/files/${file.sha256}/parts/${index}`, { headers: { 'x-cam-chunk-size': String(CHUNK_SIZE) } }); const bytes = Buffer.from(await response.arrayBuffer()); if (bytes.length !== end - start + 1) throw new Error(`分块 ${index} 大小不正确`); const partPath = join(taskDir, 'parts', `${file.sha256}.${index}`); await new Promise((resolve, reject) => { const output = createWriteStream(partPath, { flags: 'w', mode: 0o600 }); output.on('error', reject); output.end(bytes, resolve); }); completedParts += 1; completedBytes += bytes.length; updateTaskFile(task.taskId, file, { status: 'RUNNING', completedParts, totalParts: count, bytesDownloaded: completedBytes }); const progress = { state: 'downloading', fileName: file.fileName, sha256: file.sha256, completedParts, totalParts: count, bytesDownloaded: completedBytes, totalBytes: file.sizeBytes }; db.prepare('UPDATE agent_tasks SET progress_json = ?, updated_at = ? WHERE task_id = ?').run(JSON.stringify(progress), nowIso(), task.taskId); await update(task.taskId, { status: 'RUNNING', progress }).catch(() => {}); } };
-        const results = await Promise.allSettled(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker));
+        const taskConcurrency = Math.max(1, Math.min(CONCURRENCY, Number(task.chunkConcurrency ?? CONCURRENCY)));
+        const results = await Promise.allSettled(Array.from({ length: Math.min(taskConcurrency, pending.length) }, worker));
         const failedWorker = results.find((result) => result.status === 'rejected'); if (failedWorker) throw failedWorker.reason;
         const temp = `${outputPath}.tmp`; const output = createWriteStream(temp, { flags: 'w', mode: 0o600 }); const fullHash = createHash('sha256'); let total = 0;
         for (let index = 0; index < count; index += 1) { const bytes = await readFile(join(taskDir, 'parts', `${file.sha256}.${index}`)); fullHash.update(bytes); total += bytes.length; if (!output.write(bytes)) await once(output, 'drain'); }

@@ -47,7 +47,8 @@ test('Edge, Core and Agent shell branding and navigation labels are aligned', as
   assert.match(agent, /id="artifact-cache-summary"/);
   assert.match(agent, /正式版本总数/);
   assert.match(agent, /showCacheColumns:true/);
-  assert.match(agent, /pullLabelFor:item=>/);
+  assert.match(agent, /传输计划由 Core 统一安排，Agent 到时自动主动下载/);
+  assert.match(agent, /canDeliver:item=>Boolean\(item\.distributionAuthorized\)/);
   assert.match(agent, /id="task-detail-dialog"/);
   assert.match(agent, /立即同步任务/);
 });

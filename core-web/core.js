@@ -205,17 +205,30 @@ function renderDistributionOptions() {
 function distributionProgress(task) {
   const progress = task.progress ?? {};
   if (progress.totalParts) return `${progress.completedParts ?? 0} / ${progress.totalParts} 分块${progress.fileName ? ` · ${progress.fileName}` : ''}`;
-  return progress.state === 'ready' ? '全部文件已校验' : '等待 Agent 拉取';
+  if (progress.state === 'ready') return '全部文件已校验';
+  if (task.status === 'SCHEDULED') return '等待计划开始';
+  if (task.lastError && task.retryAt && Date.parse(task.retryAt) > Date.now()) return `等待重试 · ${displayTime(task.retryAt)}`;
+  return '等待 Agent 拉取';
+}
+function distributionDisplayStatus(task) {
+  if (task.status === 'SCHEDULED') return 'SCHEDULED';
+  if (task.status === 'COMPLETED') return 'COMPLETED';
+  if (task.status === 'RUNNING') return 'RUNNING';
+  if (task.lastError && task.retryAt && Date.parse(task.retryAt) > Date.now()) return 'RETRY_WAIT';
+  return task.status;
 }
 function renderDistributionTasks() {
-  const labels = { QUEUED: '排队中', RUNNING: '传输中', COMPLETED: '已就绪' };
+  const labels = { SCHEDULED: '已计划', QUEUED: '排队中', RETRY_WAIT: '重试等待', RUNNING: '传输中', COMPLETED: '已就绪' };
   $('#distribution-rows').innerHTML = distributionTasks.length ? distributionTasks.map((task) => {
     const agent = coreAgents.find((item) => item.agentId === task.agentId);
     const artifact = distributionArtifacts.find((item) => item.artifactId === task.artifactId);
-    const status = labels[task.status] ?? task.status;
-    return `<tr><td><code>${escapeHtml(task.taskId)}</code></td><td>${escapeHtml(agent?.name ?? task.agentId)}</td><td>${escapeHtml(artifact ? `${artifact.productName ?? '历史产品'} · ${artifact.displayVersion ?? artifact.version ?? '未知版本'}` : task.artifactId)}</td><td><span class="badge text-bg-${task.status === 'COMPLETED' ? 'success' : task.status === 'RUNNING' ? 'primary' : 'warning'}">${escapeHtml(status)}</span>${task.lastError ? `<div class="small text-danger mt-1">${escapeHtml(task.lastError)}</div>` : ''}</td><td>${escapeHtml(distributionProgress(task))}${task.attempts ? `<div class="small text-body-secondary">失败重试 ${escapeHtml(task.attempts)} 次</div>` : ''}</td><td>${escapeHtml(displayTime(task.updatedAt))}</td></tr>`;
-  }).join('') : '<tr><td colspan="6" class="text-center text-body-secondary py-4">暂无分发任务</td></tr>';
+    const displayStatus = distributionDisplayStatus(task);
+    const status = labels[displayStatus] ?? displayStatus;
+    const color = displayStatus === 'COMPLETED' ? 'success' : displayStatus === 'RUNNING' ? 'primary' : displayStatus === 'SCHEDULED' ? 'info' : displayStatus === 'RETRY_WAIT' ? 'danger' : 'warning';
+    return `<tr><td><code>${escapeHtml(task.taskId)}</code></td><td>${escapeHtml(agent?.name ?? task.agentId)}</td><td>${escapeHtml(artifact ? `${artifact.productName ?? '历史产品'} · ${artifact.displayVersion ?? artifact.version ?? '未知版本'}` : task.artifactId)}</td><td><span class="badge text-bg-${color}">${escapeHtml(status)}</span>${task.lastError ? `<div class="small text-danger mt-1">${escapeHtml(task.lastError)}</div>` : ''}</td><td>${escapeHtml(displayTime(task.scheduledAt))}</td><td>${escapeHtml(task.chunkConcurrency ?? '-')}</td><td>${escapeHtml(distributionProgress(task))}${task.attempts ? `<div class="small text-body-secondary">失败重试 ${escapeHtml(task.attempts)} 次</div>` : ''}</td><td>${escapeHtml(displayTime(task.updatedAt))}</td><td class="text-end"><button type="button" class="btn btn-outline-primary btn-sm distribution-detail-button" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-eye me-1"></i>详情</button></td></tr>`;
+  }).join('') : '<tr><td colspan="9" class="text-center text-body-secondary py-4">暂无传输任务</td></tr>';
   refreshPaginatedTables($('#page-distribution'));
+  document.querySelectorAll('.distribution-detail-button').forEach((button) => { button.onclick = () => showDistributionDetail(button.dataset.taskId); });
 }
 async function loadDistribution() {
   try {
@@ -229,9 +242,25 @@ async function loadDistribution() {
 async function createDistributionTask(event) {
   event.preventDefault();
   const button = event.submitter; button.disabled = true; $('#distribution-error').classList.add('d-none');
-  try { await api('/api/v1/distribution-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifactId: $('#distribution-artifact').value, agentId: $('#distribution-agent').value }) }); message('分发任务已创建，目标 Agent 会主动拉取'); $('#distribution-form').reset(); await loadDistribution(); }
+  try {
+    const startAt = $('#distribution-start-at').value ? new Date($('#distribution-start-at').value).toISOString() : null;
+    await api('/api/v1/distribution-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifactId: $('#distribution-artifact').value, agentId: $('#distribution-agent').value, scheduledAt: startAt, chunkConcurrency: Number($('#distribution-concurrency').value) }) });
+    message(startAt ? '传输计划已创建，Agent 将在计划时间自动开始' : '传输计划已创建，目标 Agent 将自动开始'); $('#distribution-form').reset(); $('#distribution-concurrency').value = 4; await loadDistribution();
+  }
   catch (error) { $('#distribution-error').textContent = error.message; $('#distribution-error').classList.remove('d-none'); }
   finally { button.disabled = false; }
+}
+async function showDistributionDetail(taskId) {
+  try {
+    const task = (await api(`/api/v1/distribution-tasks/${encodeURIComponent(taskId)}`)).item;
+    const artifact = distributionArtifacts.find((item) => item.artifactId === task.artifactId);
+    const agent = coreAgents.find((item) => item.agentId === task.agentId);
+    const labels = { SCHEDULED: '已计划', QUEUED: '排队中', RETRY_WAIT: '重试等待', RUNNING: '传输中', COMPLETED: '已就绪' };
+    const displayStatus = distributionDisplayStatus(task);
+    $('#distribution-detail-title').textContent = artifact ? `${artifact.productName ?? '历史产品'} · ${artifact.displayVersion ?? artifact.version ?? '未知版本'}` : task.artifactId;
+    $('#distribution-detail-content').innerHTML = `<div class="row g-2 mb-3"><div class="col-md-4"><div class="small text-body-secondary">任务编号</div><code>${escapeHtml(task.taskId)}</code></div><div class="col-md-4"><div class="small text-body-secondary">目标 Agent</div><span>${escapeHtml(agent?.name ?? task.agentId)}</span></div><div class="col-md-4"><div class="small text-body-secondary">状态</div><span class="badge text-bg-${displayStatus === 'COMPLETED' ? 'success' : displayStatus === 'RUNNING' ? 'primary' : displayStatus === 'SCHEDULED' ? 'info' : displayStatus === 'RETRY_WAIT' ? 'danger' : 'warning'}">${escapeHtml(labels[displayStatus] ?? displayStatus)}</span></div><div class="col-md-4"><div class="small text-body-secondary">计划开始</div><span>${escapeHtml(displayTime(task.scheduledAt))}</span></div><div class="col-md-4"><div class="small text-body-secondary">单文件并发</div><span>${escapeHtml(task.chunkConcurrency ?? '-')} 线程</span></div><div class="col-md-4"><div class="small text-body-secondary">尝试次数</div><span>${escapeHtml(task.attempts ?? 0)}</span></div></div>${task.lastError ? `<div class="alert alert-danger">${escapeHtml(task.lastError)}</div>` : ''}<div class="small text-body-secondary mb-2">${escapeHtml(distributionProgress(task))}</div><div class="table-responsive"><table class="table table-sm table-hover align-middle"><thead><tr><th>文件</th><th>大小</th><th>SHA-256</th></tr></thead><tbody>${(task.files ?? []).map((file) => `<tr><td>${escapeHtml(file.fileName)}</td><td>${escapeHtml(file.sizeBytes)}</td><td><code class="small">${escapeHtml(file.sha256)}</code></td></tr>`).join('')}</tbody></table></div>`;
+    $('#distribution-detail').showModal();
+  } catch (error) { message(error.message, 'danger'); }
 }
 async function updateAgentStatus(button) {
   const nextStatus = button.dataset.status;
@@ -526,6 +555,8 @@ $('#detail-close').addEventListener('click', () => $('#detail').close());
 $('#detail').addEventListener('click', (event) => { if (event.target === $('#detail')) $('#detail').close(); }); $('#artifacts-refresh').addEventListener('click', loadArtifacts);
 $('#distribution-refresh').addEventListener('click', loadDistribution);
 $('#distribution-form').addEventListener('submit', createDistributionTask);
+$('#distribution-detail-close').addEventListener('click', () => $('#distribution-detail').close());
+$('#distribution-detail').addEventListener('click', (event) => { if (event.target === $('#distribution-detail')) $('#distribution-detail').close(); });
 $('#confirm-cancel').addEventListener('click', () => $('#confirm-dialog').close('cancel'));
 $('#confirm-submit').addEventListener('click', () => $('#confirm-dialog').close('confirm'));
 $('#confirm-dialog').addEventListener('click', (event) => { if (event.target === $('#confirm-dialog')) $('#confirm-dialog').close('cancel'); });
@@ -610,3 +641,4 @@ try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; show
 
 setInterval(() => { if (!forcedPasswordChange && !document.hidden && !$('#page-gate-config').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadGateKeys({ preserveInputs: true }).catch(() => {}); }, 5000);
 setInterval(() => { if (!forcedPasswordChange && !document.hidden && !$('#page-agents').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadAgents(); }, 5000);
+setInterval(() => { if (!forcedPasswordChange && !document.hidden && !$('#page-distribution').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadDistribution(); }, 5000);

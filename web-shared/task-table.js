@@ -1,4 +1,5 @@
 export const taskStateMeta = {
+  SCHEDULED: ['已计划', 'info'],
   QUEUED: ['排队中', 'warning'],
   RUNNING: ['传输中', 'primary'],
   RETRY_WAIT: ['重试等待', 'danger'],

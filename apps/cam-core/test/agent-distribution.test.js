@@ -30,6 +30,10 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     const distributionAgent = app.coreStore.listDistributionAgents().find((item) => item.agentId === west.agentId);
     assert.deepEqual(distributionAgent, { agentId: west.agentId, centerId: 'CENTER-WEST', name: 'west-agent', status: 'ACTIVE' });
     const task = app.coreStore.createDistributionTask({ agentId: west.agentId, artifactId: 'BASELINE-REQ-AGENT' });
+    const scheduledTask = app.coreStore.createDistributionTask({ agentId: west.agentId, artifactId: 'BASELINE-REQ-AGENT', scheduledAt: new Date(Date.now() + 60_000).toISOString(), chunkConcurrency: 8 });
+    assert.equal(scheduledTask.status, 'SCHEDULED'); assert.equal(scheduledTask.chunkConcurrency, 8); assert.ok(!app.coreStore.listAgentTasks(west.agentId).some((item) => item.taskId === scheduledTask.taskId), 'future tasks stay out of the Agent queue');
+    db.prepare('UPDATE core_distribution_tasks SET scheduled_at = ? WHERE task_id = ?').run(new Date(Date.now() - 1_000).toISOString(), scheduledTask.taskId);
+    assert.ok(app.coreStore.listAgentTasks(west.agentId).some((item) => item.taskId === scheduledTask.taskId), 'due tasks become available automatically');
 
     const auth = (agent, identity, method, path, body = '') => { const timestamp = new Date().toISOString(); const nonce = randomNonce(); return { 'x-cam-agent-id': agent.agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(identity.privateKeyPem, method, path, timestamp, nonce, body) }; };
     const availablePath = '/api/v1/agent/available-artifacts';
@@ -40,6 +44,8 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     const requested = await app.inject({ method: 'POST', url: requestPath, headers: { ...auth(east, eastIdentity, 'POST', requestPath, requestBody), 'content-type': 'application/json' }, payload: JSON.parse(requestBody) });
     assert.equal(requested.statusCode, 201, requested.body);
     assert.equal(requested.json().item.agentId, east.agentId, 'Agent-requested pulls remain scoped to the authenticated Agent');
+    const authorizedAvailable = await app.inject({ method: 'GET', url: availablePath, headers: auth(east, eastIdentity, 'GET', availablePath) });
+    assert.equal(authorizedAvailable.json().items[0].distributionAuthorized, true);
 
     const noIdentity = await app.inject({ method: 'POST', url: '/api/v1/agent/tasks/pull' });
     assert.equal(noIdentity.statusCode, 401);
