@@ -127,7 +127,7 @@ async function openGrant(roundId, candidateId) {
     const candidate = await api(`/api/v1/candidates/${encodeURIComponent(candidateId)}`);
     if (candidate.status !== 'COMPLETED') throw new Error('只能授权已完成的候选包');
     $('#grant-round-filters').classList.add('d-none');
-    $('#grant-candidate-summary').textContent = `授权范围：当前候选包 · ${candidate.fileName}（${candidate.version} / ${candidate.architecture}）`;
+    $('#grant-candidate-summary').textContent = `授权范围：当前候选包 · ${candidate.fileName}（${candidate.releaseDisplayVersion ?? candidate.version} / ${candidate.architecture}）`;
     $('#grant-candidate-summary').classList.remove('d-none');
     renderGrantFiles([candidate]);
   } else if (roundId) {
@@ -155,7 +155,7 @@ async function loadGrantReleases(selectedReleaseId = null, selectedRoundId = nul
   $('#grant-files').innerHTML = '<div class="text-body-secondary">请先选择候选轮次</div>';
   if (!productId) return;
   const releases = (await api(`/api/v1/releases?productId=${encodeURIComponent(productId)}`)).items;
-  $('#grant-release').innerHTML = '<option value="">请选择发布版本</option>' + releases.map((r) => `<option value="${esc(r.releaseId)}">${esc(r.version)}</option>`).join('');
+  $('#grant-release').innerHTML = '<option value="">请选择发布版本</option>' + releases.map((r) => `<option value="${esc(r.releaseId)}">${esc(r.displayVersion ?? (r.revision > 0 ? `${r.version}-r${r.revision}` : r.version))}</option>`).join('');
   if (selectedReleaseId) {
     $('#grant-release').value = selectedReleaseId;
     await loadGrantRounds(selectedRoundId);
