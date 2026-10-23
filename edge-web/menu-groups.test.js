@@ -6,6 +6,8 @@ const read = (name) => readFile(new URL(name, import.meta.url), 'utf8');
 
 test('Edge sidebar groups business, management, security and audit pages like Core', async () => {
   const [html, script] = await Promise.all([read('./index.html'), read('./account-ui.js')]);
+  assert.match(html, /<span class="brand-text">CAM Edge<\/span>/u);
+  assert.doesNotMatch(html, /<span class="brand-text fw-light">CAM Edge<\/span>/u);
   for (const [group, label] of [['business', '业务'], ['management', '系统管理']]) {
     assert.match(html, new RegExp(`<li class="nav-header" data-menu-group="${group}">${label}</li>`, 'u'));
   }
