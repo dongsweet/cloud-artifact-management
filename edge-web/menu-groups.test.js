@@ -31,6 +31,8 @@ test('download grant form binds the current operator and derives its total sessi
   assert.match(script, /input\('grant-total',[^\n]*readonly/u);
   assert.match(script, /selectedCount \* \(Number\.isSafeInteger\(perFile\)/u);
   assert.match(script, /maxSessionsPerFile: Number\(\$\('#grant-per-file'\)\.value\)/u);
+  assert.match(script, /openGrant\(context\(\)\.roundId, context\(\)\.candidateId\)/u);
+  assert.match(script, /roundId: grantScopeRoundId \|\| \$\('#grant-round'\)\.value \|\| null/u);
   assert.doesNotMatch(script, /recipientId: \$\('#grant-recipient'\)\.value/u);
   assert.match(routes, /principalId: actor\.principalId,[\s\S]*?maxTotalSessions: Array\.isArray\(body\.candidateIds\) \? body\.candidateIds\.length \* body\.maxSessionsPerFile/u);
 });

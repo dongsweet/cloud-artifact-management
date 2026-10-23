@@ -3,7 +3,7 @@ import { canEdgePage } from './role-permissions.js?v=20261023-auditor-scope';
 import { renderRoleGroups } from './role-display.js?v=20261022-role-display';
 
 let user = null, api, refresh, context, alert, labels = {}, users = [], exported = null;
-let selectedGrantId = null, grantDetailTimer = null, grantDetailLoading = false;
+let selectedGrantId = null, grantDetailTimer = null, grantDetailLoading = false, grantScopeRoundId = null;
 let loadAuditEvents = null;
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -91,7 +91,7 @@ export async function initAccountUI(options) {
   $('#password-form').onsubmit = (e) => { e.preventDefault(); submit(e.target, async () => { if ($('#new-password').value !== $('#repeat-password').value) throw new Error('两次新密码不一致'); await api('/api/v1/auth/password', { method: 'POST', body: JSON.stringify({ oldPassword: $('#old-password').value, password: $('#new-password').value }) }); showLogin(); }, 'password'); };
   $('#new-grant').onclick = () => openGrant().catch((e) => alert(e.message, 'danger'));
   $('#round-grant').onclick = () => openGrant(context().roundId).catch((e) => alert(e.message, 'danger'));
-  $('#candidate-grant').onclick = () => openGrant(null, context().candidateId).catch((e) => alert(e.message, 'danger'));
+  $('#candidate-grant').onclick = () => openGrant(context().roundId, context().candidateId).catch((e) => alert(e.message, 'danger'));
   $('#grant-product').onchange = () => loadGrantReleases().catch((e) => alert(e.message, 'danger'));
   $('#grant-release').onchange = () => loadGrantRounds().catch((e) => alert(e.message, 'danger'));
   $('#grant-round').onchange = () => loadGrantFiles().catch((e) => alert(e.message, 'danger'));
@@ -100,7 +100,7 @@ export async function initAccountUI(options) {
   $('#grant-form').onsubmit = (e) => { e.preventDefault(); submit(e.target, async () => {
     const candidateIds = [...document.querySelectorAll('#grant-files input:checked')].map((i) => i.value);
     if (!candidateIds.length) throw new Error('请选择已完成文件');
-    exported = await api('/api/v1/download-grants', { method: 'POST', body: JSON.stringify({ candidateIds, roundId: $('#grant-round').value || null, expiresAt: new Date(Date.now() + Number($('#grant-days').value) * 86400000).toISOString(), maxSessionsPerFile: Number($('#grant-per-file').value) }) });
+    exported = await api('/api/v1/download-grants', { method: 'POST', body: JSON.stringify({ candidateIds, roundId: grantScopeRoundId || $('#grant-round').value || null, expiresAt: new Date(Date.now() + Number($('#grant-days').value) * 86400000).toISOString(), maxSessionsPerFile: Number($('#grant-per-file').value) }) });
     exported.items.forEach((i) => { i.downloadUrl = new URL(i.downloadUrl, window.location.origin).href; });
     $('#grant-links').innerHTML = exported.items.map((i) => `<div class="mb-2"><a href="${esc(i.downloadUrl)}" referrerpolicy="no-referrer">${esc(i.fileName)}</a><div class="small font-monospace text-break">SHA-256: ${esc(i.sha256)}</div></div>`).join('');
     modal('grant').hide(); modal('grant-export').show(); if (context().view === 'grants') await renderAccountView('grants');
@@ -111,6 +111,7 @@ export async function initAccountUI(options) {
 }
 async function openGrant(roundId, candidateId) {
   const products = await api('/api/v1/products');
+  grantScopeRoundId = roundId || null;
   $('#grant-owner').value = `${user.displayName} (${user.username})`;
   $('#grant-days').value = '1'; $('#grant-per-file').value = '2'; $('#grant-total').value = '0';
   $('#grant-files').innerHTML = '<div class="text-body-secondary">请先选择候选轮次</div>';
@@ -177,6 +178,7 @@ async function loadGrantRounds(selectedRoundId = null) {
 
 async function loadGrantFiles() {
   const roundId = $('#grant-round').value;
+  grantScopeRoundId = roundId || null;
   if (!roundId) {
     $('#grant-files').innerHTML = '<div class="text-body-secondary">请先选择候选轮次</div>';
     return;
