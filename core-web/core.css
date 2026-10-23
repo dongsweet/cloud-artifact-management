@@ -80,6 +80,13 @@
 .cam-detail-field-wide { grid-column: 1 / -1; }
 .cam-detail-label { color: var(--bs-secondary-color); font-size: .78rem; margin-bottom: .22rem; }
 .cam-detail-value { min-width: 0; overflow-wrap: anywhere; word-break: break-word; line-height: 1.45; }
+.cam-status-panel { min-width: 0; overflow-wrap: anywhere; }
+.cam-detail-advanced { margin-top: .75rem; border: 1px solid var(--bs-border-color-translucent); border-radius: .4rem; background: var(--bs-tertiary-bg); }
+.cam-detail-advanced > summary { cursor: pointer; list-style: none; padding: .65rem .75rem; font-weight: 600; }
+.cam-detail-advanced > summary::-webkit-details-marker { display: none; }
+.cam-detail-advanced > summary .bi { transition: transform .15s ease; }
+.cam-detail-advanced[open] > summary .bi { transform: rotate(90deg); }
+.cam-detail-advanced-body { padding: 0 .75rem .75rem; }
 .cam-break-anywhere { overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
 .cam-retry-panel { padding: .1rem 0; }
 .cam-retry-panel-muted { color: var(--bs-secondary-color); }
