@@ -89,6 +89,37 @@ test('cam-edge serves completed packages through principal-bound, resumable gran
   }
 });
 
+test('download grants bind the current operator and derive total sessions from selected files', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-download-grant-scope-'));
+  const app = await buildEdgeApp({ dataDir, principalProvider: (request) => request.headers['x-test-user'] ? { id: request.headers['x-test-user'], type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] } : null });
+  try {
+    const candidateIds = [];
+    const product = app.candidateStore.createProduct({ name: 'Grant scope test' });
+    const release = app.candidateStore.createReleaseWithFirstRound(product.productId, { version: '1.0.0' });
+    const roundId = release.initialRound.roundId;
+    for (const fileName of ['first.tar.gz', 'second.tar.gz']) {
+      const candidate = await app.candidateStore.create({ releaseId: release.releaseId, packageKey: fileName, sourceUrl: `https://dev.invalid/${fileName}`, fileName, size: 1 });
+      await writeFile(candidate.source_path, Buffer.from('x'));
+      app.candidateStore.db.prepare("UPDATE candidates SET status = 'COMPLETED', final_sha256 = ? WHERE candidate_id = ?").run(createHash('sha256').update('x').digest('hex'), candidate.candidate_id);
+      app.candidateStore.db.prepare("INSERT INTO round_candidates (round_id, package_key, candidate_id, source, created_at) VALUES (?, ?, ?, 'OWNED', ?)").run(roundId, fileName, candidate.candidate_id, new Date().toISOString());
+      candidateIds.push(candidate.candidate_id);
+    }
+    const response = await app.inject({ method: 'POST', url: '/api/v1/download-grants', headers: { 'x-test-user': 'operator-1' }, payload: {
+      recipientId: 'some-other-user', candidateIds, roundId, expiresAt: new Date(Date.now() + 60_000).toISOString(), maxTotalSessions: 1, maxSessionsPerFile: 2
+    } });
+    assert.equal(response.statusCode, 201, response.body);
+    const grant = response.json();
+    const persisted = app.downloadGrantStore.getGrant(grant.grantId);
+    assert.equal(persisted.principalId, 'operator-1');
+    assert.equal(persisted.createdBy, 'operator-1');
+    assert.equal(persisted.maxTotalSessions, 4);
+    assert.ok(persisted.items.every((item) => item.maxSessions === 2));
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('HEAD, browser handoff, sequential retries and parallel requests do not exhaust download slots', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-download-handoff-'));
   const app = await buildEdgeApp({ dataDir });

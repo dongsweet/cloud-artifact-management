@@ -357,9 +357,10 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     try {
       const actor = principal(request);
       const body = request.body ?? {};
+      if (!request.principal.roles?.includes('EDGE_OPERATOR')) throw Object.assign(new Error('只有当前登录的操作员可以创建下载授权'), { code: 'permission_denied' });
       const managedUser = request.principal.type === 'CORE_USER';
-      const recipient = managedUser ? auth.getUser(body.recipientId ?? actor.principalId) : null;
-      if (managedUser && (!recipient || recipient.edgeEnabled === false || recipient.mustChangePassword || recipient.lockedUntil > Date.now() || !recipient.roles.includes('EDGE_OPERATOR'))) throw new Error('下载责任人须为已获准登录 Edge、完成初始密码修改的验证人员');
+      const recipient = managedUser ? auth.getUser(actor.principalId) : null;
+      if (managedUser && (!recipient || recipient.edgeEnabled === false || recipient.mustChangePassword || recipient.lockedUntil > Date.now() || !recipient.roles.includes('EDGE_OPERATOR'))) throw new Error('当前登录账号未获准操作 Edge，不能创建下载授权');
       if (body.roundId) {
         const roundCandidateIds = new Set(store.listRoundCandidates(body.roundId).map((candidate) => candidate.candidate_id));
         if (!Array.isArray(body.candidateIds) || body.candidateIds.some((candidateId) => !roundCandidateIds.has(candidateId))) throw new Error('候选包必须属于所选候选轮次');
@@ -368,11 +369,11 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       }
       const grant = downloadGrants.createGrant({
         candidateIds: body.candidateIds,
-        principalId: recipient?.id ?? actor.principalId,
-        principalType: recipient ? 'CORE_USER' : actor.principalType,
+        principalId: actor.principalId,
+        principalType: actor.principalType,
         createdBy: actor.principalId,
         expiresAt: body.expiresAt,
-        maxTotalSessions: body.maxTotalSessions,
+        maxTotalSessions: Array.isArray(body.candidateIds) ? body.candidateIds.length * body.maxSessionsPerFile : body.maxTotalSessions,
         maxSessionsPerFile: body.maxSessionsPerFile
       });
       return reply.code(201).send({
