@@ -120,7 +120,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     if (cloudStatusInFlight.has(requestId)) return store.get(requestId);
     const current = store.get(requestId);
     if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
-    if (['APPROVED', 'REJECTED'].includes(current.status)) {
+    if (['APPROVED', 'REJECTED', 'WITHDRAWN'].includes(current.status)) {
       store.enqueueApprovalResult(requestId);
       return current;
     }
@@ -611,6 +611,8 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     try {
       const item = store.withdraw(request.params.requestId, request.principal?.id);
       cloudStatusNextAttempt.delete(request.params.requestId);
+      store.enqueueApprovalResult(item.requestId);
+      queueMicrotask(() => { void pumpWorkers(); });
       return reply.send({ item });
     } catch (err) {
       return error(reply, err.code === 'request_not_found' ? 404 : err.code === 'approval_withdraw_not_available' ? 409 : 400, err.code ?? 'approval_withdraw_failed', err.message);

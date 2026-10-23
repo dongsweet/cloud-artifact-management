@@ -143,3 +143,28 @@ test('Edge accepts only authenticated, idempotent Core approval-result callbacks
     assert.equal('dispatchLastError' in status.json().item, false);
   } finally { await app.close(); }
 });
+
+test('Edge records a Core withdrawal callback and leaves the round available for a new request', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-core-withdrawal-'));
+  const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'test-admin', type: 'TEST_IDP', roles: ['EDGE_SYSTEM_ADMIN', 'EDGE_OPERATOR'] }) });
+  await trustTestPeer(app.gateKeyring, dataDir, 'core');
+  const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Withdrawal product' } })).json();
+  const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } })).json();
+  const freezeId = 'FREEZE-WITHDRAWAL-CALLBACK';
+  const decidedAt = new Date().toISOString();
+  app.candidateStore.db.prepare(`INSERT INTO round_freezes
+    (freeze_id, round_id, status, report_title, conclusion, environment, manifest_json, manifest_sha256, submitted_by, submitted_at, created_at, updated_at)
+    VALUES (?, ?, 'PENDING_APPROVAL', 'Test report', 'PASS', 'test', '{}', ?, 'validator', ?, ?, ?)`)
+    .run(freezeId, release.initialRound.roundId, 'a'.repeat(64), decidedAt, decidedAt, decidedAt);
+  const payload = { schemaVersion: 1, type: 'APPROVAL_RESULT', eventId: 'DECISION-WITHDRAWAL-1', requestId: freezeId, freezeId, status: 'WITHDRAWN', decidedAt };
+  try {
+    const response = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-results', headers: await signedTestHeaders(app.gateKeyring, 'POST', '/api/v1/gate/approval-results', payload), payload });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().accepted, true);
+    assert.equal((await app.inject({ method: 'GET', url: `/api/v1/rounds/${release.initialRound.roundId}/freezes` })).json().item.status, 'WITHDRAWN');
+    assert.equal((await app.inject({ method: 'GET', url: `/api/v1/releases/${release.releaseId}` })).json().status, 'OPEN');
+    const replay = await app.inject({ method: 'POST', url: '/api/v1/gate/approval-results', headers: await signedTestHeaders(app.gateKeyring, 'POST', '/api/v1/gate/approval-results', payload), payload });
+    assert.equal(replay.statusCode, 200, replay.body);
+    assert.equal(replay.json().idempotent, true);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});

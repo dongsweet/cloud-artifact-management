@@ -108,7 +108,7 @@ export class CoreStore {
       CREATE TABLE IF NOT EXISTS core_approval_result_outbox (
         request_id TEXT PRIMARY KEY REFERENCES core_approval_requests(request_id),
         event_id TEXT NOT NULL UNIQUE,
-        status TEXT NOT NULL CHECK (status IN ('APPROVED','REJECTED')),
+        status TEXT NOT NULL CHECK (status IN ('APPROVED','REJECTED','WITHDRAWN')),
         payload_json TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt_at TEXT NOT NULL,
@@ -143,6 +143,38 @@ export class CoreStore {
       );
       CREATE INDEX IF NOT EXISTS core_distribution_queue_idx ON core_distribution_tasks(agent_id, status, created_at);
     `);
+    const approvalOutboxSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'core_approval_result_outbox'").get()?.sql ?? '';
+    if (approvalOutboxSchema && !approvalOutboxSchema.includes("'WITHDRAWN'")) {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.exec(`
+          DROP INDEX IF EXISTS core_approval_result_outbox_pending_idx;
+          ALTER TABLE core_approval_result_outbox RENAME TO core_approval_result_outbox_legacy;
+          CREATE TABLE core_approval_result_outbox (
+            request_id TEXT PRIMARY KEY REFERENCES core_approval_requests(request_id),
+            event_id TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL CHECK (status IN ('APPROVED','REJECTED','WITHDRAWN')),
+            payload_json TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT NOT NULL,
+            last_error TEXT,
+            delivered_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+          INSERT INTO core_approval_result_outbox
+            (request_id, event_id, status, payload_json, attempts, next_attempt_at, last_error, delivered_at, created_at, updated_at)
+          SELECT request_id, event_id, status, payload_json, attempts, next_attempt_at, last_error, delivered_at, created_at, updated_at
+          FROM core_approval_result_outbox_legacy;
+          DROP TABLE core_approval_result_outbox_legacy;
+          CREATE INDEX core_approval_result_outbox_pending_idx ON core_approval_result_outbox(delivered_at, next_attempt_at);
+        `);
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+    }
     const columns = new Set(db.prepare('PRAGMA table_info(core_approval_requests)').all().map((column) => column.name));
     const agentColumns = new Set(db.prepare('PRAGMA table_info(core_agents)').all().map((column) => column.name));
     if (agentColumns.has('security_domain')) {
@@ -390,12 +422,12 @@ export class CoreStore {
   listCloudApprovalPending() {
     return this.db.prepare(`SELECT r.request_id FROM core_approval_requests r
       WHERE (r.status IN ('CLOUD_SUBMITTED','CLOUD_STATUS_UNCONFIRMED') AND r.cloud_approval_id IS NOT NULL)
-         OR (r.status IN ('APPROVED','REJECTED') AND NOT EXISTS (SELECT 1 FROM core_approval_result_outbox o WHERE o.request_id = r.request_id))
+         OR (r.status IN ('APPROVED','REJECTED','WITHDRAWN') AND NOT EXISTS (SELECT 1 FROM core_approval_result_outbox o WHERE o.request_id = r.request_id))
       ORDER BY COALESCE(r.cloud_checked_at, r.created_at) ASC LIMIT 100`).all().map((row) => row.request_id);
   }
   enqueueApprovalResult(requestId) {
     const item = this.get(requestId);
-    if (!item || !['APPROVED', 'REJECTED'].includes(item.status)) return null;
+    if (!item || !['APPROVED', 'REJECTED', 'WITHDRAWN'].includes(item.status)) return null;
     const existing = this.db.prepare('SELECT * FROM core_approval_result_outbox WHERE request_id = ?').get(requestId);
     if (existing) {
       if (existing.status !== item.status) throw Object.assign(new Error('approval result changed after notification was queued'), { code: 'approval_result_conflict' });
@@ -405,7 +437,7 @@ export class CoreStore {
     const payload = {
       schemaVersion: 1, type: 'APPROVAL_RESULT', eventId: id('DECISION'),
       requestId: item.requestId, freezeId: item.freezeId, status: item.status,
-      decidedAt: item.cloudCheckedAt ?? item.updatedAt
+      decidedAt: item.withdrawnAt ?? item.cloudCheckedAt ?? item.updatedAt
     };
     this.db.prepare('INSERT INTO core_approval_result_outbox (request_id, event_id, status, payload_json, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(requestId, payload.eventId, item.status, JSON.stringify(payload), timestamp, timestamp, timestamp);

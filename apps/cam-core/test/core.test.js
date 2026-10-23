@@ -196,6 +196,34 @@ test('Core can withdraw an unapproved request locally without calling Cloud', as
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Core notifies Edge when an approval request is withdrawn', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-withdraw-callback-'));
+  const callbacks = [];
+  const app = await buildCoreApp({
+    dataDir,
+    enableAuth: false,
+    cloudAdapter: { async createApproval() { return { approvalId: 'APR-WITHDRAW-CALLBACK', status: 'PENDING' }; } },
+    fetchImpl: async (url, options) => {
+      callbacks.push({ url, payload: JSON.parse(options.body) });
+      return Response.json({ accepted: true, requestId: 'FREEZE-WITHDRAW-CALLBACK', eventId: callbacks.at(-1).payload.eventId });
+    },
+    approvalResultRetryBaseMs: 5,
+    workerIntervalMs: 10
+  });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
+  app.gateConfigStore.save({ edgeControlUrl: 'http://edge-map:3101', edgeTransferUrl: 'http://edge-map:3101' }, 'test');
+  try {
+    app.coreStore.receiveApproval({ ...envelope, requestId: 'FREEZE-WITHDRAW-CALLBACK', freezeId: 'FREEZE-WITHDRAW-CALLBACK' });
+    const withdrawn = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-WITHDRAW-CALLBACK/withdraw', payload: {} });
+    assert.equal(withdrawn.statusCode, 200, withdrawn.body);
+    for (let i = 0; i < 100 && callbacks.length < 1; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(callbacks.length, 1);
+    assert.equal(callbacks[0].url, 'http://edge-map:3101/api/v1/gate/approval-results');
+    assert.deepEqual({ requestId: callbacks[0].payload.requestId, freezeId: callbacks[0].payload.freezeId, status: callbacks[0].payload.status }, { requestId: 'FREEZE-WITHDRAW-CALLBACK', freezeId: 'FREEZE-WITHDRAW-CALLBACK', status: 'WITHDRAWN' });
+    assert.equal(app.coreStore.listPendingApprovalResults().length, 0);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('gate approval messages require the configured exchange identity', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-auth-'));
   const app = await buildCoreApp({ dataDir, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) }, enableAuth: false });

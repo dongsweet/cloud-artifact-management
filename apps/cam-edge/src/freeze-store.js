@@ -56,9 +56,32 @@ export class FreezeStore {
       event_id TEXT PRIMARY KEY,
       freeze_id TEXT NOT NULL REFERENCES round_freezes(freeze_id),
       payload_sha256 TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('APPROVED','REJECTED')),
+      status TEXT NOT NULL CHECK (status IN ('APPROVED','REJECTED','WITHDRAWN')),
       received_at TEXT NOT NULL
     )`);
+    const approvalEventSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'edge_core_approval_events'").get()?.sql ?? '';
+    if (approvalEventSchema && !approvalEventSchema.includes("'WITHDRAWN'")) {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.exec(`
+          ALTER TABLE edge_core_approval_events RENAME TO edge_core_approval_events_legacy;
+          CREATE TABLE edge_core_approval_events (
+            event_id TEXT PRIMARY KEY,
+            freeze_id TEXT NOT NULL REFERENCES round_freezes(freeze_id),
+            payload_sha256 TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('APPROVED','REJECTED','WITHDRAWN')),
+            received_at TEXT NOT NULL
+          );
+          INSERT INTO edge_core_approval_events (event_id, freeze_id, payload_sha256, status, received_at)
+          SELECT event_id, freeze_id, payload_sha256, status, received_at FROM edge_core_approval_events_legacy;
+          DROP TABLE edge_core_approval_events_legacy;
+        `);
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+    }
     db.exec(`CREATE TABLE IF NOT EXISTS edge_core_transfer_events (
       event_id TEXT PRIMARY KEY,
       freeze_id TEXT NOT NULL REFERENCES round_freezes(freeze_id),
@@ -282,7 +305,7 @@ export class FreezeStore {
     const eventId = String(input?.eventId ?? '').trim();
     const status = String(input?.status ?? '').toUpperCase();
     const decidedAt = typeof input?.decidedAt === 'string' && Number.isFinite(Date.parse(input.decidedAt)) ? input.decidedAt : now();
-    if (!requestId || requestId !== freezeId || !eventId || eventId.length > 128 || !['APPROVED', 'REJECTED'].includes(status)) {
+    if (!requestId || requestId !== freezeId || !eventId || eventId.length > 128 || !['APPROVED', 'REJECTED', 'WITHDRAWN'].includes(status)) {
       throw Object.assign(new Error('Core 审批结果格式无效'), { code: 'invalid_approval_result' });
     }
     const freeze = this.get(freezeId);
