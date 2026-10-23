@@ -27,7 +27,7 @@ test('Agent creates human delivery grants for cached formal artifacts and record
   try {
     const headers = await login(app); const artifactId = 'BASELINE-REQ-DELIVERY';
     const available = await app.inject({ method: 'GET', url: '/api/v1/available-artifacts', headers });
-    assert.equal(available.statusCode, 200, available.body); assert.equal(available.json().cacheSummary.totalVersionCount, 1); assert.equal(available.json().cacheSummary.cachedFileCount, 1); assert.equal(available.json().items[0].files[0].cacheState, 'READY'); assert.equal(available.json().items[0].agentStatus, 'CACHED');
+    assert.equal(available.statusCode, 200, available.body); assert.equal(available.json().cacheSummary.totalVersionCount, 1); assert.equal(available.json().cacheSummary.cachedFileCount, 1); assert.equal(available.json().items[0].files[0].cacheState, 'READY'); assert.equal(available.json().items[0].agentStatus, 'CACHED'); assert.equal(available.json().items[0].agentStatusDetail, '未创建本版本传输任务，文件已通过 SHA-256 复用');
     const summary = await app.inject({ method: 'GET', url: '/api/v1/cache/summary', headers });
     assert.equal(summary.statusCode, 200, summary.body); assert.equal(summary.json().item.cachedVersionCount, 1); assert.equal(summary.json().item.objectCount, 1);
     const taskId = 'DIST-DETAIL-DELIVERY'; const taskDb = app.agentAuthStore.db;

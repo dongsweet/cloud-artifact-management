@@ -163,7 +163,8 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
       const taskState = displayTaskStatus(task);
       const agentStatus = allCached ? 'CACHED' : taskState === 'RETRY_WAIT' ? 'RETRY_WAIT' : taskState === 'RUNNING' ? 'RUNNING' : taskState === 'QUEUED' ? 'QUEUED' : cachedFiles.length ? 'PARTIAL' : 'NOT_CACHED';
       const agentStatusLabel = { CACHED: '已缓存', PARTIAL: '部分缓存', RETRY_WAIT: '重试等待', RUNNING: '传输中', QUEUED: '排队中', NOT_CACHED: '未拉取' }[agentStatus];
-      return { ...item, files, cachedFileCount: cachedFiles.length, cachedBytes: files.reduce((sum, file) => sum + (file.cachedBytes || 0), 0), totalBytes: files.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0), agentStatus, agentStatusLabel, agentStatusDetail: task?.last_error ?? null, lastTransferAt: task?.updated_at ?? null, taskId: task?.task_id ?? null };
+      const agentStatusDetail = task?.last_error ?? (allCached && !task ? '未创建本版本传输任务，文件已通过 SHA-256 复用' : null);
+      return { ...item, files, cachedFileCount: cachedFiles.length, cachedBytes: files.reduce((sum, file) => sum + (file.cachedBytes || 0), 0), totalBytes: files.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0), agentStatus, agentStatusLabel, agentStatusDetail, lastTransferAt: task?.updated_at ?? null, taskId: task?.task_id ?? null };
     }));
   };
   const cacheSummary = async (items) => {
