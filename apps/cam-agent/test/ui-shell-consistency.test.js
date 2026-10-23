@@ -18,7 +18,7 @@ test('Edge, Core and Agent shell branding and navigation labels are aligned', as
   assert.match(edge, /href="#products">CAM Edge · 制品管理/);
   assert.match(edge, /breadcrumb-item">CAM Edge/);
   assert.match(edgeAccount, /CAM Edge · 制品管理/);
-  assert.ok(edgeAccount.includes("$('#gate-config-nav').before($('#grants-nav'))"));
+  assert.ok(edgeAccount.includes("document.querySelector('[data-menu-group=\"management\"]')?.before($('#grants-nav'))"));
 
   assert.match(core, /<title>CAM Core · 内网发布审批<\/title>/);
   assert.match(core, /CAM Core · 内网发布审批/);

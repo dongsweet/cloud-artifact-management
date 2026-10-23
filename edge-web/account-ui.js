@@ -38,21 +38,22 @@ function markup() {
   $('.app-content .container-fluid').insertAdjacentHTML('beforeend', section('users', '账号与角色', '<p class="small text-body-secondary">账号、Core 登录资格、Edge 登录资格和角色统一由 CAM Core 管理。此处只读展示当前已授权的 Edge 人员。</p><div class="table-responsive"><table class="table align-middle"><thead><tr><th>用户名 / 姓名</th><th>Edge 角色</th><th>状态</th><th>说明</th></tr></thead><tbody id="user-rows" data-paginate></tbody></table></div><section id="audit-events-section" class="mt-4 d-none"><h5>最近认证及操作审计</h5><p class="small text-body-secondary">仅审计管理员可查看。记录最近的认证事件和受保护操作。</p><div class="table-responsive"><table class="table table-sm table-hover align-middle"><thead><tr><th>时间</th><th>事件</th><th>调用身份</th><th>来源</th><th>详情</th></tr></thead><tbody id="auth-events" data-paginate></tbody></table></div></section>', '') + section('grants', '下载授权', '<p class="small text-body-secondary">按累计 / 单文件会话次数限制下载；续传复用会话。账号禁用后停止下载。Token 调用记录为授权持有者，不视为责任人本人认证。</p><div class="table-responsive"><table class="table align-middle"><thead><tr><th>授权 / 责任人</th><th>文件数</th><th>已用 / 累计次数</th><th>到期 / 状态</th><th>操作</th></tr></thead><tbody id="grant-rows" data-paginate></tbody></table></div><div id="grant-detail" class="mt-4 d-none"></div>', '<button id="new-grant" class="btn btn-primary btn-sm">创建下载授权</button>'));
   $('#audit-events-section')?.remove();
   $('.app-content .container-fluid').insertAdjacentHTML('beforeend', section('audit', '审计日志', auditEventsMarkup(), ''));
-  $('.sidebar-menu').insertAdjacentHTML('beforeend', '<li class="nav-item" id="grants-nav"><a href="#grants" class="nav-link" data-route="grants"><span class="nav-icon bi bi-download"></span><p>下载授权</p></a></li><li class="nav-item" id="users-nav"><a href="#users" class="nav-link" data-route="users"><span class="nav-icon bi bi-people"></span><p>账号管理</p></a></li><li class="nav-item" id="audit-nav"><a href="#audit" class="nav-link" data-route="audit"><span class="nav-icon bi bi-journal-text"></span><p>审计日志</p></a></li>');
-  $('#gate-config-nav').before($('#grants-nav'));
+  $('.sidebar-menu').insertAdjacentHTML('beforeend', '<li class="nav-item" id="grants-nav" data-menu-group-item="business"><a href="#grants" class="nav-link" data-route="grants"><span class="nav-icon bi bi-download"></span><p>下载授权</p></a></li><li class="nav-header" data-menu-group="security">账号安全</li><li class="nav-item" id="users-nav" data-menu-group-item="security"><a href="#users" class="nav-link" data-route="users"><span class="nav-icon bi bi-people"></span><p>账号管理</p></a></li><li class="nav-header" data-menu-group="audit">审计</li><li class="nav-item" id="audit-nav" data-menu-group-item="audit"><a href="#audit" class="nav-link" data-route="audit"><span class="nav-icon bi bi-journal-text"></span><p>审计日志</p></a></li>');
+  document.querySelector('[data-menu-group="management"]')?.before($('#grants-nav'));
   $('.app-header .container-fluid').insertAdjacentHTML('beforeend', '<div class="ms-auto d-flex gap-2 align-items-center"><span id="account-name" class="small"></span><button id="change-password" class="btn btn-outline-secondary btn-sm">修改密码</button><button id="logout" class="btn btn-outline-secondary btn-sm">退出</button></div>');
   $('#new-package-button').insertAdjacentHTML('beforebegin', '<button id="round-grant" class="btn btn-outline-success btn-sm"><i class="bi bi-download me-1"></i>交付验证</button>');
   $('#candidate-edit-button').insertAdjacentHTML('beforebegin', '<button id="candidate-grant" class="btn btn-outline-success btn-sm"><i class="bi bi-download me-1"></i>下载 / 交付验证</button>');
 }
 function applyPermissions() {
   document.querySelectorAll('[data-modal], [data-delete-product], [data-delete-release], [data-round-candidate-delete], [data-candidate-delete], #new-round-button, #new-package-button, #import-packages-button, #batch-receive-button, #candidate-edit-button, #candidate-delete-button, #receive-button, #pause-button').forEach((e) => e.classList.toggle('d-none', !hasRole('EDGE_OPERATOR')));
-  $('#users-nav').classList.toggle('d-none', !canEdgePage(user?.roles ?? [], 'users'));
-  $('#audit-nav').classList.toggle('d-none', !canEdgePage(user?.roles ?? [], 'audit'));
-  $('#gate-config-nav').classList.toggle('d-none', !canEdgePage(user?.roles ?? [], 'gate-config'));
-  $('#grants-nav').classList.toggle('d-none', !canEdgePage(user?.roles ?? [], 'grants'));
   document.querySelectorAll('.sidebar-menu a').forEach((link) => {
     const route = link.dataset.route ?? link.hash.slice(1);
     link.parentElement.classList.toggle('d-none', !canEdgePage(user?.roles ?? [], route));
+  });
+  document.querySelectorAll('[data-menu-group]').forEach((header) => {
+    const group = header.dataset.menuGroup;
+    const items = [...document.querySelectorAll(`[data-menu-group-item="${group}"]`)];
+    header.classList.toggle('d-none', !items.some((item) => !item.classList.contains('d-none')));
   });
   for (const id of ['round-grant', 'candidate-grant', 'new-grant']) $(`#${id}`).classList.toggle('d-none', !hasRole('EDGE_OPERATOR'));
   $('#candidate-grant').classList.toggle('d-none', !hasRole('EDGE_OPERATOR') || context().currentCandidate?.status !== 'COMPLETED');
