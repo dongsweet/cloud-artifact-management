@@ -77,6 +77,11 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /if\(v==='login'\|\|v==='app'\)clearMessage\(\)/);
   assert.doesNotMatch(html, /msg\('密码已修改，请重新登录'\)/);
   assert.match(html, /data-page="aaa-config" data-agent-permission="configRead"/);
+  assert.match(html, /data-agent-menu-group="business">业务/);
+  assert.match(html, /data-agent-menu-group="management">系统管理/);
+  assert.match(html, /data-agent-menu-group="security">账号安全/);
+  assert.match(html, /data-agent-menu-group="audit">审计/);
+  assert.match(html, /data-agent-mobile-group="business"/);
   assert.match(html, /mountAaaConfig/);
   assert.match(html, /agentCan\('businessWrite'\)\?async\(item\)/);
   assert.doesNotMatch(html, /window\.alert\s*\(|window\.confirm\s*\(|\balert\s*\(|\bconfirm\s*\(/);
@@ -90,4 +95,12 @@ test('Agent account page serves the shared Core role and account presentation as
   assert.match(serverSource, /app\.get\('\/assets\/role-display\.js'/);
   const sharedLayout = await readFile(resolve(process.cwd(), 'web-shared/layout.css'), 'utf8');
   assert.match(sharedLayout, /\.cam-account-modal \{/);
+});
+
+test('Agent delivery navigation is inserted under the business menu group', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const deliverySource = await readFile(new URL('../src/delivery-web.js', import.meta.url), 'utf8');
+  assert.match(deliverySource, /data-agent-menu-group-item="business" data-agent-permission="deliveryRead"/);
+  assert.match(deliverySource, /\.agent-mobile-nav-group\[data-agent-mobile-group="business"\] \.d-flex/);
+  assert.match(deliverySource, /href="#delivery"[\s\S]{0,240}部署交付/);
 });
