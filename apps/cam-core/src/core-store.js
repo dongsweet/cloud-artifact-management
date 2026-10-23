@@ -206,6 +206,10 @@ export class CoreStore {
   listAgents() {
     return this.db.prepare('SELECT agent_id FROM core_agents ORDER BY created_at DESC').all().map((row) => this.getAgentIdentity(row.agent_id));
   }
+  // 分发页只需要安全的业务摘要；完整身份和轮换详情继续留在配置接口。
+  listDistributionAgents() {
+    return this.db.prepare('SELECT agent_id AS agentId, center_id AS centerId, name, status FROM core_agents ORDER BY created_at DESC').all().map((row) => ({ ...row }));
+  }
   getAgentRotationPolicy() {
     const row = this.db.prepare('SELECT rotation_days AS rotationDays, grace_hours AS graceHours FROM core_agent_rotation_policy WHERE singleton = 1').get();
     return { rotationDays: row.rotationDays, graceHours: row.graceHours };

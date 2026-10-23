@@ -45,6 +45,9 @@ test('Core local accounts are isolated, require password change, CSRF, and leave
     assert.equal(operatorLogin.statusCode, 200, operatorLogin.body);
     const operatorCookie = cookies(operatorLogin);
     const operatorCsrf = operatorLogin.json().csrfToken;
+    const distributionAgents = await app.inject({ method: 'GET', url: '/api/v1/distribution-agents', headers: { cookie: operatorCookie } });
+    assert.equal(distributionAgents.statusCode, 200, distributionAgents.body);
+    assert.deepEqual(distributionAgents.json().items, []);
     app.coreStore.receiveApproval({ schemaVersion: 1, type: 'VERIFICATION_APPROVAL_REQUEST', requestId: 'FREEZE-MANUAL-RETRY', freezeId: 'FREEZE-MANUAL-RETRY', roundId: 'ROUND-1', releaseId: 'REL-1', manifestSha256: 'a'.repeat(64) });
     const retryDenied = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-MANUAL-RETRY/retry', headers: { cookie: operatorCookie }, payload: {} });
     assert.equal(retryDenied.statusCode, 403, 'manual retry requires CSRF');
@@ -201,6 +204,7 @@ test('Core roles separate business operations, platform configuration, and accou
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/approval-requests/unknown/retry', headers: { cookie: system.cookie, 'x-cam-core-csrf': system.csrf }, payload: {} })).statusCode, 403);
     const security = await login('security-admin', 'Role-account-123');
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/agents', headers: { cookie: security.cookie } })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/distribution-agents', headers: { cookie: security.cookie } })).statusCode, 403);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests', headers: { cookie: security.cookie } })).statusCode, 403);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/users', headers: { cookie: security.cookie } })).statusCode, 200);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/aaa/config', headers: { cookie: security.cookie } })).statusCode, 403);

@@ -27,6 +27,8 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     assert.equal(west.status, 'PENDING');
     app.coreStore.confirmAgentIdentity({ agentId: west.agentId, currentKey: true, signingKeyId: westIdentity.fingerprint });
     app.coreStore.confirmAgentIdentity({ agentId: east.agentId, currentKey: true, signingKeyId: eastIdentity.fingerprint });
+    const distributionAgent = app.coreStore.listDistributionAgents().find((item) => item.agentId === west.agentId);
+    assert.deepEqual(distributionAgent, { agentId: west.agentId, centerId: 'CENTER-WEST', name: 'west-agent', status: 'ACTIVE' });
     const task = app.coreStore.createDistributionTask({ agentId: west.agentId, artifactId: 'BASELINE-REQ-AGENT' });
 
     const auth = (agent, identity, method, path, body = '') => { const timestamp = new Date().toISOString(); const nonce = randomNonce(); return { 'x-cam-agent-id': agent.agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(identity.privateKeyPem, method, path, timestamp, nonce, body) }; };

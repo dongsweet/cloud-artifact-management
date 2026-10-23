@@ -83,6 +83,8 @@ GET /api/v1/artifacts/:artifactId
 
 返回 `{ "item": <版本基线> }`。Agent 应在分发任务中保存并使用 `artifactId`，然后核对目标版本、`manifestSha256` 和每个文件的 `sizeBytes`、`sha256`。
 
+Core 分发页面使用业务只读接口 `GET /api/v1/distribution-agents` 获取 Agent 的基本信息，并在页面上只允许选择处于启用状态的 Agent。该接口只返回 Agent 编号、中心、名称和状态；身份公钥、轮换状态等配置详情仍由 `GET /api/v1/agents` 管理接口提供。
+
 ### 下载正式制品
 
 ```http

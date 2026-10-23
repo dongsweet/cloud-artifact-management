@@ -513,6 +513,7 @@ transfer-bundle/
 | `cam-core` | `POST /api/v1/gate/receipts` | 验证网闸送达的传输任务和清单摘要并登记接收回执 |
 | `cam-core` | `POST /api/v1/approval-requests/:requestId/close` | 向云管确认关单并记录结果 |
 | `cam-core` | `POST /api/v1/agents` | 管理员登记 Agent 身份公钥并完成配对；Core 不下发固定服务令牌 |
+| `cam-core` | `GET /api/v1/distribution-agents` | 返回分发页面所需的 Agent 基本信息；业务操作员可读，不暴露身份轮换详情 |
 | `cam-core` | `POST /api/v1/distribution-tasks` | 管理员为一个 Agent 指定已入库正式版本并建立队列任务 |
 | `cam-core` | `POST /api/v1/agent/tasks/pull` | Agent 主动轮询，仅返回目标 Agent 的到期任务 |
 | `cam-core` | `GET /api/v1/agent/tasks/:id/manifest` | 返回绑定目标 Agent 的任务清单快照 |

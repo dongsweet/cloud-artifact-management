@@ -68,7 +68,7 @@ export function registerAuth(app, { auth, principalProvider, keyring, gateConfig
     if (path === '/api/v1/auth-events') required = EDGE_PERMISSION_ROLES.auditRead;
     else if (path.startsWith('/api/v1/users')) required = writing ? EDGE_PERMISSION_ROLES.userAdminWrite : EDGE_PERMISSION_ROLES.userAdminRead;
     else if (path === '/api/v1/gate/config' || path === '/api/v1/gate/config/test' || path === '/api/v1/gate/keys' || path === '/api/v1/gate/keys/test' || path === '/api/v1/gate/keys/trusted-peer' || path === '/api/v1/gate/keys/schedule' || path === '/api/v1/gate/keys/rotate') required = writing ? EDGE_PERMISSION_ROLES.configWrite : EDGE_PERMISSION_ROLES.configRead;
-    else if (path === '/api/v1/validators') required = EDGE_PERMISSION_ROLES.validatorWrite;
+    else if (path === '/api/v1/validators') required = writing ? EDGE_PERMISSION_ROLES.validatorWrite : EDGE_PERMISSION_ROLES.validatorRead;
     else if (path.startsWith('/api/v1/download-grants')) required = writing ? EDGE_PERMISSION_ROLES.validatorWrite : EDGE_PERMISSION_ROLES.validatorRead;
     else if (/^\/api\/v1\/rounds\/[^/]+\/freezes$/.test(path)) required = writing ? EDGE_PERMISSION_ROLES.validatorWrite : [...EDGE_PERMISSION_ROLES.validatorRead, 'EDGE_OPERATOR'];
     else if (/^\/api\/v1\/freezes\/[^/]+\/(report|submit|dispatch|transfer\/retry)$/.test(path)) required = EDGE_PERMISSION_ROLES.validatorWrite;

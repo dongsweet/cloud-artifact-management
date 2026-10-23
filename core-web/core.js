@@ -213,7 +213,7 @@ function renderDistributionTasks() {
 }
 async function loadDistribution() {
   try {
-    const [artifacts, agents, tasks] = await Promise.all([api('/api/v1/artifacts'), api('/api/v1/agents'), api('/api/v1/distribution-tasks')]);
+    const [artifacts, agents, tasks] = await Promise.all([api('/api/v1/artifacts'), api('/api/v1/distribution-agents'), api('/api/v1/distribution-tasks')]);
     distributionArtifacts = (artifacts.items ?? []).map((item) => ({ ...item, packageCount: (item.files ?? []).length }));
     coreAgents = agents.items ?? [];
     distributionTasks = tasks.items ?? [];

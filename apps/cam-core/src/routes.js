@@ -226,6 +226,10 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     if (requireCorePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     return { items: store.listAgents() };
   });
+  app.get('/api/v1/distribution-agents', async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
+    return { items: store.listDistributionAgents() };
+  });
   app.get('/api/v1/agent-service-identity', async (request, reply) => {
     if (requireCorePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     const pendingIdentity = agentServiceIdentity?.pendingIdentity;
