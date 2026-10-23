@@ -23,6 +23,46 @@
 #actions { justify-content: flex-end; }
 .app-main .card-footer.d-flex { justify-content: flex-end !important; }
 
+/* Keep Agent distribution scheduling compact and visually grouped. */
+.cam-distribution-body { display: grid; gap: 1rem; }
+.cam-distribution-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .85rem 1rem;
+  border: 1px solid var(--bs-primary-border-subtle);
+  border-radius: .45rem;
+  background: var(--bs-primary-bg-subtle);
+}
+.cam-distribution-intro-title { display: flex; align-items: center; font-weight: 600; }
+.cam-distribution-section {
+  padding: 1rem;
+  border: 1px solid var(--bs-border-color-translucent);
+  border-radius: .45rem;
+  background: var(--bs-tertiary-bg);
+}
+.cam-distribution-section-title { display: flex; align-items: flex-start; gap: .7rem; margin-bottom: .9rem; }
+.cam-distribution-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 1.55rem;
+  width: 1.55rem;
+  height: 1.55rem;
+  border-radius: 50%;
+  color: var(--bs-white);
+  background: var(--bs-primary);
+  font-size: .82rem;
+  font-weight: 700;
+}
+.cam-distribution-footer { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.cam-distribution-footer .btn { flex: 0 0 auto; }
+@media (max-width: 768px) {
+  .cam-distribution-intro, .cam-distribution-footer { align-items: flex-start; flex-direction: column; }
+  .cam-distribution-footer .btn { width: 100%; }
+}
+
 /* Keep the login screen above AdminLTE's fixed shell and sidebar. */
 #login {
   position: fixed;
