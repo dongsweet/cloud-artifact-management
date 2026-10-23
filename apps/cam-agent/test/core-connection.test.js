@@ -52,7 +52,11 @@ test('Agent configures Core through authenticated APIs and preserves trust acros
     const connected = await app.inject({ method: 'POST', url: '/api/v1/core-config/test', headers, payload: {} });
     assert.equal(connected.statusCode, 200, connected.body);
     assert.equal(connected.json().item.lastTestState, 'PASSED');
-    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/identity', headers })).json().rotation.paired, true);
+    const localIdentity = (await app.inject({ method: 'GET', url: '/api/v1/identity', headers })).json();
+    assert.equal(localIdentity.rotation.paired, true);
+    assert.equal(localIdentity.centerId, 'TEST');
+    assert.equal(localIdentity.agentName, 'config-agent');
+    assert.equal(localIdentity.agentId, registered.agentId);
     await app.close();
     app = await buildAgentApp({ ...options, coreUrl: 'http://new-default.invalid', corePublicKey: generateIdentity().publicKeyPem });
     headers = await login(app, false);
