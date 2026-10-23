@@ -106,6 +106,8 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
       if (!item || item.status !== 'CLOUD_PENDING' || item.cloudApprovalId) return;
       store.markCloudSubmissionAttempt(requestId);
       const envelope = await ensureCloudReport(requestId, store.envelope(requestId));
+      const latest = store.get(requestId);
+      if (!latest || latest.status !== 'CLOUD_PENDING' || latest.cloudApprovalId) return;
       store.markCloudSubmitted(requestId, await cloud.createApproval(envelope, store.getCloudConfig()));
       cloudStatusNextAttempt.set(requestId, Date.now() + cloudStatusPollMs);
     } catch (err) {
@@ -604,6 +606,17 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     return reply.code(202).send({ item: queued, queued: true });
   });
 
+  app.post('/api/v1/approval-requests/:requestId/withdraw', { bodyLimit: 4096 }, async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
+    try {
+      const item = store.withdraw(request.params.requestId, request.principal?.id);
+      cloudStatusNextAttempt.delete(request.params.requestId);
+      return reply.send({ item });
+    } catch (err) {
+      return error(reply, err.code === 'request_not_found' ? 404 : err.code === 'approval_withdraw_not_available' ? 409 : 400, err.code ?? 'approval_withdraw_failed', err.message);
+    }
+  });
+
   app.get('/api/v1/approval-requests/:requestId/report-file', async (request, reply) => {
     if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
     const item = store.get(request.params.requestId);
@@ -617,6 +630,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     try {
       const item = store.get(request.params.requestId);
       if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
+      if (item.status === 'WITHDRAWN') return reply.send({ item });
       if (!item.cloudApprovalId) return error(reply, 409, 'cloud_submission_pending', 'cloud approval has not been created');
       if (item.closeStatus === 'CLOSED') return reply.send({ item });
       const updated = await syncCloudStatus(item.requestId);

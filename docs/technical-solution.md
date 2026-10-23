@@ -507,6 +507,7 @@ transfer-bundle/
 | `cam-core` | `GET /api/v1/artifacts/:artifactId` | 查询单个正式版本基线，供后续 `cam-agent` 分发任务引用 |
 | `cam-core` | `GET /api/v1/artifacts/:sha256/content` | 按已授权文件摘要下载正式制品字节 |
 | `cam-core` | `POST /api/v1/approval-requests/:requestId/sync` | 由内网适配器向云管查询并更新审批状态 |
+| `cam-core` | `POST /api/v1/approval-requests/:requestId/withdraw` | 在云管审批完成前撤回 Core 本地申请；不调用云管撤回接口 |
 | `cam-core` | `POST /api/v1/approval-requests/:requestId/transfer-authorize` | 核验云管批准结果并生成内网传输任务 |
 | `cam-core` | `GET /api/v1/gate/transfers/:transferTaskId/manifest` | 在网闸身份校验下返回已批准文件清单及对象是否已存在 |
 | `cam-core` | `PUT /api/v1/gate/transfers/:transferTaskId/artifacts/:sha256` | 接收单个获批文件，按摘要校验并写入内容寻址正式库 |
@@ -602,6 +603,8 @@ Core 与 Edge 各自的 Ed25519/X25519 身份密钥可按本端策略自动轮�
 后续创建工单时，`cam-core` 直接复用已保存的映射 ID，不为每张工单重新读取云管字典或人员列表；实际使用的映射快照和完整工单请求体仍随审批记录保存，便于审计和排查。云管字典、部门/团队或审批人关系发生变化时，管理员重新测试并保存配置，以刷新已持久化的映射。连接参数示例见 `deploy/.env.example`，真实值只写入目标主机受权限保护的 `deploy/.env`，不得提交到代码库。
 
 云管状态按接口明确语义处理：`currentStep=工单确认` 且 `workOrderConfirm=1` 才能映射为 `APPROVED`；`流程提起` 或 `处理工单` 且 `workOrderConfirm=0` 保持待处理；接口未定义或仅返回“已结束”等无法确认结论的状态映射为 `CLOUD_STATUS_UNCONFIRMED`，不能作为拒绝或批准依据。云管改版前的临时措施是：Core 为每个新申请生成一次性的 64 位随机十六进制审批同意暗号，并写入工单描述，明确要求审批人在确认回复中包含该暗号；Core 只在返回的流转/确认记录中找到该暗号时才接受通过，不能用原始工单描述中的暗号自证。云管虽返回确认通过但流转/确认记录未包含暗号时，按业务上的审批未通过处理，不进入正式制品传输，也不作为同步异常重试。批准结果还必须从工单描述中取得与本地请求一致的清单 SHA-256，并生成关联的传输任务编号。关单前重新读取工单和待办记录，确认仍处于“工单确认”节点，再以转义后的处理意见提交确认。
+
+Core 允许对仍处于待审批状态的申请执行本地撤回。撤回适用于尚未提交云管、已提交但尚未形成审批结论，以及状态暂不能确认的申请；操作只将 Core 本地状态标记为 `WITHDRAWN`，停止后续自动提交、状态轮询和重试，不调用云管撤回接口，也不改变云管侧原流程。已批准、已拒绝或已关单的申请不能撤回。撤回后的申请不产生正式制品或传输授权；若云管侧之后仍完成原流程，Core 也不会将该结果重新接回已撤回申请。
 
 请求和回执至少携带：
 

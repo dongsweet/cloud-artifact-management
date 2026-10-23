@@ -202,6 +202,7 @@ test('Core roles separate business operations, platform configuration, and accou
     const systemAaaWrite = await app.inject({ method: 'PUT', url: '/api/v1/aaa/config', headers: { cookie: system.cookie, 'x-cam-core-csrf': system.csrf }, payload: { baseUrl: 'https://aaa.example.test:8443', tenantName: 'CAM', accessServerName: 'CAM API', sharedSecret: 'system-admin-secret', timeoutMs: 10000 } });
     assert.equal(systemAaaWrite.statusCode, 200, systemAaaWrite.body);
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/approval-requests/unknown/retry', headers: { cookie: system.cookie, 'x-cam-core-csrf': system.csrf }, payload: {} })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/approval-requests/unknown/withdraw', headers: { cookie: system.cookie, 'x-cam-core-csrf': system.csrf }, payload: {} })).statusCode, 403);
     const security = await login('security-admin', 'Role-account-123');
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/agents', headers: { cookie: security.cookie } })).statusCode, 403);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/distribution-agents', headers: { cookie: security.cookie } })).statusCode, 403);
@@ -212,6 +213,7 @@ test('Core roles separate business operations, platform configuration, and accou
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/artifacts', headers: { cookie: auditor.cookie } })).statusCode, 403);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/approval-requests', headers: { cookie: auditor.cookie } })).statusCode, 403);
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/approval-requests/unknown/retry', headers: { cookie: auditor.cookie }, payload: {} })).statusCode, 403);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/approval-requests/unknown/withdraw', headers: { cookie: auditor.cookie }, payload: {} })).statusCode, 403);
     const events = await app.inject({ url: '/api/v1/auth-events', headers: { cookie: auditor.cookie } });
     assert.equal(events.statusCode, 200, events.body);
     assert.ok(Number.isInteger(events.json().total));

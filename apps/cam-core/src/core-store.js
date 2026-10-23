@@ -35,6 +35,7 @@ function response(row) {
     cloudMappingSnapshot: row.cloud_mapping_json ? JSON.parse(row.cloud_mapping_json) : null,
     cloudRequestSnapshot: row.cloud_request_json ? JSON.parse(maskApprovalCode(row.cloud_request_json, envelope.approvalCode)) : null,
     approvedAt: row.approved_at, expiresAt: row.expires_at, closeStatus: row.close_status,
+    withdrawnAt: row.withdrawn_at, withdrawnBy: row.withdrawn_by,
     closeCheckedAt: row.close_checked_at, createdAt: row.created_at, updatedAt: row.updated_at,
     lastError: row.last_error, cloudSubmissionAttempts: row.cloud_submission_attempts ?? 0,
     cloudSubmissionState: row.cloud_submission_state ?? 'IDLE', cloudSubmissionAttemptedAt: row.cloud_submission_attempted_at ?? null,
@@ -57,7 +58,7 @@ export class CoreStore {
         status TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, report_sha256 TEXT, report_file_name TEXT, report_size INTEGER, report_received_sha256 TEXT, report_path TEXT, report_received_at TEXT, envelope_json TEXT NOT NULL,
         cloud_approval_id TEXT, cloud_transfer_task_id TEXT, cloud_status TEXT, cloud_workflow_step TEXT, cloud_checked_at TEXT,
         cloud_mapping_json TEXT, cloud_request_json TEXT,
-        approved_at TEXT, expires_at TEXT, close_status TEXT, close_checked_at TEXT, last_error TEXT,
+        approved_at TEXT, expires_at TEXT, close_status TEXT, close_checked_at TEXT, withdrawn_at TEXT, withdrawn_by TEXT, last_error TEXT,
         transfer_task_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS core_approval_status_idx ON core_approval_requests(status, updated_at);
@@ -169,7 +170,7 @@ export class CoreStore {
     if (!columns.has('cloud_mapping_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_mapping_json TEXT');
     if (!columns.has('cloud_request_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_request_json TEXT');
     if (!columns.has('cloud_workflow_step')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_workflow_step TEXT');
-    for (const [name, definition] of Object.entries({ report_file_name: 'TEXT', report_size: 'INTEGER', report_received_sha256: 'TEXT', report_path: 'TEXT', report_received_at: 'TEXT', cloud_attachment_id: 'TEXT', cloud_response_summary: 'TEXT' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
+    for (const [name, definition] of Object.entries({ report_file_name: 'TEXT', report_size: 'INTEGER', report_received_sha256: 'TEXT', report_path: 'TEXT', report_received_at: 'TEXT', cloud_attachment_id: 'TEXT', cloud_response_summary: 'TEXT', withdrawn_at: 'TEXT', withdrawn_by: 'TEXT' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
     for (const [name, definition] of Object.entries({ cloud_submission_attempts: 'INTEGER NOT NULL DEFAULT 0', cloud_submission_state: "TEXT NOT NULL DEFAULT 'IDLE'", cloud_submission_attempted_at: 'TEXT', cloud_retry_at: 'TEXT', transfer_notification_state: "TEXT NOT NULL DEFAULT 'IDLE'", transfer_notification_attempts: 'INTEGER NOT NULL DEFAULT 0' })) if (!columns.has(name)) db.exec(`ALTER TABLE core_approval_requests ADD COLUMN ${name} ${definition}`);
   }
 
@@ -769,7 +770,7 @@ export class CoreStore {
   markCloudSubmitted(requestId, result) {
     const approvalId = required(result.approvalId, 'approvalId');
     const timestamp = now();
-    this.db.prepare("UPDATE core_approval_requests SET cloud_approval_id = ?, cloud_status = ?, cloud_mapping_json = ?, cloud_request_json = ?, status = 'CLOUD_SUBMITTED', cloud_submission_state = 'SUBMITTED', cloud_retry_at = NULL, last_error = NULL, updated_at = ? WHERE request_id = ?")
+    this.db.prepare("UPDATE core_approval_requests SET cloud_approval_id = ?, cloud_status = ?, cloud_mapping_json = ?, cloud_request_json = ?, status = 'CLOUD_SUBMITTED', cloud_submission_state = 'SUBMITTED', cloud_retry_at = NULL, last_error = NULL, updated_at = ? WHERE request_id = ? AND status = 'CLOUD_PENDING' AND cloud_approval_id IS NULL")
       .run(approvalId, result.status ?? 'PENDING', result.mappingSnapshot ? JSON.stringify(result.mappingSnapshot) : null, result.requestBody ? JSON.stringify(result.requestBody) : null, timestamp, requestId);
     return this.get(requestId);
   }
@@ -798,6 +799,7 @@ export class CoreStore {
   applyCloudStatus(requestId, result) {
     const current = this.get(requestId);
     if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
+    if (current.status === 'WITHDRAWN') return current;
     const cloudStatus = required(result.status, 'status').toUpperCase();
     if (result.approvalId && current.cloudApprovalId && result.approvalId !== current.cloudApprovalId) throw Object.assign(new Error('cloud approval ID does not match request'), { code: 'cloud_identity_mismatch' });
     if (cloudStatus === 'APPROVED') {
@@ -812,6 +814,18 @@ export class CoreStore {
   }
 
   markError(requestId, error) { this.db.prepare('UPDATE core_approval_requests SET last_error = ?, updated_at = ? WHERE request_id = ?').run(String(error?.message ?? error).slice(0, 1000), now(), requestId); return this.get(requestId); }
+
+  withdraw(requestId, actorId = null) {
+    const current = this.get(requestId);
+    if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
+    if (current.status === 'WITHDRAWN') return current;
+    if (!['CLOUD_PENDING', 'CLOUD_SUBMITTED', 'CLOUD_STATUS_UNCONFIRMED'].includes(current.status)) {
+      throw Object.assign(new Error('只有尚未审批的固化申请可以撤回'), { code: 'approval_withdraw_not_available' });
+    }
+    const timestamp = now();
+    this.db.prepare("UPDATE core_approval_requests SET status = 'WITHDRAWN', withdrawn_at = ?, withdrawn_by = ?, cloud_submission_state = 'IDLE', cloud_retry_at = NULL, last_error = NULL, updated_at = ? WHERE request_id = ? AND status IN ('CLOUD_PENDING', 'CLOUD_SUBMITTED', 'CLOUD_STATUS_UNCONFIRMED')").run(timestamp, actorId ?? null, timestamp, requestId);
+    return this.get(requestId);
+  }
 
   authorizeTransfer(requestId, input = {}) {
     const current = this.get(requestId);

@@ -65,7 +65,7 @@ $('.sidebar-brand .brand-text').textContent = 'CAM Core';
 $('#page-artifacts .card-title').textContent = '正式制品';
 $('#page-distribution .card-title').textContent = 'Agent 分发';
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[c]));
-const statusLabels = { CLOUD_PENDING:'待提交云管', CLOUD_SUBMITTED:'云管处理中', APPROVED:'已审批', REJECTED:'已拒绝', CLOUD_STATUS_UNCONFIRMED:'状态未确认', CLOSED:'已关单' };
+const statusLabels = { CLOUD_PENDING:'待提交云管', CLOUD_SUBMITTED:'云管处理中', APPROVED:'已审批', REJECTED:'已拒绝', CLOUD_STATUS_UNCONFIRMED:'状态未确认', WITHDRAWN:'已撤回', CLOSED:'已关单' };
 const submissionStateLabels = { IDLE:'等待提交', QUEUED:'重试已排队', SUBMITTING:'正在提交', RETRY_WAIT:'等待自动重试', SUBMITTED:'已提交' };
 function headers(options = {}) { return { ...(options.headers ?? {}), ...(csrf ? { 'x-cam-core-csrf': csrf } : {}) }; }
 async function api(path, options = {}) { const response = await fetch(path, { ...options, headers: headers(options) }); const body = await response.json().catch(() => ({})); if (!response.ok) { if (response.status === 401 && path !== '/api/v1/auth/login') showLogin(); throw new Error(body.error?.message ?? `请求失败（${response.status}）`); } return body; }
@@ -83,9 +83,10 @@ function showLogin() {
 }
 function showPasswordChange(forced) { forcedPasswordChange = forced; $('#password-title').textContent = forced ? '修改初始密码' : '修改密码'; $('#password-help').textContent = forced ? '首次登录必须修改初始密码。' : '修改密码后需要重新登录。'; $('#password-cancel').classList.remove('d-none'); $('#password-error').classList.add('d-none'); const dialog = $('#password-change'); if (!dialog.open) dialog.showModal(); }
 function showApp(user) { currentUser = user; forcedPasswordChange = Boolean(user.mustChangePassword); $('#login').classList.add('d-none'); $('#app').classList.remove('d-none'); $('#change-password').classList.toggle('d-none', user.authSource === 'AAA'); clearMessage(); $('#user-label').textContent = `${user.displayName}（${user.username}）`; applyRoleMenu(); if (user.mustChangePassword) showPasswordChange(true); else startRequestPolling(); return user; }
-function statusBadge(value) { const kind = value === 'APPROVED' ? 'success' : value === 'REJECTED' ? 'danger' : 'warning'; return `<span class="badge text-bg-${kind}">${escapeHtml(statusLabels[value] ?? value)}</span>`; }
+function statusBadge(value) { const kind = value === 'APPROVED' ? 'success' : value === 'REJECTED' ? 'danger' : value === 'WITHDRAWN' ? 'secondary' : 'warning'; return `<span class="badge text-bg-${kind}">${escapeHtml(statusLabels[value] ?? value)}</span>`; }
 const cloudStatusLabels = { APPROVED: '审批通过', REJECTED: '已拒绝', PENDING: '审批中', PROCESSING: '处理中', UNKNOWN: '待确认', CLOUD_STATUS_UNCONFIRMED: '待确认' };
-function cloudStatusBadge(value) {
+function cloudStatusBadge(value, localStatus = null) {
+  if (localStatus === 'WITHDRAWN') return '<span class="badge text-bg-secondary">云管：已忽略（本地撤回）</span>';
   if (!value) return '<span class="badge text-bg-secondary">未提交</span>';
   const kind = value === 'APPROVED' ? 'success' : value === 'REJECTED' ? 'danger' : value === 'UNKNOWN' ? 'warning' : 'info';
   return `<span class="badge text-bg-${kind}">云管：${escapeHtml(cloudStatusLabels[value] ?? value)}</span>`;
@@ -127,7 +128,7 @@ function retryCountdown(value) {
   return seconds ? `约 ${seconds} 秒后自动重试` : '自动重试即将执行';
 }
 function render(items) {
-  $('#rows').innerHTML = items.length ? items.map((item) => `<tr><td><div class="fw-semibold">${escapeHtml(requestSubject(item))}</div>${item.reportTitle ? `<div class="small text-body-secondary">${escapeHtml(item.reportTitle)}</div>` : '<div class="small text-body-secondary">旧版请求未携带软件版本信息</div>'}</td><td>${statusBadge(item.status)}${item.status === 'CLOUD_PENDING' ? `<div class="small text-body-secondary mt-1">${escapeHtml(submissionStateLabels[item.cloudSubmissionState] ?? '等待提交')}${item.cloudSubmissionAttempts ? ` · 累计 ${item.cloudSubmissionAttempts} 次` : ''}</div>${item.cloudSubmissionState === 'RETRY_WAIT' && item.cloudRetryAt ? `<div class="small text-warning-emphasis mt-1">${escapeHtml(retryCountdown(item.cloudRetryAt))}</div>` : ''}${item.lastError ? `<div class="small text-danger mt-1" title="${escapeHtml(item.lastError)}">最近错误：${escapeHtml(item.lastError.length > 80 ? `${item.lastError.slice(0, 80)}…` : item.lastError)}</div>` : ''}` : ''}</td><td class="font-monospace small" title="${escapeHtml(item.manifestSha256)}">${escapeHtml(item.manifestSha256?.slice(0, 16))}…</td><td>${escapeHtml(displayTime(item.updatedAt))}</td><td class="text-end">${cloudStatusBadge(item.cloudStatus)}${item.cloudApprovalId ? `<div class="small text-body-secondary font-monospace text-break mt-1">${escapeHtml(item.cloudApprovalId)}</div>` : ''}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-primary btn-sm detail-button" data-id="${escapeHtml(item.requestId)}">详情</button></div></td></tr>`).join('') : '<tr><td colspan="6" class="text-center text-body-secondary py-4">暂无审批请求</td></tr>';
+  $('#rows').innerHTML = items.length ? items.map((item) => `<tr><td><div class="fw-semibold">${escapeHtml(requestSubject(item))}</div>${item.reportTitle ? `<div class="small text-body-secondary">${escapeHtml(item.reportTitle)}</div>` : '<div class="small text-body-secondary">旧版请求未携带软件版本信息</div>'}</td><td>${statusBadge(item.status)}${item.status === 'CLOUD_PENDING' ? `<div class="small text-body-secondary mt-1">${escapeHtml(submissionStateLabels[item.cloudSubmissionState] ?? '等待提交')}${item.cloudSubmissionAttempts ? ` · 累计 ${item.cloudSubmissionAttempts} 次` : ''}</div>${item.cloudSubmissionState === 'RETRY_WAIT' && item.cloudRetryAt ? `<div class="small text-warning-emphasis mt-1">${escapeHtml(retryCountdown(item.cloudRetryAt))}</div>` : ''}${item.lastError ? `<div class="small text-danger mt-1" title="${escapeHtml(item.lastError)}">最近错误：${escapeHtml(item.lastError.length > 80 ? `${item.lastError.slice(0, 80)}…` : item.lastError)}</div>` : ''}` : ''}</td><td class="font-monospace small" title="${escapeHtml(item.manifestSha256)}">${escapeHtml(item.manifestSha256?.slice(0, 16))}…</td><td>${escapeHtml(displayTime(item.updatedAt))}</td><td class="text-end">${cloudStatusBadge(item.cloudStatus, item.status)}${item.cloudApprovalId ? `<div class="small text-body-secondary font-monospace text-break mt-1">${escapeHtml(item.cloudApprovalId)}</div>` : ''}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button class="btn btn-outline-primary btn-sm detail-button" data-id="${escapeHtml(item.requestId)}">详情</button></div></td></tr>`).join('') : '<tr><td colspan="6" class="text-center text-body-secondary py-4">暂无审批请求</td></tr>';
   document.querySelectorAll('.detail-button').forEach((button) => { button.onclick = () => showDetail(button.dataset.id); });
   refreshPaginatedTables($('#page-requests'));
 }
@@ -277,7 +278,8 @@ async function showDetail(id) {
   const openDetailSections = new Set([...dialog.querySelectorAll('details[data-detail-key]')].filter((section) => section.open).map((section) => section.dataset.detailKey));
   dialog.dataset.requestId = id;
   $('#detail .card-title').textContent = requestSubject(item);
-  $('#detail-kicker').innerHTML = `固化申请详情 <span class="badge text-bg-${item.cloudStatus === 'APPROVED' ? 'success' : item.cloudStatus === 'REJECTED' ? 'danger' : 'warning'} ms-2">${escapeHtml(cloudStatusLabels[item.cloudStatus] ? `云管：${cloudStatusLabels[item.cloudStatus]}` : '云管：未提交')}</span>`;
+  const cloudKicker = item.status === 'WITHDRAWN' ? '云管：已忽略（本地撤回）' : (cloudStatusLabels[item.cloudStatus] ? `云管：${cloudStatusLabels[item.cloudStatus]}` : '云管：未提交');
+  $('#detail-kicker').innerHTML = `固化申请详情 <span class="badge text-bg-${item.status === 'WITHDRAWN' ? 'secondary' : item.cloudStatus === 'APPROVED' ? 'success' : item.cloudStatus === 'REJECTED' ? 'danger' : 'warning'} ms-2">${escapeHtml(cloudKicker)}</span><span class="badge text-bg-${item.status === 'WITHDRAWN' ? 'secondary' : item.status === 'APPROVED' ? 'success' : item.status === 'REJECTED' ? 'danger' : 'warning'} ms-2">${escapeHtml(statusLabels[item.status] ?? item.status)}</span>`;
   $('#detail-request-id').textContent = item.requestId ?? '';
   const cloudRetryStatus = item.status === 'CLOUD_PENDING'
     ? `${submissionStateLabels[item.cloudSubmissionState] ?? '等待提交'}（累计 ${item.cloudSubmissionAttempts ?? 0} 次）`
@@ -291,10 +293,14 @@ async function showDetail(id) {
   const fileList = files.length
     ? `<div class="cam-artifact-list">${files.map((file) => `<div class="cam-artifact-row"><i class="bi bi-${file.stored ? 'check-circle-fill text-success' : 'hourglass-split text-warning'}"></i><div class="cam-artifact-main"><div class="fw-semibold">${escapeHtml(file.packageKey)} <span class="text-body-secondary fw-normal">· ${escapeHtml(file.fileName)}</span></div><div class="small text-body-secondary">${escapeHtml(file.source === 'INHERITED' ? `继承自 ${file.inheritedFromRoundId ?? '前序轮次'}` : '本轮制品')} · ${escapeHtml(file.sizeBytes)} 字节</div><code class="cam-break-anywhere">SHA-256 ${escapeHtml(file.sha256)}</code></div><span class="badge text-bg-${file.stored ? 'success' : 'secondary'}">${file.stored ? '已入库' : '待接收'}</span></div>`).join('')}</div>`
     : `<div class="text-body-secondary">${item.transferTaskId ? '正式制品明细尚未同步，Edge 后续传输时会按原获批 SHA-256 补齐清单。' : '该申请尚未关联正式制品清单。'}</div>`;
-  const retryPanel = item.status === 'CLOUD_PENDING'
+  const retryPanel = item.status === 'WITHDRAWN'
+    ? '<div class="cam-retry-panel cam-retry-panel-muted">已撤回；Core 不再提交或查询云管流程，云管侧原流程不作处理。</div>'
+    : item.status === 'CLOUD_PENDING'
     ? `<div class="cam-retry-panel"><div><span class="fw-semibold">${escapeHtml(cloudRetryStatus)}</span>${item.cloudSubmissionAttemptedAt ? `<span class="small text-body-secondary ms-2">最近尝试：${escapeHtml(displayTime(item.cloudSubmissionAttemptedAt))}</span>` : ''}</div>${item.cloudRetryAt ? `<div class="small text-warning-emphasis mt-1"><i class="bi bi-clock me-1"></i>${escapeHtml(retryCountdown(item.cloudRetryAt))} · ${escapeHtml(displayTime(item.cloudRetryAt))}</div>` : ''}${item.lastError ? `<div class="small text-danger mt-2"><i class="bi bi-exclamation-circle me-1"></i>${escapeHtml(item.lastError)}</div>` : ''}</div>`
     : `<div class="cam-retry-panel cam-retry-panel-muted">${escapeHtml(item.cloudApprovalId ? '云管工单已提交' : (statusLabels[item.status] ?? item.status))}${item.cloudWorkflowStep ? ` · 云管环节：${escapeHtml(item.cloudWorkflowStep)}` : ''}${item.lastError ? `<div class="small text-danger mt-2"><i class="bi bi-exclamation-circle me-1"></i>${escapeHtml(item.lastError)}</div>` : ''}</div>`;
-  const transferLabel = item.transferStatus === 'RECEIVED'
+  const transferLabel = item.status === 'WITHDRAWN'
+    ? '申请已撤回，不进入制品传输'
+    : item.transferStatus === 'RECEIVED'
     ? '传输完成，Core 已收到回执'
     : item.transferTaskId
       ? '已准备传输，等待网闸传输并回执'
@@ -325,6 +331,7 @@ async function showDetail(id) {
     const busy = ['QUEUED', 'SUBMITTING'].includes(item.cloudSubmissionState);
     actions.push(`<button id="retry-cloud-button" class="btn btn-warning" ${busy ? 'disabled' : ''}>${busy ? '正在提交…' : '立即重试云管提交'}</button>`);
   }
+  if (['CLOUD_PENDING', 'CLOUD_SUBMITTED', 'CLOUD_STATUS_UNCONFIRMED'].includes(item.status) && canCore('businessWrite')) actions.push('<button id="withdraw-button" class="btn btn-outline-danger"><i class="bi bi-arrow-counterclockwise me-1"></i>撤回申请</button>');
   if (item.status === 'CLOUD_SUBMITTED' && canCore('businessWrite')) actions.push('<button id="sync-button" class="btn btn-primary">查询云管结果</button>');
   if (item.status === 'APPROVED' && !item.transferTaskId && item.cloudTransferTaskId && canCore('businessWrite')) actions.push('<button id="prepare-transfer-button" class="btn btn-primary"><i class="bi bi-send-check me-1"></i>准备正式制品传输</button>');
   if (item.status === 'APPROVED' && item.transferStatus === 'RECEIVED' && canCore('businessWrite')) actions.push('<button id="close-button" class="btn btn-success">确认关单</button>');
@@ -348,6 +355,13 @@ async function showDetail(id) {
   $('#sync-button')?.addEventListener('click', async () => {
     try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/sync`, { method: 'POST' }); message('已同步云管状态'); await load(); await showDetail(id); }
     catch (error) { message(error.message, 'danger'); }
+  });
+  $('#withdraw-button')?.addEventListener('click', async (event) => {
+    if (!await confirmDialog({ title: '撤回固化申请', text: '撤回只改变 Core 本地审批状态，不会调用云管撤回接口；撤回后 Core 不再提交或查询该云管流程。确认撤回吗？', confirmLabel: '撤回申请', confirmClass: 'btn-danger' })) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/withdraw`, { method: 'POST', body: '{}' }); message('固化申请已撤回，Core 将不再处理云管流程'); await load(); await showDetail(id); }
+    catch (error) { message(error.message, 'danger'); button.disabled = false; }
   });
   $('#prepare-transfer-button')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;

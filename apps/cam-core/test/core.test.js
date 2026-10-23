@@ -160,6 +160,42 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
   }
 });
 
+test('Core can withdraw an unapproved request locally without calling Cloud', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-withdraw-'));
+  const calls = [];
+  const app = await buildCoreApp({
+    dataDir,
+    enableAuth: false,
+    cloudAdapter: {
+      async createApproval() { calls.push('create'); return { approvalId: 'APR-WITHDRAW', status: 'PENDING' }; },
+      async getApproval() { calls.push('get'); return { approvalId: 'APR-WITHDRAW', status: 'PENDING' }; }
+    }
+  });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
+  try {
+    app.coreStore.receiveApproval({ ...envelope, requestId: 'FREEZE-WITHDRAW', freezeId: 'FREEZE-WITHDRAW' });
+    const withdrawn = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-WITHDRAW/withdraw', payload: {} });
+    assert.equal(withdrawn.statusCode, 200, withdrawn.body);
+    assert.equal(withdrawn.json().item.status, 'WITHDRAWN');
+    assert.equal(withdrawn.json().item.withdrawnAt !== null, true);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-WITHDRAW/withdraw', payload: {} })).json().item.status, 'WITHDRAWN');
+    const retry = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-WITHDRAW/retry', payload: {} });
+    assert.equal(retry.statusCode, 409);
+    app.coreStore.applyCloudStatus('FREEZE-WITHDRAW', { status: 'PENDING' });
+    assert.equal(app.coreStore.get('FREEZE-WITHDRAW').status, 'WITHDRAWN');
+    app.coreStore.receiveApproval({ ...envelope, requestId: 'FREEZE-WITHDRAW-SUBMITTED', freezeId: 'FREEZE-WITHDRAW-SUBMITTED' });
+    app.coreStore.markCloudSubmitted('FREEZE-WITHDRAW-SUBMITTED', { approvalId: 'APR-ALREADY-SUBMITTED', status: 'PENDING' });
+    const submittedWithdrawn = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-WITHDRAW-SUBMITTED/withdraw', payload: {} });
+    assert.equal(submittedWithdrawn.statusCode, 200, submittedWithdrawn.body);
+    assert.equal(submittedWithdrawn.json().item.status, 'WITHDRAWN');
+    assert.equal(submittedWithdrawn.json().item.cloudApprovalId, 'APR-ALREADY-SUBMITTED');
+    const sync = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-WITHDRAW-SUBMITTED/sync', payload: {} });
+    assert.equal(sync.statusCode, 200);
+    assert.equal(sync.json().item.status, 'WITHDRAWN');
+    assert.deepEqual(calls, []);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('gate approval messages require the configured exchange identity', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-auth-'));
   const app = await buildCoreApp({ dataDir, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) }, enableAuth: false });
