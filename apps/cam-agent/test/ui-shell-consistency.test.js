@@ -34,11 +34,11 @@ test('Edge, Core and Agent shell branding and navigation labels are aligned', as
   assert.ok(agent.includes('brand-text">CAM Agent'));
   assert.doesNotMatch(agent, /私钥只保存在本机<br>任务由 Core 授权后自动拉取/);
   assert.match(agent, /CAM Agent';/);
-  assert.match(agent, /Agent 接入与 Core 身份/);
+  assert.match(agent, /Agent 接入/);
   assert.match(agent, /id="identity-center-id"/);
   assert.match(agent, /id="identity-agent-name"/);
   assert.match(agent, /id="identity-fingerprint" class="form-text font-monospace text-break mt-2"/);
-  assert.match(agent, /<p>Agent 接入与 Core 身份<\/p>/);
+  assert.match(agent, /<p>Agent 接入<\/p>/);
   assert.match(agent, /<h3 class="card-title">正式制品<\/h3>/);
   assert.match(agent, /if\(deliveryPage\)\$\('#page-tasks'\)\.after\(deliveryPage\)/);
   assert.doesNotMatch(agent, /data-page="cache"|id="page-cache"/);
