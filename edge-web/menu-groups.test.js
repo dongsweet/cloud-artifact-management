@@ -33,6 +33,7 @@ test('download grant form binds the current operator and derives its total sessi
   assert.match(script, /maxSessionsPerFile: Number\(\$\('#grant-per-file'\)\.value\)/u);
   assert.match(script, /openGrant\(context\(\)\.roundId, context\(\)\.candidateId\)/u);
   assert.match(script, /roundId: grantScopeRoundId \|\| \$\('#grant-round'\)\.value \|\| null/u);
+  assert.match(script, /g\.productName, g\.displayVersion, g\.roundNo == null/u);
   assert.doesNotMatch(script, /redownload-grant-list/u);
   assert.doesNotMatch(script, /测试服务器下载/u);
   assert.doesNotMatch(script, /recipientId: \$\('#grant-recipient'\)\.value/u);
