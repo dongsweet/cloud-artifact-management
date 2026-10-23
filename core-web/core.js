@@ -94,30 +94,14 @@ function cloudStatusBadge(value, localStatus = null) {
 function message(text, type = 'success') { const el = $('#alert'); el.className = `alert alert-${type}`; el.textContent = text; }
 function confirmDialog({ title, text, confirmLabel = '确认', confirmClass = 'btn-primary' }) {
   const dialog = $('#confirm-dialog');
-  // A modal dialog makes its siblings inert in some browsers. Close the
-  // current detail dialog before opening this confirmation dialog, then put
-  // it back after the user makes a choice.
-  const parentDialog = [...document.querySelectorAll('dialog[open]')].find((item) => item !== dialog);
-  if (parentDialog) parentDialog.close('confirmation');
   $('#confirm-title').textContent = title;
   $('#confirm-text').textContent = text;
   const confirmButton = $('#confirm-submit');
   confirmButton.textContent = confirmLabel;
   confirmButton.className = `btn ${confirmClass}`;
   return new Promise((resolve) => {
-    const finish = () => {
-      const accepted = dialog.returnValue === 'confirm';
-      if (parentDialog && !parentDialog.open) parentDialog.showModal();
-      resolve(accepted);
-    };
-    dialog.addEventListener('close', finish, { once: true });
-    try { dialog.showModal(); }
-    catch (error) {
-      dialog.removeEventListener('close', finish);
-      if (parentDialog && !parentDialog.open) parentDialog.showModal();
-      message('确认窗口无法打开，请刷新页面后重试。', 'danger');
-      resolve(false);
-    }
+    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true });
+    dialog.showModal();
   });
 }
 function renderCloudMappings(mappings = null) {
@@ -373,8 +357,8 @@ async function showDetail(id) {
     catch (error) { message(error.message, 'danger'); }
   });
   $('#withdraw-button')?.addEventListener('click', async (event) => {
-    if (!await confirmDialog({ title: '撤回固化申请', text: '撤回只改变 Core 本地审批状态，不会调用云管撤回接口；撤回后 Core 不再提交或查询该云管流程。确认撤回吗？', confirmLabel: '撤回申请', confirmClass: 'btn-danger' })) return;
     const button = event.currentTarget;
+    if (!await confirmDialog({ title: '撤回固化申请', text: '撤回只改变 Core 本地审批状态，不会调用云管撤回接口；撤回后 Core 不再提交或查询该云管流程。确认撤回吗？', confirmLabel: '撤回申请', confirmClass: 'btn-danger' })) return;
     button.disabled = true;
     try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/withdraw`, { method: 'POST', body: '{}' }); message('固化申请已撤回，Core 将不再处理云管流程'); await load(); await showDetail(id); }
     catch (error) { message(error.message, 'danger'); button.disabled = false; }
@@ -592,7 +576,7 @@ $('#confirm-submit').addEventListener('click', () => $('#confirm-dialog').close(
 $('#confirm-dialog').addEventListener('click', (event) => { if (event.target === $('#confirm-dialog')) $('#confirm-dialog').close('cancel'); });
 $('#agents-refresh').addEventListener('click', loadAgents);
 $('#agent-service-copy').addEventListener('click', async () => { const value = $('#agent-service-public-key').value; if (!value) return; try { await navigator.clipboard.writeText(value); message('Core 服务公钥已复制'); } catch { $('#agent-service-public-key').select(); message('浏览器未授权自动复制，请按 Ctrl+C 复制'); } });
-$('#agent-service-rotate').addEventListener('click', async (event) => { if (!await confirmDialog({ title: '轮换 Core 服务身份', text: 'Core 会生成新身份，并由当前身份签名发送提案。全部 Agent 确认后会提前切换；否则最多等待上方设置的旧身份过渡期，到期后照常启用新身份。届时未确认的 Agent 会被跳过，之后重新接入需要重新配对。确认发起吗？', confirmLabel: '发起轮换', confirmClass: 'btn-warning' })) return; event.currentTarget.disabled = true; try { const result = await api('/api/v1/agent-service-identity/rotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); message(result.pendingRotation ? `Core 新身份已暂存，等待 ${result.pending} 个 Agent 确认，最晚于 ${displayTime(result.activationDeadlineAt)} 启用` : 'Core 服务身份已轮换'); await loadAgents(); } catch (error) { message(error.message, 'danger'); } finally { event.currentTarget.disabled = false; } });
+$('#agent-service-rotate').addEventListener('click', async (event) => { const button = event.currentTarget; if (!await confirmDialog({ title: '轮换 Core 服务身份', text: 'Core 会生成新身份，并由当前身份签名发送提案。全部 Agent 确认后会提前切换；否则最多等待上方设置的旧身份过渡期，到期后照常启用新身份。届时未确认的 Agent 会被跳过，之后重新接入需要重新配对。确认发起吗？', confirmLabel: '发起轮换', confirmClass: 'btn-warning' })) return; button.disabled = true; try { const result = await api('/api/v1/agent-service-identity/rotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); message(result.pendingRotation ? `Core 新身份已暂存，等待 ${result.pending} 个 Agent 确认，最晚于 ${displayTime(result.activationDeadlineAt)} 启用` : 'Core 服务身份已轮换'); await loadAgents(); } catch (error) { message(error.message, 'danger'); } finally { button.disabled = false; } });
 $('#agent-rotation-policy-save').addEventListener('click', async (event) => {
   const button = event.currentTarget; button.disabled = true;
   try {
