@@ -110,4 +110,5 @@ test('Agent delivery navigation is inserted under the business menu group', asyn
   assert.match(deliverySource, /data-agent-menu-group-item="business" data-agent-permission="deliveryRead"/);
   assert.match(deliverySource, /\.agent-mobile-nav-group\[data-agent-mobile-group="business"\] \.d-flex/);
   assert.match(deliverySource, /href="#delivery"[\s\S]{0,240}部署交付/);
+  assert.match(deliverySource, /document\.querySelectorAll\('#page-delivery dialog'\)\.forEach\(\(dialog\) => document\.body\.append\(dialog\)\)/);
 });
