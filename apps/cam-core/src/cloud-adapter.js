@@ -447,18 +447,33 @@ export class CloudAdapter {
     const task = Array.isArray(tasks) ? tasks[0] : tasks?.[0] ?? tasks;
     if (!task) throw cloudError(`cloud work order ${approvalId} has no pending task record`);
     if (text(task.taskName) !== '工单确认') throw cloudError(`cloud work order ${approvalId} task is not the confirmation step`);
+
+    // The EOMS confirmation endpoint uses the same work-order update model as
+    // the detail page. Sending only the task record happens to deserialize, but
+    // the workflow service then returns the unhelpful business error
+    // "操作失败". Keep the work-order fields and overlay the current task,
+    // including the acting user, exactly as the cloud UI does.
+    const currentUserId = asNumericId(task.taskUserId ?? detail.currentUserId ?? this.authUserId, 'task.taskUserId');
+    const currentUserName = valueOf(task, ['taskUserName'])
+      || valueOf(detail, ['currentUserName'])
+      || (Array.isArray(detail.currentUserNames) ? text(detail.currentUserNames[0]) : '')
+      || this.authUsername;
+    const confirmation = {
+      ...detail,
+      ...task,
+      id: asNumericId(task.id, 'task.id'),
+      taskRecordId: asNumericId(task.taskRecordId, 'task.taskRecordId'),
+      workorderId: asNumericId(task.workorderId ?? workorderId, 'task.workorderId'),
+      approve: true,
+      editorContent: body.reason ? `<p>${html(body.reason)}</p>` : '<p>云平台软件制品已完成内网接收。</p>',
+      assignmentList: Array.isArray(task.assignmentList) ? task.assignmentList : [],
+      currentUserId,
+      ...(currentUserName ? { currentUserName } : {}),
+      loginUserId: currentUserId
+    };
     return this.request(EOMS_PATHS.confirm, {
       method: 'PUT',
-      body: {
-        id: asNumericId(task.id, 'task.id'),
-        taskId: task.taskId,
-        taskName: task.taskName,
-        taskRecordId: asNumericId(task.taskRecordId, 'task.taskRecordId'),
-        workorderId: asNumericId(task.workorderId ?? workorderId, 'task.workorderId'),
-        approve: true,
-        editorContent: body.reason ? `<p>${html(body.reason)}</p>` : '<p>云平台软件制品已完成内网接收。</p>',
-        assignmentList: []
-      }
+      body: confirmation
     });
   }
 }

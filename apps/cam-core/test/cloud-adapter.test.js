@@ -274,6 +274,51 @@ test('CloudAdapter maps EOMS confirmation step to approval and confirms a work o
   assert.deepEqual(calls.map((call) => [call.path, call.method]), [[EOMS_PATHS.detail, 'GET'], [EOMS_PATHS.detail, 'GET'], [EOMS_PATHS.task, 'GET'], [EOMS_PATHS.confirm, 'PUT']]);
   assert.equal(calls.at(-1).body.approve, true);
   assert.equal(calls.at(-1).body.editorContent, '<p>已完成 &lt;内网&gt; 接收</p>');
+  assert.equal(calls.at(-1).body.workOrderNumber, '20261012D1234');
+  assert.equal(calls.at(-1).body.currentStep, '工单确认');
+  assert.equal(calls.at(-1).body.currentUserId, 2308);
+  assert.equal(calls.at(-1).body.loginUserId, 2308);
+});
+
+test('CloudAdapter sends the acting task user and full work-order model for EOMS confirmation', async () => {
+  let confirmationBody;
+  const fetchImpl = async (url, options) => {
+    const path = new URL(url).pathname;
+    if (path === EOMS_PATHS.detail) return response({
+      id: 437,
+      workOrderNumber: '20261023D7646',
+      currentStep: '工单确认',
+      workOrderConfirm: '1',
+      currentUserNames: ['制品机器人'],
+      currentUserIds: [2308],
+      workOrderDetail: `<p>清单 SHA-256：${'a'.repeat(64)}</p>`
+    });
+    if (path === EOMS_PATHS.task) return response([{
+      id: 1186,
+      taskId: '3087507',
+      taskName: '工单确认',
+      taskRecordId: 0,
+      workorderId: 437,
+      taskUserId: 2308,
+      taskUserName: '制品机器人',
+      assignmentList: []
+    }]);
+    if (path === EOMS_PATHS.confirm) {
+      confirmationBody = JSON.parse(options.body);
+      return response(null);
+    }
+    throw new Error(`unexpected request ${path}`);
+  };
+  const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env, fetchImpl });
+  await adapter.closeApproval('20261023D7646');
+  assert.equal(confirmationBody.id, 1186);
+  assert.equal(confirmationBody.workorderId, 437);
+  assert.equal(confirmationBody.taskRecordId, 0);
+  assert.equal(confirmationBody.currentUserId, 2308);
+  assert.equal(confirmationBody.currentUserName, '制品机器人');
+  assert.equal(confirmationBody.loginUserId, 2308);
+  assert.equal(confirmationBody.currentStep, '工单确认');
+  assert.equal(confirmationBody.workOrderNumber, '20261023D7646');
 });
 
 test('CloudAdapter fails closed for ended or undocumented EOMS workflow states', () => {
