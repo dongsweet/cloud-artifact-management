@@ -47,6 +47,18 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /id="new-agent-user"[^>]*>.*?创建账号/s);
   assert.doesNotMatch(html, /id="users-refresh"/);
   assert.match(html, /<dialog id="agent-user-dialog" class="cam-account-modal">/);
+  const accountFormStart = html.indexOf('<div id="agent-user-editor"');
+  const accountFormEnd = html.indexOf('<div id="agent-user-reset"', accountFormStart);
+  const accountForm = html.slice(accountFormStart, accountFormEnd);
+  assert.ok(accountForm.indexOf('id="agent-user-source-field"') < accountForm.indexOf('id="agent-user-name"'));
+  assert.ok(accountForm.indexOf('id="agent-user-name"') < accountForm.indexOf('id="agent-user-display"'));
+  assert.ok(accountForm.indexOf('id="agent-user-display"') < accountForm.indexOf('id="agent-user-password-field"'));
+  assert.ok(accountForm.indexOf('id="agent-user-password-field"') < accountForm.indexOf('id="agent-user-active"'));
+  assert.ok(accountForm.indexOf('id="agent-user-active"') < accountForm.indexOf('id="agent-user-roles"'));
+  assert.match(accountForm, /id="agent-user-password" type="text"/);
+  assert.match(accountForm, /允许登录 CAM Agent/);
+  assert.match(accountForm, />保存<\/button>/);
+  assert.match(html, /password\.disabled = editing \|\| aaa; password\.required = !editing && !aaa; if \(aaa\) password\.value = ''/);
   assert.match(html, /import \{ renderRoleGroups \} from "\/assets\/role-display\.js"/);
   assert.match(html, /renderRoleGroups\(\[\{ scope: 'Agent', roles:/);
   assert.match(html, /id="page-users"/);
@@ -54,7 +66,7 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /data-page="audit" data-agent-permission="auditRead"/);
   assert.match(html, /mountAuditEvents/);
   assert.match(html, /data-audit-filter/);
-  assert.match(html, /本地账号首次登录须修改密码/);
+  assert.match(html, /首次登录须修改初始密码/);
   assert.match(html, /data-agent-permission="configRead"/);
   assert.match(html, /data-agent-permission="businessRead"/);
   assert.match(html, /function agentCan\(permission\)/);
