@@ -78,12 +78,11 @@ function showLogin() {
   document.body.classList.remove('modal-open');
   document.querySelectorAll('.modal-backdrop').forEach((backdrop) => backdrop.remove());
   $('#app').classList.add('d-none');
-  $('#password-change').classList.add('d-none');
   $('#login').classList.remove('d-none');
   clearMessage();
 }
-function showPasswordChange(forced) { forcedPasswordChange = forced; $('#password-title').textContent = forced ? '修改初始密码' : '修改密码'; $('#password-help').textContent = forced ? '首次登录必须修改初始密码。' : '修改密码后需要重新登录。'; $('#password-cancel').classList.remove('d-none'); $('#password-error').classList.add('d-none'); $('#password-change').classList.remove('d-none'); }
-function showApp(user) { currentUser = user; forcedPasswordChange = Boolean(user.mustChangePassword); $('#login').classList.add('d-none'); $('#app').classList.remove('d-none'); $('#change-password').classList.toggle('d-none', user.authSource === 'AAA'); clearMessage(); $('#user-label').textContent = `${user.displayName}（${user.username}）`; applyRoleMenu(); if (user.mustChangePassword) showPasswordChange(true); else { $('#password-change').classList.add('d-none'); startRequestPolling(); } return user; }
+function showPasswordChange(forced) { forcedPasswordChange = forced; $('#password-title').textContent = forced ? '修改初始密码' : '修改密码'; $('#password-help').textContent = forced ? '首次登录必须修改初始密码。' : '修改密码后需要重新登录。'; $('#password-cancel').classList.remove('d-none'); $('#password-error').classList.add('d-none'); const dialog = $('#password-change'); if (!dialog.open) dialog.showModal(); }
+function showApp(user) { currentUser = user; forcedPasswordChange = Boolean(user.mustChangePassword); $('#login').classList.add('d-none'); $('#app').classList.remove('d-none'); $('#change-password').classList.toggle('d-none', user.authSource === 'AAA'); clearMessage(); $('#user-label').textContent = `${user.displayName}（${user.username}）`; applyRoleMenu(); if (user.mustChangePassword) showPasswordChange(true); else startRequestPolling(); return user; }
 function statusBadge(value) { const kind = value === 'APPROVED' ? 'success' : value === 'REJECTED' ? 'danger' : 'warning'; return `<span class="badge text-bg-${kind}">${escapeHtml(statusLabels[value] ?? value)}</span>`; }
 function message(text, type = 'success') { const el = $('#alert'); el.className = `alert alert-${type}`; el.textContent = text; }
 function confirmDialog({ title, text, confirmLabel = '确认', confirmClass = 'btn-primary' }) {
@@ -395,7 +394,7 @@ async function loadGateKeys({ preserveInputs = false } = {}) {
   $('#gate-rotate-now').disabled = !item.peerTrusted;
   return item;
 }
-function showPage(page) {
+function showPage(page, loadData = true) {
   if (!Object.hasOwn(pagePermissions, page)) page = firstAllowedPage();
   if (!canCorePage(currentUser?.roles ?? [], page)) page = firstAllowedPage();
   if (window.location.hash.slice(1).split('?')[0] !== page) history.replaceState(null, '', `#${page}`);
@@ -404,6 +403,7 @@ function showPage(page) {
   const titles = { requests: '审批请求', artifacts: '正式制品', distribution: 'Agent 分发', 'cloud-config': '云管对接配置', 'aaa-config': 'AAA 对接配置', 'gate-config': '网闸对接配置', agents: 'Agent 管理', users: '账号管理', audit: '审计日志' };
   $('#page-title').textContent = titles[page] ?? '审批请求';
   document.querySelectorAll('[data-page]').forEach((link) => link.classList.toggle('active', link.dataset.page === page));
+  if (!loadData || forcedPasswordChange) return;
   if (page === 'artifacts') loadArtifacts();
   if (page === 'distribution') loadDistribution();
   if (page === 'cloud-config') loadCloudConfig();
@@ -496,11 +496,13 @@ function openUserEditor(userId = null) {
   $('#user-error').classList.add('d-none'); $('#user-editor').classList.remove('d-none'); $('#user-reset').classList.add('d-none'); if (!dialog.open) dialog.showModal();
 }
 function openUserReset(userId) { const dialog = ensureUserDialog(); const user = coreUsers.find((item) => item.id === userId); if (!user) return; resetUserId = userId; $('#reset-form').reset(); $('#reset-user-label').textContent = `账号：${user.displayName}（${user.username}）`; $('#reset-error').classList.add('d-none'); $('#user-editor').classList.add('d-none'); $('#user-reset').classList.remove('d-none'); if (!dialog.open) dialog.showModal(); }
-$('#login-form').addEventListener('submit', async (event) => { event.preventDefault(); $('#login-error').classList.add('d-none'); try { const result = await api('/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: $('#username').value, password: $('#password').value }) }); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) { showPage(pageFromHash()); if (pageFromHash() === 'requests' && canCore('businessRead')) await load(); } } catch (error) { $('#login-error').textContent = error.message; $('#login-error').classList.remove('d-none'); } });
+$('#login-form').addEventListener('submit', async (event) => { event.preventDefault(); $('#login-error').classList.add('d-none'); try { const result = await api('/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: $('#username').value, password: $('#password').value }) }); csrf = result.csrfToken; showApp(result.user); showPage(pageFromHash(), !result.user.mustChangePassword); if (!result.user.mustChangePassword && pageFromHash() === 'requests' && canCore('businessRead')) await load(); } catch (error) { $('#login-error').textContent = error.message; $('#login-error').classList.remove('d-none'); } });
 $('#password-form').addEventListener('submit', async (event) => { event.preventDefault(); $('#password-error').classList.add('d-none'); if ($('#new-password').value !== $('#repeat-password').value) { $('#password-error').textContent = '两次新密码不一致'; $('#password-error').classList.remove('d-none'); return; } try { await api('/api/v1/auth/password', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ oldPassword: $('#old-password').value, password: $('#new-password').value }) }); $('#password-form').reset(); showLogin(); } catch (error) { $('#password-error').textContent = error.message; $('#password-error').classList.remove('d-none'); } });
 $('#change-password').addEventListener('click', () => showPasswordChange(false));
+$('#password-change').addEventListener('cancel', (event) => { if (forcedPasswordChange) event.preventDefault(); });
+$('#password-change').addEventListener('click', (event) => { if (event.target !== $('#password-change')) return; if (forcedPasswordChange) event.preventDefault(); else $('#password-change').close('backdrop'); });
 $('#password-cancel').addEventListener('click', async () => {
-  if (!forcedPasswordChange) { $('#password-form').reset(); $('#password-change').classList.add('d-none'); return; }
+  if (!forcedPasswordChange) { $('#password-form').reset(); $('#password-change').close('cancel'); return; }
   const button = $('#password-cancel');
   button.disabled = true;
   $('#password-error').classList.add('d-none');
@@ -593,7 +595,7 @@ $('#gate-pairing-test').addEventListener('click', async (event) => {
 });
 $('#gate-schedule').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/keys/schedule', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rotationIntervalDays: Number($('#gate-rotation-days').value), gracePeriodHours: Number($('#gate-grace-hours').value) }) }); await loadGateKeys(); message('自动轮换策略已保存'); } catch (error) { message(error.message, 'danger'); } });
 $('#gate-rotate-now').addEventListener('click', async () => { const button = $('#gate-rotate-now'); button.disabled = true; try { await api('/api/v1/gate/keys/rotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); await loadGateKeys(); message('本端身份公私钥已完成轮换'); } catch (error) { message(error.message, 'danger'); } finally { button.disabled = false; } });
-try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; showApp(result.user); if (!result.user.mustChangePassword) { showPage(pageFromHash()); if (pageFromHash() === 'requests' && canCore('businessRead')) await load(); } } catch { showLogin(); }
+try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; showApp(result.user); showPage(pageFromHash(), !result.user.mustChangePassword); if (!result.user.mustChangePassword && pageFromHash() === 'requests' && canCore('businessRead')) await load(); } catch { showLogin(); }
 
-setInterval(() => { if (!document.hidden && !$('#page-gate-config').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadGateKeys({ preserveInputs: true }).catch(() => {}); }, 5000);
-setInterval(() => { if (!document.hidden && !$('#page-agents').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadAgents(); }, 5000);
+setInterval(() => { if (!forcedPasswordChange && !document.hidden && !$('#page-gate-config').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadGateKeys({ preserveInputs: true }).catch(() => {}); }, 5000);
+setInterval(() => { if (!forcedPasswordChange && !document.hidden && !$('#page-agents').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadAgents(); }, 5000);

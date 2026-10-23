@@ -17,10 +17,15 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /id="password-title" class="card-title">修改初始密码/);
   assert.match(html, /id="password-help" class="alert alert-info">首次登录必须修改初始密码/);
   assert.match(html, /id="password-cancel"[^>]*>取消/);
+  assert.match(html, /<dialog id="password-change" class="cam-password-modal"/);
+  assert.match(html, /function showPasswordChange\(forced\)[\s\S]*?dialog\.showModal\(\)/);
   assert.match(html, /function showPasswordChange\(forced\)/);
   assert.match(html, /showPasswordChange\(true\)/);
   assert.match(html, /showPasswordChange\(false\)/);
-  assert.match(html, /password-cancel.*?show\('app'\)/s);
+  assert.match(html, /if\(!forcedPasswordChange\).*?password-change'\)\.close\('cancel'\)/s);
+  assert.match(html, /api\('\/auth\/logout'[\s\S]*?show\('login'\)/);
+  assert.match(html, /addEventListener\('cancel',e=>\{if\(forcedPasswordChange\)e\.preventDefault\(\)\}\)/);
+  assert.match(html, /showPage\(location\.hash\.slice\(1\)\|\|agentDefaultPage\(\),false\);showPasswordChange\(true\)/);
   assert.match(html, /本机 Agent 身份<\/h4><div class="d-flex align-items-center gap-2">.*?id="identity-copy"/s);
   assert.match(html, /Core 服务身份<\/h4><div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">.*?id="core-key-replace".*?重新配对.*?id="core-config-save".*?保存 Core 身份.*?id="core-key-cancel".*?取消/s);
   assert.doesNotMatch(html, /id="core-copy"/);
@@ -95,6 +100,7 @@ test('Agent account page serves the shared Core role and account presentation as
   assert.match(serverSource, /app\.get\('\/assets\/role-display\.js'/);
   const sharedLayout = await readFile(resolve(process.cwd(), 'web-shared/layout.css'), 'utf8');
   assert.match(sharedLayout, /\.cam-account-modal \{/);
+  assert.match(sharedLayout, /\.cam-password-modal::backdrop \{ background: rgb\(0 0 0 \/ 55%\); \}/);
 });
 
 test('Agent delivery navigation is inserted under the business menu group', async () => {

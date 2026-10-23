@@ -22,9 +22,8 @@
 #actions { justify-content: flex-end; }
 .app-main .card-footer.d-flex { justify-content: flex-end !important; }
 
-/* Keep authentication screens above AdminLTE's fixed shell and sidebar. */
-#login,
-#password-change {
+/* Keep the login screen above AdminLTE's fixed shell and sidebar. */
+#login {
   position: fixed;
   inset: 0;
   width: 100vw;
@@ -34,8 +33,7 @@
   z-index: 2000 !important;
 }
 
-#login:not(.d-none),
-#password-change:not(.d-none) {
+#login:not(.d-none) {
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
@@ -43,8 +41,7 @@
   padding: 1rem;
 }
 
-#login > .card,
-#password-change > .card {
+#login > .card {
   position: relative;
   z-index: 2001;
   flex: 0 1 auto;

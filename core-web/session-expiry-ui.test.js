@@ -20,3 +20,12 @@ test('Core login screen contains no account type explanation', async () => {
   assert.match(login, /id="login-form"/u);
   assert.doesNotMatch(login, /Core 本地应急账号|AAA 账号/u);
 });
+
+test('Core password change overlays the visible app and blocks dismissal until logout when forced', async () => {
+  const [html, script, style] = await Promise.all([read('./index.html'), read('./core.js'), read('./core.css')]);
+  assert.match(html, /<dialog id="password-change" class="cam-password-modal"/u);
+  assert.match(script, /const dialog = \$\('#password-change'\); if \(!dialog\.open\) dialog\.showModal\(\)/u);
+  assert.match(script, /if \(forcedPasswordChange\) event\.preventDefault\(\)/u);
+  assert.match(script, /showPage\(pageFromHash\(\), !result\.user\.mustChangePassword\)/u);
+  assert.doesNotMatch(style, /#password-change\s*\{/u);
+});

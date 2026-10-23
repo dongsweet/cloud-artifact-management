@@ -4,6 +4,9 @@ body.layout-fixed { min-height: 100vh; background: #f4f6f9; }
 .app-header .navbar-brand { color: var(--cam-accent); }
 .cam-auth-card, .auth-card { width: 440px; max-width: 95vw; }
 .cam-password-dialog { width: min(440px, calc(100vw - 2rem)); max-width: none !important; }
+.cam-password-modal { box-sizing: border-box; width: min(440px, calc(100vw - 2rem)); max-width: none; max-height: min(90vh, 820px); margin: auto; padding: 0; border: 0; border-radius: .5rem; color: inherit; background: transparent; box-shadow: 0 1rem 3rem rgb(0 0 0 / 25%); }
+.cam-password-modal::backdrop { background: rgb(0 0 0 / 55%); }
+.cam-password-modal > .card { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; max-height: inherit; overflow-y: auto; margin: 0; }
 .cam-auth-card > .card-header, .cam-password-dialog .modal-header { padding: .75rem 1rem; }
 .cam-auth-card > .card-header .card-title, .cam-password-dialog .modal-title { margin: 0; font-size: 1.1rem; font-weight: 600; }
 .cam-auth-card .card-body, .cam-password-dialog .modal-body { padding: 1rem; }
