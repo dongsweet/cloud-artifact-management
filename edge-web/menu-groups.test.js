@@ -14,11 +14,13 @@ test('Edge sidebar groups business, management, security and audit pages like Co
   for (const [group, label] of [['security', '账号安全'], ['audit', '审计']]) {
     assert.match(script, new RegExp(`data-menu-group="${group}">${label}</li>`, 'u'));
   }
-  for (const route of ['products', 'releases', 'rounds']) {
+  for (const route of ['products', 'releases', 'rounds', 'candidates']) {
     assert.match(html, new RegExp(`data-menu-group-item="business"><a href="#${route}"`, 'u'));
   }
   assert.match(html, /id="gate-config-nav" data-menu-group-item="management"/u);
-  assert.doesNotMatch(html, /data-menu-group-item="business"><a href="#candidates"/u);
+  assert.match(html, /data-menu-group-item="business"><a href="#candidates"/u);
+  assert.match(html, /id="candidate-summary"/u);
+  assert.match(html, /只读文件资产总览/u);
   assert.match(script, /id="grants-nav" data-menu-group-item="business"/u);
   assert.match(script, /id="users-nav" data-menu-group-item="security"/u);
   assert.match(script, /id="audit-nav" data-menu-group-item="audit"/u);
@@ -38,6 +40,8 @@ test('download grant form binds the current operator and derives its total sessi
   assert.match(script, /g\.productName, g\.displayVersion, g\.roundNo == null/u);
   assert.match(script, /grant-table/u);
   assert.match(script, /grant-actions/u);
+  assert.match(script, /const candidateReadOnly = context\(\)\.view === 'candidate-detail' && !context\(\)\.roundId/u);
+  assert.match(script, /candidateReadOnly \|\| context\(\)\.currentCandidate\?\.status !== 'COMPLETED'/u);
   assert.doesNotMatch(script, /redownload-grant-list/u);
   assert.doesNotMatch(script, /测试服务器下载/u);
   assert.doesNotMatch(script, /recipientId: \$\('#grant-recipient'\)\.value/u);

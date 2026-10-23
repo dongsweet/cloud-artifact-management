@@ -45,7 +45,8 @@ function markup() {
   $('#candidate-edit-button').insertAdjacentHTML('beforebegin', '<button id="candidate-grant" class="btn btn-outline-success btn-sm"><i class="bi bi-download me-1"></i>下载 / 交付验证</button>');
 }
 function applyPermissions() {
-  document.querySelectorAll('[data-modal], [data-delete-product], [data-delete-release], [data-round-candidate-delete], [data-candidate-delete], #new-round-button, #new-package-button, #import-packages-button, #batch-receive-button, #candidate-edit-button, #candidate-delete-button, #receive-button, #pause-button').forEach((e) => e.classList.toggle('d-none', !hasRole('EDGE_OPERATOR')));
+  const candidateReadOnly = context().view === 'candidate-detail' && !context().roundId;
+  document.querySelectorAll('[data-modal], [data-delete-product], [data-delete-release], [data-round-candidate-delete], [data-candidate-delete], #new-round-button, #new-package-button, #import-packages-button, #batch-receive-button, #candidate-edit-button, #candidate-delete-button, #receive-button, #pause-button').forEach((e) => e.classList.toggle('d-none', !hasRole('EDGE_OPERATOR') || (candidateReadOnly && ['candidate-edit-button', 'candidate-delete-button', 'receive-button', 'pause-button'].includes(e.id))));
   document.querySelectorAll('.sidebar-menu a').forEach((link) => {
     const route = link.dataset.route ?? link.hash.slice(1);
     link.parentElement.classList.toggle('d-none', !canEdgePage(user?.roles ?? [], route));
@@ -56,7 +57,7 @@ function applyPermissions() {
     header.classList.toggle('d-none', !items.some((item) => !item.classList.contains('d-none')));
   });
   for (const id of ['round-grant', 'candidate-grant', 'new-grant']) $(`#${id}`).classList.toggle('d-none', !hasRole('EDGE_OPERATOR'));
-  $('#candidate-grant').classList.toggle('d-none', !hasRole('EDGE_OPERATOR') || context().currentCandidate?.status !== 'COMPLETED');
+  $('#candidate-grant').classList.toggle('d-none', !hasRole('EDGE_OPERATOR') || candidateReadOnly || context().currentCandidate?.status !== 'COMPLETED');
 }
 async function acceptSession(result) {
   user = result.user; labels = result.roles;

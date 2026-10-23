@@ -68,7 +68,7 @@ function renderShell(view) {
     const route = link.dataset.route ?? link.hash.slice(1);
     link.parentElement.classList.toggle('d-none', !canEdgePage(currentUser()?.roles ?? [], route));
   });
-  const titles = { products: '软件产品', releases: '发布版本', rounds: '候选轮次', candidates: '候选包', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情', 'gate-config': '网闸对接配置', users: '账号管理', grants: '下载授权', audit: '审计日志' };
+  const titles = { products: '软件产品', releases: '发布版本', rounds: '候选轮次', candidates: '候选包文件清单', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情', 'gate-config': '网闸对接配置', users: '账号管理', grants: '下载授权', audit: '审计日志' };
   $('#page-title').textContent = titles[view] ?? '软件产品';
 }
 
@@ -281,12 +281,21 @@ async function loadCandidates(generation = state.routeGeneration) {
   else candidates = (await api('/api/v1/candidates?limit=200')).items;
   if (generation !== state.routeGeneration) return;
   state.currentRound = selectedRound;
+  const completed = candidates.filter((item) => item.status === 'COMPLETED' && item.finalSha256);
+  const uniqueDigests = new Set(completed.map((item) => item.finalSha256.toLowerCase()));
+  const pending = candidates.filter((item) => item.status !== 'COMPLETED');
+  $('#candidate-summary').innerHTML = [
+    ['候选记录', candidates.length],
+    ['已校验文件', completed.length],
+    ['唯一文件（SHA-256）', uniqueDigests.size],
+    ['重复引用', Math.max(0, completed.length - uniqueDigests.size)],
+    ['待接收 / 异常', pending.length]
+  ].map(([label, value]) => `<div class="col-6 col-md"><div class="border rounded p-2 h-100"><div class="small text-body-secondary">${escapeHtml(label)}</div><div class="h5 mb-0 mt-1">${escapeHtml(value)}</div></div></div>`).join('');
   $('#candidate-rows').innerHTML = candidates.length ? candidates.map((item) => {
     const release = state.releaseId ? selectedReleases[0] : selectedReleases.find((entry) => entry.releaseId === item.releaseId);
-    return `<tr><td>${escapeHtml(item.productName ?? release?.productName ?? '-')}</td><td>${escapeHtml(release?.displayVersion ?? item.releaseDisplayVersion ?? item.releaseVersion ?? '-')}</td><td>${selectedRound ? `第 ${selectedRound.roundNo} 轮` : '-'}</td><td>${escapeHtml(item.type ?? '-')}</td><td>${escapeHtml(item.packageKey ?? '-')}</td><td class="file-name text-break">${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><div class="d-flex gap-1"><button class="btn btn-outline-primary btn-sm" data-candidate-open="${escapeHtml(item.candidateId)}" title="查看候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button><button class="btn btn-outline-danger btn-sm" data-candidate-delete="${escapeHtml(item.candidateId)}" title="永久删除候选记录和本机文件"><i class="bi bi-trash"></i><span class="visually-hidden">永久删除</span></button></div></td></tr>`;
+    return `<tr><td>${escapeHtml(item.productName ?? release?.productName ?? '-')}</td><td>${escapeHtml(release?.displayVersion ?? item.releaseDisplayVersion ?? item.releaseVersion ?? '-')}</td><td>${selectedRound ? `第 ${selectedRound.roundNo} 轮` : '-'}</td><td>${escapeHtml(item.type ?? '-')}</td><td>${escapeHtml(item.packageKey ?? '-')}</td><td class="file-name text-break">${escapeHtml(item.fileName)}</td><td>${escapeHtml(item.architecture ?? '-')}</td><td><span class="badge ${statusClass(item.status)}">${statusLabel(item.status)}</span></td><td><button class="btn btn-outline-primary btn-sm" data-candidate-open="${escapeHtml(item.candidateId)}" title="查看候选包"><i class="bi bi-eye"></i><span class="visually-hidden">查看</span></button></td></tr>`;
   }).join('') : '<tr><td colspan="9" class="text-center text-body-secondary py-4">暂无候选包</td></tr>';
   document.querySelectorAll('[data-candidate-open]').forEach((button) => button.addEventListener('click', () => navigate('candidate-detail', { candidateId: button.dataset.candidateOpen, ...paramsForState() })));
-  document.querySelectorAll('[data-candidate-delete]').forEach((button) => button.addEventListener('click', () => deleteCandidateById(button.dataset.candidateDelete)));
 }
 
 async function loadReleaseDetail(generation = state.routeGeneration) {
@@ -495,6 +504,8 @@ async function loadCandidateDetail(generation = state.routeGeneration) {
 }
 
 function renderCandidate(candidate, parts) {
+  const readOnly = !state.roundId;
+  ['candidate-edit-button', 'candidate-delete-button', 'receive-button', 'pause-button'].forEach((id) => $(`#${id}`).classList.toggle('d-none', readOnly));
   const transferVisible = candidate.status !== 'COMPLETED';
   $('#candidate-transfer-controls').classList.toggle('d-none', !transferVisible);
   $('#candidate-transfer-progress').classList.toggle('d-none', !transferVisible);
