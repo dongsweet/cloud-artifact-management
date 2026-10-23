@@ -60,7 +60,8 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.ok(accountForm.indexOf('id="agent-user-display"') < accountForm.indexOf('id="agent-user-password-field"'));
   assert.ok(accountForm.indexOf('id="agent-user-password-field"') < accountForm.indexOf('id="agent-user-active"'));
   assert.ok(accountForm.indexOf('id="agent-user-active"') < accountForm.indexOf('id="agent-user-roles"'));
-  assert.match(accountForm, /id="agent-user-password" type="text"/);
+  assert.match(accountForm, /id="agent-user-password" type="password"/);
+  assert.match(html, /id="agent-user-reset-password" type="password"/);
   assert.match(accountForm, /允许登录 CAM Agent/);
   assert.match(accountForm, />保存<\/button>/);
   assert.match(html, /password\.disabled = editing \|\| aaa; password\.required = !editing && !aaa; if \(aaa\) password\.value = ''/);
