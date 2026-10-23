@@ -638,6 +638,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     try {
       const item = store.get(request.params.requestId);
       if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
+      if (item.closeStatus === 'CLOSED') return reply.send({ item });
       if (item.status !== 'APPROVED' || item.transferStatus !== 'RECEIVED') return error(reply, 409, 'transfer_not_received', '制品接收回执未到达，暂不能关单');
       if (item.cloudApprovalId) await cloud.closeApproval(item.cloudApprovalId, request.body ?? {});
       return reply.send({ item: store.close(item.requestId, { status: 'CLOSED' }) });

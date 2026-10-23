@@ -440,6 +440,11 @@ export class CloudAdapter {
     const detail = await this.request(EOMS_PATHS.detail, { query: { workNumber: approvalId } });
     const workorderId = detail?.id;
     if (!workorderId) throw cloudError(`cloud work order ${approvalId} has no numeric ID`);
+    // A successful cloud update can be followed by a Core restart before the
+    // local close marker is persisted. Treat an already-ended work order as an
+    // idempotent confirmation so that retrying the Core operation can finish
+    // the local state transition.
+    if (text(detail.currentStep) === '已结束') return detail;
     if (text(detail.currentStep) !== '工单确认' || text(detail.workOrderConfirm) !== '1') {
       throw cloudError(`cloud work order ${approvalId} is not waiting for submitter confirmation`);
     }

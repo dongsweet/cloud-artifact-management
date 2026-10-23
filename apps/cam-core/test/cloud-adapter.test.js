@@ -321,6 +321,19 @@ test('CloudAdapter sends the acting task user and full work-order model for EOMS
   assert.equal(confirmationBody.workOrderNumber, '20261023D7646');
 });
 
+test('CloudAdapter treats an already ended EOMS work order as an idempotent close', async () => {
+  const calls = [];
+  const adapter = new CloudAdapter({
+    baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env,
+    fetchImpl: async (url, options) => {
+      calls.push({ path: new URL(url).pathname, method: options.method ?? 'GET' });
+      return response({ id: 437, currentStep: '已结束', workOrderConfirm: '1' });
+    }
+  });
+  await adapter.closeApproval('20261023D7646');
+  assert.deepEqual(calls, [{ path: EOMS_PATHS.detail, method: 'GET' }]);
+});
+
 test('CloudAdapter fails closed for ended or undocumented EOMS workflow states', () => {
   assert.equal(approvalStatus({ currentStep: '流程提起', workOrderConfirm: '0' }), 'PENDING');
   assert.equal(approvalStatus({ currentStep: '处理工单', workOrderConfirm: '0' }), 'PENDING');

@@ -147,6 +147,10 @@ test('cam-core only authorizes transfer after cloud approval is queried and matc
     assert.equal(closed.statusCode, 200, closed.body);
     assert.equal(closed.json().item.status, 'CLOSED');
     assert.deepEqual(calls.at(-1), ['close', 'APR-1']);
+    const idempotentClose = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/close', payload: {} });
+    assert.equal(idempotentClose.statusCode, 200, idempotentClose.body);
+    assert.equal(idempotentClose.json().item.status, 'CLOSED');
+    assert.deepEqual(calls.at(-1), ['close', 'APR-1'], 'a closed request does not call the cloud again');
     const syncAfterClose = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-1/sync', payload: {} });
     assert.equal(syncAfterClose.json().item.status, 'CLOSED');
     assert.equal(calls.filter(([kind]) => kind === 'get').length, 2, 'the cloud approval is queried only when explicitly synchronized');
