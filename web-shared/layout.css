@@ -35,3 +35,6 @@ body.layout-fixed { min-height: 100vh; background: #f4f6f9; }
   .cam-card-header, .cam-action-header { align-items: flex-start; flex-wrap: wrap; }
   .cam-card-header > :last-child, .cam-action-header > :last-child { margin-left: 0; }
 }
+
+/* Technical hashes, UUIDs and fingerprints are neutral identifiers, not error indicators. */
+code { color: var(--bs-secondary-color); }

@@ -16,7 +16,13 @@ function error(reply, statusCode, code, message) {
 
 function principal(request) {
   if (request.principal && typeof request.principal.id === 'string') {
-    return { principalId: request.principal.id, principalType: request.principal.type ?? 'AUTHENTICATED' };
+    const user = request.principal.user ?? request.principal;
+    return {
+      principalId: request.principal.id,
+      principalType: request.principal.type ?? 'AUTHENTICATED',
+      username: typeof user?.username === 'string' ? user.username : null,
+      displayName: typeof user?.displayName === 'string' ? user.displayName : null
+    };
   }
   throw Object.assign(new Error('authenticated principal is required'), { code: 'principal_required' });
 }
@@ -323,7 +329,8 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
 
   app.post('/api/v1/freezes/:freezeId/submit', async (request, reply) => {
     try {
-      const submitted = await freezes.submit(request.params.freezeId, principal(request).principalId);
+      const actor = principal(request);
+      const submitted = await freezes.submit(request.params.freezeId, actor.principalId, actor);
       // Submission only commits the durable outbox record. Delivery across the
       // mapped channel is deliberately asynchronous and retried by the worker.
       queueMicrotask(() => { void approvalDispatcher.dispatchOne(submitted.freezeId); });

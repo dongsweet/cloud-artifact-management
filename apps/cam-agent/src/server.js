@@ -205,7 +205,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     audit: (type, request, details) => auth.event(type, request.principal?.id, details, request.ip)
   });
   app.get('/api/v1/auth-events', { preHandler: requirePermission('auditRead', '需要审计管理员权限') }, async (request, reply) => {
-    try { return queryAuthEvents(auth.db, 'core_auth_events', request.query ?? {}); }
+    try { return queryAuthEvents(auth.db, 'core_auth_events', request.query ?? {}, { resolvePrincipal: (id) => auth.getUser(id) }); }
     catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'audit_filter_invalid', err.message); }
   });
   app.get('/api/v1/users', { preHandler: userAdmin }, async () => ({ items: auth.listUsers(), roles: AGENT_ROLE_LABELS }));

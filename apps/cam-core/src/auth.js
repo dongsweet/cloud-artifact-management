@@ -113,7 +113,7 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
   });
   app.get('/api/v1/auth-events', async (request, reply) => {
     if (requirePermission(request, reply, 'auditRead', '需要审计管理员权限')) return;
-    try { return queryAuthEvents(auth.db, 'core_auth_events', request.query ?? {}); }
+    try { return queryAuthEvents(auth.db, 'core_auth_events', request.query ?? {}, { resolvePrincipal: (id) => auth.getUser(id) }); }
     catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'audit_filter_invalid', err.message); }
   });
 }

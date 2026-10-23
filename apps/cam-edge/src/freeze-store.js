@@ -26,6 +26,8 @@ export class FreezeStore {
       manifest_json TEXT NOT NULL,
       manifest_sha256 TEXT NOT NULL,
       submitted_by TEXT NOT NULL,
+      submitted_by_username TEXT,
+      submitted_by_display_name TEXT,
       submitted_at TEXT,
       decided_by TEXT,
       decided_at TEXT,
@@ -49,7 +51,9 @@ export class FreezeStore {
       transfer_status: "TEXT NOT NULL DEFAULT 'IDLE'",
       transfer_attempts: 'INTEGER NOT NULL DEFAULT 0',
       transfer_last_error: 'TEXT',
-      transfer_at: 'TEXT'
+      transfer_at: 'TEXT',
+      submitted_by_username: 'TEXT',
+      submitted_by_display_name: 'TEXT'
     };
     for (const [name, definition] of Object.entries(additions)) if (!columns.has(name)) db.exec(`ALTER TABLE round_freezes ADD COLUMN ${name} ${definition}`);
     db.exec(`CREATE TABLE IF NOT EXISTS edge_core_approval_events (
@@ -153,7 +157,7 @@ export class FreezeStore {
       reportTitle: row.report_title, conclusion: row.conclusion, environment: row.environment,
       reportFileName: row.report_file_name, reportSha256: row.report_sha256, reportSize: row.report_size ?? null,
       manifest: JSON.parse(row.manifest_json), manifestSha256: row.manifest_sha256,
-      submittedBy: row.submitted_by, submittedAt: row.submitted_at,
+      submittedBy: row.submitted_by, submittedByUsername: row.submitted_by_username ?? null, submittedByDisplayName: row.submitted_by_display_name ?? null, submittedAt: row.submitted_at,
       decidedBy: row.decided_by, decidedAt: row.decided_at,
       decisionReference: row.decision_reference, decisionComment: row.decision_comment,
       dispatchStatus: row.dispatch_status ?? 'PENDING', dispatchAt: row.dispatch_at,
@@ -217,7 +221,7 @@ export class FreezeStore {
     return this.get(freezeId);
   }
 
-  async submit(freezeId, actorId) {
+  async submit(freezeId, actorId, actor = {}) {
     const freeze = this.get(freezeId);
     if (!freeze) throw Object.assign(new Error('freeze request not found'), { code: 'freeze_not_found' });
     if (freeze.submittedBy !== actorId) throw Object.assign(new Error('只有草稿创建人可以提交固化申请'), { code: 'freeze_owner_required' });
@@ -232,6 +236,8 @@ export class FreezeStore {
     const comparable = (value) => { const { createdAt, ...rest } = value; return JSON.stringify(rest); };
     if (comparable(snapshot) !== comparable(current)) throw Object.assign(new Error('候选清单在申请期间发生变化，请重新创建固化申请'), { code: 'manifest_changed' });
     const timestamp = now();
+    this.db.prepare('UPDATE round_freezes SET submitted_by_username = ?, submitted_by_display_name = ? WHERE freeze_id = ? AND status = \'DRAFT\'')
+      .run(actor.username ?? null, actor.displayName ?? null, freezeId);
     const envelope = {
       schemaVersion: 1,
       type: 'VERIFICATION_APPROVAL_REQUEST',
@@ -251,6 +257,8 @@ export class FreezeStore {
       reportSize: freeze.reportSize,
       conclusion: freeze.conclusion,
       submittedBy: freeze.submittedBy,
+      submittedByUsername: actor.username ?? freeze.submittedByUsername ?? null,
+      submittedByDisplayName: actor.displayName ?? freeze.submittedByDisplayName ?? null,
       submittedAt: timestamp
     };
     await mkdir(this.exchangeDir, { recursive: true });
@@ -279,7 +287,10 @@ export class FreezeStore {
       manifestSha256: freeze.manifestSha256, reportSha256: freeze.reportSha256,
       reportFileName: freeze.reportFileName, reportSize: freeze.reportSize, conclusion: freeze.conclusion,
       manifest: freeze.manifest,
-      submittedBy: freeze.submittedBy, submittedAt: freeze.submittedAt
+      submittedBy: freeze.submittedBy,
+      submittedByUsername: freeze.submittedByUsername ?? null,
+      submittedByDisplayName: freeze.submittedByDisplayName ?? null,
+      submittedAt: freeze.submittedAt
     };
   }
 

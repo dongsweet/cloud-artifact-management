@@ -9,6 +9,12 @@ const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const modal = (id) => bootstrap.Modal.getOrCreateInstance($(`#${id}-modal`));
 export const currentUser = () => user;
+// Human-facing labels keep internal UUIDs out of normal business screens.
+export function userLabel(id) {
+  if (!id) return '-';
+  const known = users.find((item) => item.id === id) ?? (user?.id === id ? user : null);
+  return known ? `${known.displayName}（${known.username}）` : '未知账号';
+}
 export const hasRole = (...roles) => roles.some((r) => user?.roles?.includes(r));
 export function csrfHeaders() {
   const token = document.cookie.split(';').map((s) => s.trim()).find((s) => s.startsWith('cam_csrf='))?.slice(9);
@@ -61,6 +67,13 @@ function applyPermissions() {
 }
 async function acceptSession(result) {
   user = result.user; labels = result.roles;
+  // Core 会在认证会话中返回当前 Edge 可见的用户目录。业务页面只显示
+  // 姓名（用户名），不把内部 UUID 当作人员名称展示。
+  try {
+    const directory = await api('/api/v1/auth/me');
+    users = Array.isArray(directory.users) ? directory.users : [];
+    if (directory.user) user = directory.user;
+  } catch { users = []; }
   $('#account-name').textContent = `${user.displayName} (${user.username})`;
   $('#account-login').classList.add('d-none'); $('.app-wrapper').classList.remove('d-none'); applyPermissions();
   $('#password-title').textContent = user.mustChangePassword ? '修改初始密码' : '修改密码';
@@ -217,9 +230,9 @@ export async function renderAccountView(view) {
     const grants = (await api('/api/v1/download-grants')).items;
     $('#grant-rows').innerHTML = grants.map((g) => {
       const person = g.responsiblePerson ?? {};
-      const personLabel = person.displayName && person.username ? `${person.displayName}（${person.username}）` : person.username || person.displayName || g.principalId || '-';
+      const personLabel = person.displayName && person.username ? `${person.displayName}（${person.username}）` : person.username || person.displayName || '未知账号';
       const roundLabel = g.roundId ? `${esc([g.productName, g.displayVersion, g.roundNo == null ? null : `第 ${g.roundNo} 轮`].filter(Boolean).join(' · '))}<div class="grant-round-id small font-monospace text-body-secondary text-break">${esc(g.roundId)}</div>` : '-';
-      return `<tr><td class="grant-id small font-monospace text-body-secondary text-break">${esc(g.grantId)}</td><td>${roundLabel}</td><td>${esc(personLabel)}${person.id && !person.displayName && !person.username ? `<div class="small text-body-secondary text-break">${esc(person.id)}</div>` : ''}</td><td>${g.items.length}</td><td>${g.usedTotalSessions} / ${g.maxTotalSessions}</td><td>${new Date(g.expiresAt).toLocaleString()}<div>${g.revokedAt ? '已撤销' : Date.parse(g.expiresAt) <= Date.now() ? '已到期' : '有效'}</div></td><td class="grant-actions"><button class="btn btn-outline-primary btn-sm me-2" data-grant-log="${esc(g.grantId)}"><i class="bi bi-eye"></i> 明细</button>${g.createdBy === user.id && !g.revokedAt && hasRole('EDGE_OPERATOR') ? `<button class="btn btn-outline-danger btn-sm" data-revoke-grant="${esc(g.grantId)}">撤销</button>` : ''}</td></tr>`;
+      return `<tr><td class="grant-id small font-monospace text-body-secondary text-break">${esc(g.grantId)}</td><td>${roundLabel}</td><td>${esc(personLabel)}</td><td>${g.items.length}</td><td>${g.usedTotalSessions} / ${g.maxTotalSessions}</td><td>${new Date(g.expiresAt).toLocaleString()}<div>${g.revokedAt ? '已撤销' : Date.parse(g.expiresAt) <= Date.now() ? '已到期' : '有效'}</div></td><td class="grant-actions"><button class="btn btn-outline-primary btn-sm me-2" data-grant-log="${esc(g.grantId)}"><i class="bi bi-eye"></i> 明细</button>${g.createdBy === user.id && !g.revokedAt && hasRole('EDGE_OPERATOR') ? `<button class="btn btn-outline-danger btn-sm" data-revoke-grant="${esc(g.grantId)}">撤销</button>` : ''}</td></tr>`;
     }).join('') || '<tr><td colspan="7" class="text-center text-body-secondary">暂无授权；创建后请及时导出清单。</td></tr>';
     if (selectedGrantId && !grants.some((g) => g.grantId === selectedGrantId)) { selectedGrantId = null; stopGrantDetailPolling(); }
     document.querySelectorAll('[data-grant-log]').forEach((b) => { b.onclick = () => showGrantDetail(b.dataset.grantLog); });

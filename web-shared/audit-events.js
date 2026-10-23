@@ -31,7 +31,7 @@ export function mountAuditEvents(root, api, onError = () => {}) {
     }
     try {
       const result = await api(`/api/v1/auth-events?${params}`);
-      rows.innerHTML = result.items.map((event) => `<tr><td class="text-nowrap">${escapeHtml(event.created_at)}</td><td>${escapeHtml(event.event_type)}</td><td class="text-break">${escapeHtml(event.principal_id ?? '-')}</td><td>${escapeHtml(event.source_address ?? '-')}</td><td><pre class="mb-0 small text-break" style="white-space:pre-wrap">${escapeHtml(event.details_json)}</pre></td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-body-secondary py-4">暂无审计记录</td></tr>';
+      rows.innerHTML = result.items.map((event) => `<tr><td class="text-nowrap">${escapeHtml(event.created_at)}</td><td>${escapeHtml(event.event_type)}</td><td class="text-break">${escapeHtml(event.principal_label ?? (event.principal_id ? '未知账号' : '系统身份'))}</td><td>${escapeHtml(event.source_address ?? '-')}</td><td><pre class="mb-0 small text-break" style="white-space:pre-wrap">${escapeHtml(event.details_json)}</pre></td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-body-secondary py-4">暂无审计记录</td></tr>';
       const start = result.total ? result.offset + 1 : 0;
       const end = Math.min(result.offset + result.items.length, result.total);
       status.textContent = `显示 ${start}–${end} 条，共 ${result.total} 条`;

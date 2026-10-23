@@ -26,6 +26,8 @@ function response(row) {
     revision: Number.isInteger(envelope.revision) ? envelope.revision : 0,
     displayVersion: envelope.displayVersion ?? (Number.isInteger(envelope.revision) && envelope.revision > 0 ? `${envelope.version}-r${envelope.revision}` : envelope.version),
     roundNo: Number.isInteger(envelope.roundNo) ? envelope.roundNo : null, reportTitle: envelope.reportTitle ?? null,
+    submittedBy: envelope.submittedBy ?? null, submittedByUsername: envelope.submittedByUsername ?? null,
+    submittedByDisplayName: envelope.submittedByDisplayName ?? null,
     status: row.status, manifestSha256: row.manifest_sha256, reportSha256: row.report_sha256,
     reportFileName: row.report_file_name, reportSize: row.report_size,
     reportReceived: Boolean(row.report_received_at), reportReceivedSha256: row.report_received_sha256,

@@ -105,7 +105,7 @@ export function registerAuth(app, { auth, principalProvider, keyring, gateConfig
       return { user: result.user, csrfToken: result.csrfToken, roles: ROLE_LABELS };
     } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'login_failed', err.message); }
   });
-  app.get('/api/v1/auth/me', async (request) => ({ user: request.principal.user ?? request.principal, csrfToken: cookies(request).cam_csrf, roles: ROLE_LABELS }));
+  app.get('/api/v1/auth/me', async (request) => ({ user: request.principal.user ?? request.principal, users: auth.listUsers().map(({ id, username, displayName, status, edgeEnabled, roles }) => ({ id, username, displayName, status, edgeEnabled, roles })), csrfToken: cookies(request).cam_csrf, roles: ROLE_LABELS }));
   app.post('/api/v1/auth/logout', async (request, reply) => { auth.logout(request.principal); clear(reply); return { ok: true }; });
   app.post('/api/v1/auth/password', { bodyLimit: 4096 }, async (request, reply) => {
     if (request.principal.type === 'CORE_USER') {
@@ -137,7 +137,7 @@ export function registerAuth(app, { auth, principalProvider, keyring, gateConfig
     return fail(reply, 403, 'users_managed_by_core', 'CAM 账号密码统一由 Core 管理');
   });
   app.get('/api/v1/auth-events', async (request, reply) => {
-    try { return queryAuthEvents(auth.db, 'edge_auth_events', request.query ?? {}); }
+    try { return queryAuthEvents(auth.db, 'edge_auth_events', request.query ?? {}, { resolvePrincipal: (id) => auth.getUser(id) }); }
     catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'audit_filter_invalid', err.message); }
   });
 }

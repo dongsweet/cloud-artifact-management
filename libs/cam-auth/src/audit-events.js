@@ -10,7 +10,7 @@ function day(value, label) {
 }
 
 /** Shared, bounded query for the structurally identical Core and Edge audit tables. */
-export function queryAuthEvents(db, table, filters = {}) {
+export function queryAuthEvents(db, table, filters = {}, { resolvePrincipal = null } = {}) {
   if (!AUDIT_TABLES.has(table)) throw new TypeError('Unsupported audit event table');
   const limitValue = Number(filters.limit ?? 50);
   const offsetValue = Number(filters.offset ?? 0);
@@ -35,5 +35,14 @@ export function queryAuthEvents(db, table, filters = {}) {
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const total = db.prepare(`SELECT COUNT(*) AS total FROM ${table} ${where}`).get(...values).total;
   const items = db.prepare(`SELECT event_id, principal_id, event_type, source_address, details_json, created_at FROM ${table} ${where} ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`).all(...values, limit, offset);
-  return { items, total, limit, offset };
+  const resolved = typeof resolvePrincipal === 'function'
+    ? items.map((item) => {
+      const principal = item.principal_id ? resolvePrincipal(item.principal_id) : null;
+      return {
+        ...item,
+        principal_label: principal ? `${principal.displayName}（${principal.username}）` : item.principal_id ? '未知账号' : '系统身份'
+      };
+    })
+    : items;
+  return { items: resolved, total, limit, offset };
 }
