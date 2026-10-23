@@ -84,6 +84,8 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     return reply.type('font/woff2').send(await readFile(join(sharedAssetRoot, 'fonts', request.params.file)));
   });
   app.get('/assets/layout.css', async (_request, reply) => reply.type('text/css; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'layout.css'))));
+  app.get('/assets/role-display.css', async (_request, reply) => reply.type('text/css; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'role-display.css'))));
+  app.get('/assets/role-display.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'role-display.js'))));
   app.get('/assets/table-pagination.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'table-pagination.js'))));
   app.get('/assets/artifact-catalog.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'artifact-catalog.js'))));
   app.get('/assets/task-table.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'task-table.js'))));

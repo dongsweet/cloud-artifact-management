@@ -44,7 +44,11 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /下载明细/);
   assert.match(html, /下载人/);
   assert.match(html, /data-agent-permission="userAdmin"[\s\S]*?用户与角色/);
-  assert.match(html, /id="new-agent-user"[^>]*>.*?新增账号/s);
+  assert.match(html, /id="new-agent-user"[^>]*>.*?创建账号/s);
+  assert.doesNotMatch(html, /id="users-refresh"/);
+  assert.match(html, /<dialog id="agent-user-dialog" class="cam-account-modal">/);
+  assert.match(html, /import \{ renderRoleGroups \} from "\/assets\/role-display\.js"/);
+  assert.match(html, /renderRoleGroups\(\[\{ scope: 'Agent', roles:/);
   assert.match(html, /id="page-users"/);
   assert.match(html, /id="page-audit"/);
   assert.match(html, /data-page="audit" data-agent-permission="auditRead"/);
@@ -61,4 +65,14 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /mountAaaConfig/);
   assert.match(html, /agentCan\('businessWrite'\)\?async\(item\)/);
   assert.doesNotMatch(html, /window\.alert\s*\(|window\.confirm\s*\(|\balert\s*\(|\bconfirm\s*\(/);
+});
+
+test('Agent account page serves the shared Core role and account presentation assets', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { resolve } = await import('node:path');
+  const serverSource = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
+  assert.match(serverSource, /app\.get\('\/assets\/role-display\.css'/);
+  assert.match(serverSource, /app\.get\('\/assets\/role-display\.js'/);
+  const sharedLayout = await readFile(resolve(process.cwd(), 'web-shared/layout.css'), 'utf8');
+  assert.match(sharedLayout, /\.cam-account-modal \{/);
 });

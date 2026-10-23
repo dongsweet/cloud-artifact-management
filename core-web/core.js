@@ -466,7 +466,7 @@ function ensureUserDialog() {
   const reset = $('#user-reset');
   userDialog = document.createElement('dialog');
   userDialog.id = 'user-editor-dialog';
-  userDialog.className = 'cam-user-modal';
+  userDialog.className = 'cam-account-modal';
   editor.parentElement.insertBefore(userDialog, editor);
   userDialog.append(editor, reset);
   editor.classList.remove('d-none');
