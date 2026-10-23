@@ -29,6 +29,7 @@ test('Edge, Core and Agent shell branding and navigation labels are aligned', as
   assert.ok(coreScript.includes("$('#page-distribution .card-title').textContent = 'Agent 分发'"));
 
   assert.match(agent, /<title>CAM Agent · 制品缓存<\/title>/);
+  assert.match(agent, /\.cam-agent-shell \.app-content\{min-height:auto\}/);
   assert.match(agent, /CAM Agent · 制品缓存/);
   assert.ok(agent.includes('brand-text">CAM Agent'));
   assert.doesNotMatch(agent, /私钥只保存在本机<br>任务由 Core 授权后自动拉取/);
