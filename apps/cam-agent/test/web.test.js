@@ -73,6 +73,9 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /const required=\{identity:'configRead','aaa-config':'configRead',artifacts:'businessRead',tasks:'businessRead',delivery:'deliveryRead',users:'userAdmin',audit:'auditRead'\}/);
   assert.match(html, /async function agentLoadUsers\(\) \{\s*if \(!agentCan\('userAdmin'\)\) return;/);
   assert.doesNotMatch(html, /agentIsSecurityAdmin/);
+  assert.match(html, /function clearMessage\(\)\{const e=\$\('#alert'\);e\.className='alert d-none';e\.textContent=''\}/);
+  assert.match(html, /if\(v==='login'\|\|v==='app'\)clearMessage\(\)/);
+  assert.doesNotMatch(html, /msg\('密码已修改，请重新登录'\)/);
   assert.match(html, /data-page="aaa-config" data-agent-permission="configRead"/);
   assert.match(html, /mountAaaConfig/);
   assert.match(html, /agentCan\('businessWrite'\)\?async\(item\)/);
