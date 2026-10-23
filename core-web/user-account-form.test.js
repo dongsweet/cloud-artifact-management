@@ -15,10 +15,10 @@ test('Core account editor uses a single-column form and explicit local/AAA contr
   assert.doesNotMatch(form, /id="user-auth-source"|class="row g-3"|col-md-6/u);
   assert.match(form, /id="user-core-enabled"[^>]*type="checkbox"[\s\S]*?允许登录 CAM Core/u);
   assert.doesNotMatch(form, /id="user-status"/u);
-  assert.match(form, /id="user-password" type="text"/u);
+  assert.match(form, /id="user-password" type="password"/u);
   assert.match(form, /id="user-edge-enabled"/u);
   assert.doesNotMatch(form, /仅控制 Core 登录|启用 Edge 还需要至少一个 Edge 角色|CAM 不自动同步 AAA 用户/u);
-  assert.match(html, /id="reset-password" type="text"/u);
+  assert.match(html, /id="reset-password" type="password"/u);
   const sharedLayout = await read('../web-shared/layout.css');
   assert.match(sharedLayout, /\.cam-account-modal \{[^}]*width: min\(560px/u);
   assert.match(sharedLayout, /\.cam-account-modal > \.card \{[^}]*width: 100%; min-width: 0; max-width: 100%;/u);
