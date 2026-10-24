@@ -19,6 +19,8 @@ test('Edge sidebar groups business, management, security and audit pages like Co
   }
   assert.match(html, /id="gate-config-nav" data-menu-group-item="management"/u);
   assert.match(html, /data-menu-group-item="business"><a href="#candidates"/u);
+  assert.doesNotMatch((await read('./app.js')), /freeze-transfer-retry/u);
+  assert.doesNotMatch((await read('../apps/cam-edge/src/routes.js')), /freezes\/:freezeId\/transfer\/retry/u);
   assert.match(html, /id="candidate-summary"/u);
   assert.match(html, /只读文件资产总览/u);
   assert.match(script, /id="grants-nav" data-menu-group-item="business"/u);

@@ -394,7 +394,7 @@ export class FreezeStore {
     return this.get(freezeId);
   }
   resetTransfer(freezeId) {
-    this.db.prepare("UPDATE round_freezes SET transfer_status = 'READY', transfer_retry_at = ?, transfer_retry_exhausted = 0, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('FAILED','SENDING')").run(now(), now(), freezeId);
+    this.db.prepare("UPDATE round_freezes SET transfer_status = 'READY', transfer_last_error = NULL, transfer_error_code = NULL, transfer_retry_at = ?, transfer_retry_exhausted = 0, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('FAILED','SENDING')").run(now(), now(), freezeId);
     return this.get(freezeId);
   }
   markTransferFailure(freezeId, error, { retryAt = null, exhausted = false } = {}) {

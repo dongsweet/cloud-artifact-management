@@ -1013,6 +1013,18 @@ export class CoreStore {
     return { item: this.get(requestId), idempotent: false };
   }
 
+  markEdgeTransferRetryRequested(requestId) {
+    const current = this.get(requestId);
+    if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
+    if (current.status !== 'APPROVED' || !current.transferTaskId) throw Object.assign(new Error('当前申请没有可重试的 Edge → Core 传输任务'), { code: 'transfer_retry_unavailable' });
+    const task = this.db.prepare('SELECT edge_status FROM core_transfer_tasks WHERE request_id = ? AND transfer_task_id = ?').get(requestId, current.transferTaskId);
+    if (!task) throw Object.assign(new Error('传输任务不存在'), { code: 'transfer_task_not_found' });
+    if (task.edge_status === 'RECEIVED') return { item: current, idempotent: true };
+    const timestamp = now();
+    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RETRY_WAIT', edge_retry_at = NULL, edge_failure_terminal = 0, updated_at = ? WHERE request_id = ? AND transfer_task_id = ?").run(timestamp, requestId, current.transferTaskId);
+    return { item: this.get(requestId), idempotent: false };
+  }
+
   receiveReceipt(input = {}) {
     const requestId = required(input.requestId, 'requestId');
     const transferTaskId = required(input.transferTaskId, 'transferTaskId');

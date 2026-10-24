@@ -36,7 +36,7 @@ export function registerAuth(app, { auth, principalProvider, keyring, gateConfig
     const path = request.url.split('?')[0];
     if (!path.startsWith('/api/')) return;
     reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer');
-    if (/^\/api\/v1\/gate\/(?:approval-results|transfer-requests|pairing-probe|identity-rotation\/proposals|key-rotation\/proposals(?:\/[^/]+\/confirm)?|transfer\/reports\/[^/]+)$/.test(path)) return;
+    if (/^\/api\/v1\/gate\/(?:approval-results|transfer-requests|transfer-retry|pairing-probe|identity-rotation\/proposals|key-rotation\/proposals(?:\/[^/]+\/confirm)?|transfer\/reports\/[^/]+)$/.test(path)) return;
     const jar = cookies(request);
     request.principal = principalProvider ? await principalProvider(request) : auth.resolve(jar.cam_session);
     // Edge 会话不把角色当作永久快照。每个受保护请求都从 Core 获取当前授权，
@@ -71,7 +71,7 @@ export function registerAuth(app, { auth, principalProvider, keyring, gateConfig
     else if (path === '/api/v1/validators') required = writing ? EDGE_PERMISSION_ROLES.validatorWrite : EDGE_PERMISSION_ROLES.validatorRead;
     else if (path.startsWith('/api/v1/download-grants')) required = writing ? EDGE_PERMISSION_ROLES.validatorWrite : EDGE_PERMISSION_ROLES.validatorRead;
     else if (/^\/api\/v1\/rounds\/[^/]+\/freezes$/.test(path)) required = writing ? EDGE_PERMISSION_ROLES.validatorWrite : [...EDGE_PERMISSION_ROLES.validatorRead, 'EDGE_OPERATOR'];
-    else if (/^\/api\/v1\/freezes\/[^/]+\/(report|submit|dispatch|transfer\/retry)$/.test(path)) required = EDGE_PERMISSION_ROLES.validatorWrite;
+    else if (/^\/api\/v1\/freezes\/[^/]+\/(report|submit|dispatch)$/.test(path)) required = EDGE_PERMISSION_ROLES.validatorWrite;
     else if (/^\/api\/v1\/freezes\/[^/]+\/decision$/.test(path)) required = ['EDGE_OPERATOR'];
     else if (/^\/api\/v1\/freezes\/[^/]+\/report-file$/.test(path)) required = [...EDGE_PERMISSION_ROLES.validatorRead, 'EDGE_OPERATOR'];
     else required = writing ? EDGE_PERMISSION_ROLES.candidateWrite : EDGE_PERMISSION_ROLES.candidateRead;

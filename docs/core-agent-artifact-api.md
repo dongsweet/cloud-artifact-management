@@ -93,7 +93,7 @@ Core 分发页面使用业务只读接口 `GET /api/v1/distribution-agents` 获�
 GET /api/v1/approval-requests/:requestId/transfer-progress
 ```
 
-响应包含传输任务通知状态、总体状态、文件/字节汇总，以及每个文件的 SHA-256、已接收分块数、分块总数、已接收字节和本机是否已入库。总体状态包括 `WAITING_AUTHORIZATION`、`WAITING_EDGE`、`RETRY_WAIT`、`RECEIVING`、`VERIFYING`、`FAILED` 和 `COMPLETED`。Edge 每次传输失败都会通过受签名保护的 `POST /api/v1/gate/transfer-failures` 回告错误码、错误信息、尝试次数、下次重试时间和是否已达到自动重试上限；Core 在 `edgeFailure` 字段和页面上显示这些信息。自动重试使用网闸配置中的“最大重试次数”，达到上限后停止，具备权限的人员可在 Edge 侧手动重试。相同 SHA-256 被多个包引用时，每个包仍单独展示清单进度，但已存在的内容寻址对象标记为可复用，不会重复占用存储空间。
+响应包含传输任务通知状态、总体状态、文件/字节汇总，以及每个文件的 SHA-256、已接收分块数、分块总数、已接收字节和本机是否已入库。总体状态包括 `WAITING_AUTHORIZATION`、`WAITING_EDGE`、`RETRY_WAIT`、`RECEIVING`、`VERIFYING`、`FAILED` 和 `COMPLETED`。Edge 每次传输失败都会通过受签名保护的 `POST /api/v1/gate/transfer-failures` 回告错误码、错误信息、尝试次数、下次重试时间和是否已达到自动重试上限；Core 在 `edgeFailure` 字段和页面上显示这些信息。自动重试使用网闸配置中的“最大重试次数”，达到上限后停止；具备 Core 业务操作权限的人员可在 Core 侧调用 `POST /api/v1/approval-requests/:requestId/transfer/retry`，由 Core 向 Edge 下发签名重试指令。Edge 只接受该网闸指令，不提供浏览器重试入口。相同 SHA-256 被多个包引用时，每个包仍单独展示清单进度，但已存在的内容寻址对象标记为可复用，不会重复占用存储空间。
 
 ### 下载正式制品
 

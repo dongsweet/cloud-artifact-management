@@ -285,6 +285,37 @@ test('Core accepts Edge transfer failure reports without a browser session', asy
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Core sends a signed Edge transfer retry instruction from the Core API', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-transfer-retry-'));
+  const calls = [];
+  const app = await buildCoreApp({
+    dataDir,
+    enableAuth: false,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options, payload: JSON.parse(options.body) });
+      return Response.json({ accepted: true, requestId: 'FREEZE-TRANSFER-RETRY', transferTaskId: 'TR-TRANSFER-RETRY', status: 'QUEUED', idempotent: false }, { status: 202 });
+    }
+  });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
+  app.gateConfigStore.save({ edgeControlUrl: 'http://edge-map:3101', edgeTransferUrl: 'http://edge-map:3101' }, 'test');
+  try {
+    const requestId = 'FREEZE-TRANSFER-RETRY';
+    app.coreStore.receiveApproval({ ...envelope, requestId, freezeId: requestId });
+    app.coreStore.applyCloudStatus(requestId, { approvalId: 'APR-TRANSFER-RETRY', status: 'APPROVED', transferTaskId: 'TR-TRANSFER-RETRY', manifestSha256 });
+    app.coreStore.authorizeTransfer(requestId, { manifestSha256, transferTaskId: 'TR-TRANSFER-RETRY' });
+    app.coreStore.recordEdgeTransferFailure({ requestId, freezeId: requestId, transferTaskId: 'TR-TRANSFER-RETRY', manifestSha256, attempt: 5, code: 'ENOSPC', message: '磁盘空间不足', terminal: true });
+    const response = await app.inject({ method: 'POST', url: `/api/v1/approval-requests/${requestId}/transfer/retry`, payload: {} });
+    assert.equal(response.statusCode, 202, response.body);
+    assert.equal(response.json().edgeStatus, 'QUEUED');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'http://edge-map:3101/api/v1/gate/transfer-retry');
+    assert.equal(typeof calls[0].options.headers['x-cam-gate-signature'], 'string');
+    assert.deepEqual(calls[0].payload, { requestId, freezeId: requestId, transferTaskId: 'TR-TRANSFER-RETRY', manifestSha256 });
+    assert.equal(app.coreStore.get(requestId).transferEdgeStatus, 'RETRY_WAIT');
+    assert.equal(app.coreStore.get(requestId).transferEdgeLastError, '磁盘空间不足', 'the previous Edge error remains visible until a new report arrives');
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Core polls cloud approval status and reliably pushes only the decision to Edge', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-decision-callback-'));
   const callbacks = [];

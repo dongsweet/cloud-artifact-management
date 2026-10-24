@@ -25,6 +25,8 @@ test('Core approval details keep the primary workflow visible and the file list 
   assert.match(script, /transfer-progress/u);
   assert.match(script, /Edge → Core 接收进度/u);
   assert.match(script, /文件与分块明细/u);
+  assert.match(script, /edge-transfer-retry-button/u);
+  assert.match(script, /approval-requests\/\$\{encodeURIComponent\(id\)\}\/transfer\/retry/u);
   assert.match(css, /\.cam-detail-advanced > summary \{[\s\S]*?cursor: pointer/u);
   assert.match(css, /\.cam-transfer-progress-summary/u);
 });

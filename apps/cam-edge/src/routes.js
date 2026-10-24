@@ -144,7 +144,7 @@ export async function finalizeCandidate(store, candidateId) {
 export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher, artifactDispatcher }) {
   app.addHook('preHandler', async (request, reply) => {
     const url = request.url.split('?')[0];
-    const exchangePath = url === '/api/v1/gate/pairing-probe' || url === '/api/v1/gate/approval-results' || url === '/api/v1/gate/transfer-requests' || url === '/api/v1/gate/identity-rotation/proposals' || url.startsWith('/api/v1/gate/transfer/reports/');
+    const exchangePath = url === '/api/v1/gate/pairing-probe' || url === '/api/v1/gate/approval-results' || url === '/api/v1/gate/transfer-requests' || url === '/api/v1/gate/transfer-retry' || url === '/api/v1/gate/identity-rotation/proposals' || url.startsWith('/api/v1/gate/transfer/reports/');
     if (!exchangePath) return;
     const status = await keyring.status();
     const pairingProbe = url === '/api/v1/gate/pairing-probe';
@@ -277,13 +277,24 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       return error(reply, status, err.code ?? 'transfer_request_rejected', err.message);
     }
   });
-  app.post('/api/v1/freezes/:freezeId/transfer/retry', async (request, reply) => {
-    const freeze = freezes.get(request.params.freezeId);
+  // Edge → Core 的传输由 Core 统一调度。此受控网闸接口只接受 Core
+  // 的签名指令，浏览器用户不能在 Edge 侧直接启动重试。
+  app.post('/api/v1/gate/transfer-retry', { bodyLimit: 16 * 1024 }, async (request, reply) => {
+    const body = request.body ?? {};
+    const requestId = String(body.requestId ?? '').trim();
+    const freezeId = String(body.freezeId ?? '').trim();
+    const transferTaskId = String(body.transferTaskId ?? '').trim();
+    const manifestSha256 = String(body.manifestSha256 ?? '').trim().toLowerCase();
+    if (!requestId || requestId !== freezeId || !transferTaskId || !/^[a-f0-9]{64}$/.test(manifestSha256)) return error(reply, 400, 'invalid_transfer_retry', 'Core 传输重试指令格式无效');
+    const freeze = freezes.get(freezeId);
     if (!freeze) return error(reply, 404, 'freeze_not_found', '固化申请不存在');
-    if (freeze.status !== 'APPROVED' || !freeze.transferTaskId || !['FAILED', 'SENDING'].includes(freeze.transferStatus)) return error(reply, 409, 'transfer_retry_unavailable', '当前传输状态不支持手动重试');
-    freezes.resetTransfer(freeze.freezeId);
-    const item = await artifactDispatcher.deliver(freeze.freezeId);
-    return reply.send({ item });
+    if (freeze.status !== 'APPROVED' || freeze.transferTaskId !== transferTaskId || freeze.manifestSha256.toLowerCase() !== manifestSha256) return error(reply, 409, 'transfer_retry_conflict', '传输重试指令与 Edge 审批记录不匹配');
+    if (freeze.transferStatus === 'RECEIVED') return reply.send({ accepted: true, requestId, transferTaskId, status: 'RECEIVED', idempotent: true });
+    if (freeze.transferStatus === 'SENDING') return reply.code(202).send({ accepted: true, requestId, transferTaskId, status: 'SENDING', idempotent: true });
+    if (freeze.transferStatus !== 'FAILED') return error(reply, 409, 'transfer_retry_unavailable', '当前传输状态不支持重试');
+    freezes.resetTransfer(freezeId);
+    void artifactDispatcher.deliver(freezeId).catch(() => {});
+    return reply.code(202).send({ accepted: true, requestId, transferTaskId, status: 'QUEUED', idempotent: false });
   });
   app.get('/api/v1/rounds/:roundId/freezes', async (request, reply) => {
     if (!store.getRound(request.params.roundId)) return error(reply, 404, 'round_not_found', 'round not found');

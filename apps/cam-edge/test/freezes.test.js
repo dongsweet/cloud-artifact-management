@@ -144,6 +144,33 @@ test('Edge accepts only authenticated, idempotent Core approval-result callbacks
   } finally { await app.close(); }
 });
 
+test('Edge accepts transfer retry only as a signed Core instruction', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-transfer-retry-'));
+  const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'test-admin', type: 'TEST_IDP', roles: ['EDGE_SYSTEM_ADMIN', 'EDGE_OPERATOR'] }) });
+  await trustTestPeer(app.gateKeyring, dataDir, 'core');
+  const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Retry product' } })).json();
+  const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '1.0' } })).json();
+  const freezeId = 'FREEZE-TRANSFER-RETRY';
+  const transferTaskId = 'TR-TRANSFER-RETRY';
+  const manifestSha256 = 'a'.repeat(64);
+  const timestamp = new Date().toISOString();
+  app.candidateStore.db.prepare(`INSERT INTO round_freezes
+    (freeze_id, round_id, status, report_title, conclusion, environment, manifest_json, manifest_sha256, submitted_by, submitted_at, created_at, updated_at, transfer_task_id, transfer_status, transfer_attempts, transfer_last_error, transfer_error_code, transfer_retry_exhausted)
+    VALUES (?, ?, 'APPROVED', 'Retry report', 'PASS', 'test', ?, ?, 'validator', ?, ?, ?, ?, 'FAILED', 3, '磁盘空间不足', 'ENOSPC', 1)`)
+    .run(freezeId, release.initialRound.roundId, JSON.stringify({ items: [] }), manifestSha256, timestamp, timestamp, timestamp, transferTaskId);
+  try {
+    const payload = { requestId: freezeId, freezeId, transferTaskId, manifestSha256 };
+    const path = '/api/v1/gate/transfer-retry';
+    const unauthorized = await app.inject({ method: 'POST', url: path, payload });
+    assert.equal(unauthorized.statusCode, 401, unauthorized.body);
+    const accepted = await app.inject({ method: 'POST', url: path, headers: await signedTestHeaders(app.gateKeyring, 'POST', path, payload), payload });
+    assert.equal(accepted.statusCode, 202, accepted.body);
+    assert.deepEqual(accepted.json(), { accepted: true, requestId: freezeId, transferTaskId, status: 'QUEUED', idempotent: false });
+    assert.ok(['READY', 'SENDING', 'FAILED'].includes(app.freezeStore.get(freezeId).transferStatus));
+    assert.notEqual(app.freezeStore.get(freezeId).transferLastError, '磁盘空间不足', 'a new attempt clears the previous Edge error before reporting a new result');
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Edge records a Core withdrawal callback and leaves the round available for a new request', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-core-withdrawal-'));
   const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'test-admin', type: 'TEST_IDP', roles: ['EDGE_SYSTEM_ADMIN', 'EDGE_OPERATOR'] }) });

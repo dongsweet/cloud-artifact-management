@@ -627,6 +627,32 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     return item ? reply.send({ item }) : error(reply, 404, 'request_not_found', 'approval request not found');
   });
 
+  app.post('/api/v1/approval-requests/:requestId/transfer/retry', { bodyLimit: 4096 }, async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
+    const item = store.get(request.params.requestId);
+    if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
+    if (item.status !== 'APPROVED' || !item.transferTaskId || !['FAILED', 'RETRY_WAIT'].includes(item.transferEdgeStatus)) return error(reply, 409, 'transfer_retry_unavailable', '当前 Edge → Core 传输状态不支持重试');
+    const config = gateConfig.get();
+    if (!config.edgeControlUrl) return error(reply, 503, 'gate_address_missing', 'Edge 传输控制地址尚未配置');
+    const path = '/api/v1/gate/transfer-retry';
+    const payload = { requestId: item.requestId, freezeId: item.freezeId, transferTaskId: item.transferTaskId, manifestSha256: item.manifestSha256 };
+    const body = JSON.stringify(payload);
+    try {
+      const response = await fetchImpl(`${config.edgeControlUrl.replace(/\/$/u, '')}${path}`, {
+        method: 'POST',
+        headers: await keyring.requestHeaders('POST', path, body, { 'content-type': 'application/json' }),
+        body,
+        signal: AbortSignal.timeout(config.connectTimeoutMs)
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) return error(reply, response.status >= 500 ? 502 : response.status, result.error?.code ?? 'transfer_retry_failed', result.error?.message ?? `Edge 接收重试指令失败（HTTP ${response.status}）`);
+      if (result.accepted !== true || result.requestId !== item.requestId || result.transferTaskId !== item.transferTaskId) return error(reply, 502, 'transfer_retry_ack_invalid', 'Edge 未确认接收传输重试指令');
+      const idempotentState = ['RECEIVED', 'SENDING'].includes(result.status);
+      const updated = idempotentState ? { item, idempotent: true } : store.markEdgeTransferRetryRequested(item.requestId);
+      return reply.code(idempotentState && result.status === 'RECEIVED' ? 200 : 202).send({ item: updated.item, idempotent: Boolean(result.idempotent || updated.idempotent), edgeStatus: result.status });
+    } catch (err) { return error(reply, 502, err.code ?? 'transfer_retry_failed', err.message); }
+  });
+
   app.post('/api/v1/approval-requests/:requestId/retry', async (request, reply) => {
     if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
     const item = store.get(request.params.requestId);
