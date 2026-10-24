@@ -424,7 +424,8 @@ export class CoreStore {
   listCloudApprovalPending() {
     return this.db.prepare(`SELECT r.request_id FROM core_approval_requests r
       WHERE (r.status IN ('CLOUD_SUBMITTED','CLOUD_STATUS_UNCONFIRMED') AND r.cloud_approval_id IS NOT NULL)
-         OR (r.status IN ('APPROVED','REJECTED','WITHDRAWN') AND NOT EXISTS (SELECT 1 FROM core_approval_result_outbox o WHERE o.request_id = r.request_id))
+          OR (r.status IN ('APPROVED','WITHDRAWN') AND NOT EXISTS (SELECT 1 FROM core_approval_result_outbox o WHERE o.request_id = r.request_id))
+          OR (r.status = 'REJECTED' AND (r.close_status IS NULL OR r.close_status <> 'CLOSED'))
       ORDER BY COALESCE(r.cloud_checked_at, r.created_at) ASC LIMIT 100`).all().map((row) => row.request_id);
   }
   enqueueApprovalResult(requestId) {
@@ -852,6 +853,14 @@ export class CoreStore {
   }
 
   markError(requestId, error) { this.db.prepare('UPDATE core_approval_requests SET last_error = ?, updated_at = ? WHERE request_id = ?').run(String(error?.message ?? error).slice(0, 1000), now(), requestId); return this.get(requestId); }
+
+  markCloudClosed(requestId) {
+    const current = this.get(requestId);
+    if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
+    const timestamp = now();
+    this.db.prepare("UPDATE core_approval_requests SET close_status = 'CLOSED', close_checked_at = ?, last_error = NULL, updated_at = ? WHERE request_id = ?").run(timestamp, timestamp, requestId);
+    return this.get(requestId);
+  }
 
   withdraw(requestId, actorId = null) {
     const current = this.get(requestId);

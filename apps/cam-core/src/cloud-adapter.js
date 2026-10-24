@@ -129,7 +129,8 @@ function approvalResponseSummary(detail, approvalCode) {
     }
   };
   visit(detail);
-  const unique = [...new Set(values.map((value) => text(value).replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim()).filter(Boolean))];
+  const unique = [...new Set(values.map((value) => text(value).replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim())
+    .filter((value) => value && !/^确认通过[。.!！]*$/u.test(value)))];
   return maskApprovalCode(unique.join('；'), approvalCode).slice(0, 2000);
 }
 

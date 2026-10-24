@@ -201,6 +201,33 @@ test('Core can withdraw an unapproved request locally without calling Cloud', as
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Core automatically closes a rejected Cloud work order', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-rejected-close-'));
+  const calls = [];
+  const app = await buildCoreApp({
+    dataDir,
+    enableAuth: false,
+    cloudAdapter: {
+      async closeApproval(approvalId, body) { calls.push({ approvalId, body }); return { status: 'CLOSED' }; }
+    }
+  });
+  try {
+    app.coreStore.receiveApproval({ ...envelope, requestId: 'FREEZE-REJECTED', freezeId: 'FREEZE-REJECTED' });
+    app.coreStore.markCloudSubmitted('FREEZE-REJECTED', { approvalId: 'APR-REJECTED', status: 'PENDING' });
+    app.coreStore.applyCloudStatus('FREEZE-REJECTED', {
+      approvalId: 'APR-REJECTED', status: 'REJECTED', workflowStep: '工单确认', cloudResponseSummary: '挺好的'
+    });
+    const synced = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-REJECTED/sync', payload: {} });
+    assert.equal(synced.statusCode, 200, synced.body);
+    assert.equal(synced.json().item.status, 'REJECTED');
+    assert.equal(synced.json().item.closeStatus, 'CLOSED');
+    assert.deepEqual(calls, [{ approvalId: 'APR-REJECTED', body: { reason: '审批未通过，Core 已自动关闭云管工单。' } }]);
+    const repeated = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-REJECTED/sync', payload: {} });
+    assert.equal(repeated.statusCode, 200, repeated.body);
+    assert.equal(calls.length, 1, 'a rejected work order is closed only once');
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Core notifies Edge when an approval request is withdrawn', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-withdraw-callback-'));
   const callbacks = [];

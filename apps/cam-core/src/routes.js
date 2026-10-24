@@ -116,18 +116,31 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
       app.log.warn?.({ requestId, attempt: item?.cloudSubmissionAttempts, retryAt, code: err.code, message: err.message }, '云管工单创建失败，将自动重试');
     } finally { cloudInFlight.delete(requestId); }
   };
+  const closeRejectedCloudApproval = async (item) => {
+    if (item.status !== 'REJECTED' || !item.cloudApprovalId || item.closeStatus === 'CLOSED') return item;
+    if (typeof cloud.closeApproval !== 'function') throw Object.assign(new Error('当前云管适配器未实现自动关单'), { code: 'cloud_close_unavailable' });
+    await cloud.closeApproval(item.cloudApprovalId, { reason: '审批未通过，Core 已自动关闭云管工单。' });
+    return store.markCloudClosed(item.requestId);
+  };
   const syncCloudStatus = async (requestId) => {
     if (cloudStatusInFlight.has(requestId)) return store.get(requestId);
     const current = store.get(requestId);
     if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
-    if (['APPROVED', 'REJECTED', 'WITHDRAWN'].includes(current.status)) {
+    if (current.status === 'REJECTED') {
+      const closed = await closeRejectedCloudApproval(current);
+      cloudStatusNextAttempt.delete(requestId);
+      store.enqueueApprovalResult(requestId);
+      return closed;
+    }
+    if (['APPROVED', 'WITHDRAWN'].includes(current.status)) {
       store.enqueueApprovalResult(requestId);
       return current;
     }
     if (!current.cloudApprovalId || !['CLOUD_SUBMITTED', 'CLOUD_STATUS_UNCONFIRMED'].includes(current.status)) return current;
     cloudStatusInFlight.add(requestId);
     try {
-      const updated = store.applyCloudStatus(requestId, await cloud.getApproval(current.cloudApprovalId, { ...current, approvalCode: store.approvalCode(requestId) }));
+      let updated = store.applyCloudStatus(requestId, await cloud.getApproval(current.cloudApprovalId, { ...current, approvalCode: store.approvalCode(requestId) }));
+      if (updated.status === 'REJECTED') updated = await closeRejectedCloudApproval(updated);
       if (['APPROVED', 'REJECTED'].includes(updated.status)) {
         store.enqueueApprovalResult(requestId);
         cloudStatusNextAttempt.delete(requestId);
