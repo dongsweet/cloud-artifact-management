@@ -279,9 +279,7 @@ async function showDetail(id) {
   dialog.dataset.requestId = id;
   $('#detail .card-title').textContent = requestSubject(item);
   const cloudKicker = item.status === 'WITHDRAWN' ? '云管：已忽略（本地撤回）' : (cloudStatusLabels[item.cloudStatus] ? `云管：${cloudStatusLabels[item.cloudStatus]}` : '云管：未提交');
-  const localStatusLabel = statusLabels[item.status] ?? item.status;
-  const localStatusBadge = cloudKicker.endsWith(localStatusLabel) ? '' : `<span class="badge text-bg-${item.status === 'WITHDRAWN' ? 'secondary' : item.status === 'APPROVED' ? 'success' : item.status === 'REJECTED' ? 'danger' : 'warning'} ms-2">${escapeHtml(localStatusLabel)}</span>`;
-  $('#detail-kicker').innerHTML = `固化申请详情 <span class="badge text-bg-${item.status === 'WITHDRAWN' ? 'secondary' : item.cloudStatus === 'APPROVED' ? 'success' : item.cloudStatus === 'REJECTED' ? 'danger' : 'warning'} ms-2">${escapeHtml(cloudKicker)}</span>${localStatusBadge}`;
+  $('#detail-kicker').innerHTML = `固化申请详情 <span class="badge text-bg-${item.status === 'WITHDRAWN' ? 'secondary' : item.cloudStatus === 'APPROVED' ? 'success' : item.cloudStatus === 'REJECTED' ? 'danger' : 'warning'} ms-2">${escapeHtml(cloudKicker)}</span><span class="badge text-bg-${item.status === 'WITHDRAWN' ? 'secondary' : item.status === 'APPROVED' ? 'success' : item.status === 'REJECTED' ? 'danger' : 'warning'} ms-2">${escapeHtml(statusLabels[item.status] ?? item.status)}</span>`;
   $('#detail-request-id').textContent = item.requestId ?? '';
   const cloudRetryStatus = item.status === 'CLOUD_PENDING'
     ? `${submissionStateLabels[item.cloudSubmissionState] ?? '等待提交'}（累计 ${item.cloudSubmissionAttempts ?? 0} 次）`
