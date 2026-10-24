@@ -10,6 +10,7 @@ test('Core approval details keep the primary workflow visible and the file list 
   assert.match(html, /id="detail-kicker"/u);
   assert.match(html, /id="detail-request-id"/u);
   assert.match(script, /const cloudKicker = .*cloudStatusLabels/su);
+  assert.match(script, /cloudKicker\.endsWith\(localStatusLabel\)/u);
   assert.doesNotMatch(script, /技术标识与摘要/u);
   assert.doesNotMatch(script, /审批暗号/u);
   assert.doesNotMatch(script, /云管附件标识/u);
