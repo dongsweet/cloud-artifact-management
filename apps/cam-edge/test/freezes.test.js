@@ -28,7 +28,7 @@ test('completed round report stays immutable while approval is pending and Edge 
   assert.equal(draft.manifest.items[0].actualSha256, sha256(payload));
   assert.equal(draft.manifestSha256.length, 64);
   const approvalEnvelope = app.freezeStore.approvalEnvelope(draft.freezeId);
-  assert.deepEqual([approvalEnvelope.productName, approvalEnvelope.version, approvalEnvelope.roundNo, approvalEnvelope.reportTitle], ['Stack', '8.0.6.2', 1, 'Stack 8.0.6.2 验证报告']);
+  assert.deepEqual([approvalEnvelope.productName, approvalEnvelope.version, approvalEnvelope.roundNo, approvalEnvelope.reportTitle, approvalEnvelope.environment], ['Stack', '8.0.6.2', 1, 'Stack 8.0.6.2 验证报告', '验证环境 A']);
   const pdf = Buffer.from('%PDF-1.4\nreport');
   identity = { id: 'validator-2', type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] };
   const otherValidatorUpload = await app.inject({ method: 'PUT', url: `/api/v1/freezes/${draft.freezeId}/report`, headers: { 'content-type': 'application/pdf', 'x-report-filename': 'verification.pdf' }, payload: pdf });

@@ -108,7 +108,7 @@ test('CloudAdapter resolves environment-specific IDs and creates an EOMS work or
     throw new Error(`unexpected request ${parsed.pathname}`);
   };
   const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env: { ...env, CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS: '2308' }, fetchImpl });
-  const result = await adapter.createApproval({ requestId: 'FREEZE-1', releaseId: 'REL-1', roundId: 'ROUND-1', productName: '曙光云 Stack', version: '8.0.6.2', roundNo: 2, reportTitle: '曙光云 Stack 8.0.6.2 验证报告', conclusion: 'PASS', approvalCode: 'c'.repeat(64), manifestSha256: 'a'.repeat(64), reportSha256: 'b'.repeat(64), reportFileName: 'report.pdf' }, { ...env, processUserNames: 'zhuren_luan' });
+  const result = await adapter.createApproval({ requestId: 'FREEZE-1', releaseId: 'REL-1', roundId: 'ROUND-1', productName: '曙光云 Stack', version: '8.0.6.2', roundNo: 2, reportTitle: '曙光云 Stack 8.0.6.2 验证报告', environment: '验证环境 A', conclusion: 'PASS', approvalCode: 'c'.repeat(64), manifestSha256: 'a'.repeat(64), reportSha256: 'b'.repeat(64), reportFileName: 'report.pdf' }, { ...env, processUserNames: 'zhuren_luan' });
   assert.equal(result.approvalId, '20261012D1234');
   assert.equal(result.mappingSnapshot.priority.id, '394');
   assert.equal(result.mappingSnapshot.businessType.id, '231');
@@ -122,6 +122,7 @@ test('CloudAdapter resolves environment-specific IDs and creates an EOMS work or
   assert.equal(result.requestBody.title, '云平台制品验证报告审批 曙光云 Stack 8.0.6.2 第 2 轮固化申请');
   assert.match(result.requestBody.workOrderDetail, /软件产品：曙光云 Stack/u);
   assert.match(result.requestBody.workOrderDetail, /候选轮次：第 2 轮/u);
+  assert.match(result.requestBody.workOrderDetail, /验证环境：验证环境 A/u);
   assert.match(result.requestBody.workOrderDetail, /^<p><strong>审批同意暗号（回复必须包含）：c{64}<\/strong><\/p>/u);
   assert.match(result.requestBody.workOrderDetail, /发布申请编号：FREEZE-1/u);
   assert.match(result.requestBody.workOrderDetail, /CAM-METADATA/iu);

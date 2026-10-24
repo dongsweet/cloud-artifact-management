@@ -319,7 +319,7 @@ async function showDetail(id) {
   const storedFiles = files.filter((file) => file.stored).length;
   $('#fields').innerHTML = `
     <section class="cam-detail-section"><h4><i class="bi bi-box-seam me-2"></i>发布信息</h4><div class="cam-detail-grid">
-      ${textField('软件产品', item.productName)}${detailField('软件版本', versionPanel)}${detailField('候选轮次', roundPanel)}${textField('验证报告标题', item.reportTitle ?? '旧版请求未携带')}${textField('提交人', submitterLabel)}
+      ${textField('软件产品', item.productName)}${detailField('软件版本', versionPanel)}${detailField('候选轮次', roundPanel)}${textField('验证报告标题', item.reportTitle ?? '旧版请求未携带')}${textField('验证环境', item.environment ?? '旧版请求未携带')}${textField('提交人', submitterLabel)}
     </div></section>
     <section class="cam-detail-section"><h4><i class="bi bi-arrow-left-right me-2"></i>处理状态</h4><div class="cam-detail-grid">
       ${detailField('云管审批', cloudApprovalPanel)}${detailField('云管提交', retryPanel)}${detailField('正式制品传输', transferPanel)}${detailField('验证报告', reportPanel)}

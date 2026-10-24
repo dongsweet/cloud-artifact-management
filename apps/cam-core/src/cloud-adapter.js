@@ -328,6 +328,7 @@ export class CloudAdapter {
       `<p>软件版本：${html(displayVersion ?? '旧版请求未提供')}</p>`,
       `<p>候选轮次：${Number.isInteger(envelope.roundNo) ? `第 ${envelope.roundNo} 轮` : '旧版请求未提供'}</p>`,
       ...(envelope.reportTitle ? [`<p>验证报告标题：${html(envelope.reportTitle)}</p>`] : []),
+      ...(envelope.environment ? [`<p>验证环境：${html(envelope.environment)}</p>`] : []),
       `<p>发布申请编号：${html(envelope.requestId)}</p>`,
       `<p>验证结论：${html(envelope.conclusion)}</p>`,
       `<p>报告文件：${html(envelope.reportFileName)}</p>`,
