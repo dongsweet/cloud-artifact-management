@@ -117,20 +117,20 @@ function html(value) {
 
 function approvalResponseSummary(detail, approvalCode) {
   const values = [];
-  const visit = (node) => {
+  const visit = (node, inTaskRecords = false) => {
     if (node === null || node === undefined) return;
-    if (Array.isArray(node)) { node.forEach(visit); return; }
+    if (Array.isArray(node)) { node.forEach((item) => visit(item, inTaskRecords)); return; }
     if (typeof node === 'object') {
       for (const [name, value] of Object.entries(node)) {
         if (name === 'workOrderDetail') continue;
-        if (name === 'editorContent' && typeof value === 'string') values.push(value);
-        else visit(value);
+        if (name === 'editorContent' && inTaskRecords && typeof value === 'string') values.push(value);
+        else visit(value, name === 'taskRecords' || inTaskRecords);
       }
     }
   };
   visit(detail);
   const unique = [...new Set(values.map((value) => text(value).replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim())
-    .filter((value) => value && !/^确认通过[。.!！]*$/u.test(value) && value !== '审批未通过，Core 已自动关闭云管工单。'))];
+    .filter(Boolean))];
   return maskApprovalCode(unique.join('；'), approvalCode).slice(0, 2000);
 }
 

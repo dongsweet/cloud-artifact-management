@@ -371,11 +371,13 @@ test('CloudAdapter treats an approval response without the temporary code as rej
   const rejected = await adapter.getApproval('20261012D1234', { manifestSha256: 'a'.repeat(64), approvalCode });
   assert.equal(rejected.status, 'REJECTED');
   assert.equal(rejected.rejectionReason, '审批回复未包含同意暗号');
-  assert.equal(rejected.cloudResponseSummary, '挺好的');
+  assert.equal(rejected.cloudResponseSummary, '挺好的；审批未通过，Core 已自动关闭云管工单。');
+  assert.equal(rejected.cloudResponseSummary.includes('确认通过'), false);
+  assert.equal(rejected.cloudResponseSummary.includes('流程处理中'), false);
   detail.workflowInfos[0].taskRecords[0].editorContent = `<p>挺好的，${approvalCode}</p>`;
   const result = await adapter.getApproval('20261012D1234', { manifestSha256: 'a'.repeat(64), approvalCode });
   assert.equal(result.approvalCode, approvalCode);
-  assert.equal(result.cloudResponseSummary, '挺好的，[已隐藏]');
+  assert.equal(result.cloudResponseSummary, '挺好的，[已隐藏]；审批未通过，Core 已自动关闭云管工单。');
   assert.equal(result.cloudResponseSummary.includes(approvalCode), false);
   detail.workflowInfos[0].taskRecords[0].editorContent = `<p>${'同'.repeat(1990)}${approvalCode}</p>`;
   const longReply = await adapter.getApproval('20261012D1234', { manifestSha256: 'a'.repeat(64), approvalCode });
