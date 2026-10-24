@@ -852,6 +852,15 @@ export class CoreStore {
     return this.get(requestId);
   }
 
+  refreshCloudDetail(requestId, result = {}) {
+    const current = this.get(requestId);
+    if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
+    const timestamp = now();
+    this.db.prepare('UPDATE core_approval_requests SET cloud_workflow_step = COALESCE(?, cloud_workflow_step), cloud_response_summary = COALESCE(?, cloud_response_summary), cloud_checked_at = ?, last_error = NULL, updated_at = ? WHERE request_id = ?')
+      .run(result.workflowStep ?? null, result.cloudResponseSummary ?? null, timestamp, timestamp, requestId);
+    return this.get(requestId);
+  }
+
   markError(requestId, error) { this.db.prepare('UPDATE core_approval_requests SET last_error = ?, updated_at = ? WHERE request_id = ?').run(String(error?.message ?? error).slice(0, 1000), now(), requestId); return this.get(requestId); }
 
   markCloudClosed(requestId) {

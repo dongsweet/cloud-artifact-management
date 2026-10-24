@@ -127,7 +127,10 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     const current = store.get(requestId);
     if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
     if (current.status === 'REJECTED') {
-      const closed = await closeRejectedCloudApproval(current);
+      const refreshed = current.cloudApprovalId && typeof cloud.getApproval === 'function'
+        ? store.refreshCloudDetail(requestId, await cloud.getApproval(current.cloudApprovalId, { ...current, approvalCode: store.approvalCode(requestId) }))
+        : current;
+      const closed = await closeRejectedCloudApproval(refreshed);
       cloudStatusNextAttempt.delete(requestId);
       store.enqueueApprovalResult(requestId);
       return closed;
