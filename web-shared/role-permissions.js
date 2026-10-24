@@ -6,6 +6,7 @@ export const CORE_PAGE_PERMISSIONS = Object.freeze({
   requests: 'businessRead',
   artifacts: 'businessRead',
   distribution: 'businessRead',
+  'transfer-monitor': 'businessRead',
   agents: 'configRead',
   'cloud-config': 'configRead',
   'aaa-config': 'aaaRead',

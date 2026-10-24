@@ -367,6 +367,65 @@ export class CoreStore {
     return latest;
   }
   listDistributionTasks() { return this.db.prepare('SELECT task_id FROM core_distribution_tasks ORDER BY created_at DESC LIMIT 500').all().map(({ task_id }) => this.getDistributionTask(task_id)); }
+  listTransferMonitor() {
+    const edgeToCore = this.list().filter((item) => item.status === 'APPROVED' || item.status === 'CLOSED' || item.transferTaskId).map((item) => {
+      const progress = this.getTransferProgress(item.requestId);
+      const failure = progress?.edgeFailure ?? null;
+      return {
+        requestId: item.requestId,
+        freezeId: item.freezeId,
+        roundId: item.roundId,
+        roundNo: item.roundNo,
+        releaseId: item.releaseId,
+        productName: item.productName,
+        version: item.version,
+        displayVersion: item.displayVersion,
+        transferTaskId: progress?.transferTaskId ?? item.transferTaskId ?? null,
+        status: progress?.status ?? 'WAITING_AUTHORIZATION',
+        attempts: failure?.attempts ?? 0,
+        retryAt: failure?.retryAt ?? null,
+        lastError: failure?.message ?? null,
+        errorCode: failure?.code ?? null,
+        updatedAt: progress?.updatedAt ?? item.updatedAt,
+        summary: progress?.summary ?? null,
+        progress
+      };
+    });
+    const coreToAgent = this.listDistributionTasks().map((task) => {
+      const agent = this.db.prepare('SELECT name, center_id AS centerId FROM core_agents WHERE agent_id = ?').get(task.agentId);
+      const artifact = this.getArtifact(task.artifactId);
+      const displayStatus = task.status === 'SCHEDULED'
+        ? 'SCHEDULED'
+        : task.status === 'COMPLETED'
+          ? 'COMPLETED'
+          : task.status === 'RUNNING'
+            ? 'RUNNING'
+            : task.lastError && task.retryAt && Date.parse(task.retryAt) > Date.now() ? 'RETRY_WAIT' : task.status;
+      return {
+        ...task,
+        displayStatus,
+        agentName: agent?.name ?? task.agentId,
+        centerId: agent?.centerId ?? null,
+        productName: artifact?.productName ?? null,
+        version: artifact?.version ?? null,
+        displayVersion: artifact?.displayVersion ?? null,
+        roundNo: artifact?.roundNo ?? null,
+        fileCount: task.files?.length ?? 0,
+        completedFiles: Number(task.progress?.completedFiles ?? 0),
+        totalBytes: (task.files ?? []).reduce((sum, file) => sum + Number(file.sizeBytes ?? 0), 0),
+        completedBytes: Number(task.progress?.completedBytes ?? task.progress?.bytesDownloaded ?? 0)
+      };
+    });
+    const count = (items, value) => items.filter((item) => item.status === value || item.displayStatus === value).length;
+    return {
+      edgeToCore,
+      coreToAgent,
+      summary: {
+        edgeToCore: { waiting: count(edgeToCore, 'WAITING_EDGE') + count(edgeToCore, 'WAITING_AUTHORIZATION'), transferring: count(edgeToCore, 'RECEIVING') + count(edgeToCore, 'VERIFYING'), retry: count(edgeToCore, 'RETRY_WAIT'), failed: count(edgeToCore, 'FAILED'), completed: count(edgeToCore, 'COMPLETED') },
+        coreToAgent: { scheduled: count(coreToAgent, 'SCHEDULED'), queued: count(coreToAgent, 'QUEUED'), transferring: count(coreToAgent, 'RUNNING'), retry: count(coreToAgent, 'RETRY_WAIT'), completed: count(coreToAgent, 'COMPLETED') }
+      }
+    };
+  }
   listAgentTasks(agentId) {
     const timestamp = now();
     this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', updated_at = ? WHERE agent_id = ? AND status = 'SCHEDULED' AND scheduled_at <= ? AND retry_at <= ?").run(timestamp, agentId, timestamp, timestamp);
@@ -392,6 +451,24 @@ export class CoreStore {
     if (task.status === 'RUNNING') throw Object.assign(new Error('分发任务正在传输，不能重复重试'), { code: 'distribution_task_active' });
     const timestamp = now();
     this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', retry_at = ?, updated_at = ? WHERE task_id = ? AND agent_id = ?").run(timestamp, timestamp, taskId, agentId);
+    return this.getDistributionTask(taskId);
+  }
+  startDistributionTask(taskId) {
+    const task = this.getDistributionTask(taskId);
+    if (!task) throw Object.assign(new Error('分发任务不存在'), { code: 'distribution_task_not_found' });
+    if (task.status === 'COMPLETED') throw Object.assign(new Error('已完成的分发任务不能重新开始'), { code: 'distribution_task_completed' });
+    if (task.status === 'RUNNING') throw Object.assign(new Error('分发任务正在传输'), { code: 'distribution_task_active' });
+    const timestamp = now();
+    this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', scheduled_at = ?, retry_at = ?, updated_at = ? WHERE task_id = ?").run(timestamp, timestamp, timestamp, taskId);
+    return this.getDistributionTask(taskId);
+  }
+  retryDistributionTaskFromCore(taskId) {
+    const task = this.getDistributionTask(taskId);
+    if (!task) throw Object.assign(new Error('分发任务不存在'), { code: 'distribution_task_not_found' });
+    if (task.status === 'COMPLETED') throw Object.assign(new Error('已完成的分发任务不能重试'), { code: 'distribution_task_completed' });
+    if (task.status === 'RUNNING') throw Object.assign(new Error('分发任务正在传输，不能重复重试'), { code: 'distribution_task_active' });
+    const timestamp = now();
+    this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', retry_at = ?, updated_at = ? WHERE task_id = ?").run(timestamp, timestamp, taskId);
     return this.getDistributionTask(taskId);
   }
   getAuthorizedDistributionFile(agentId, taskId, sha256) {

@@ -316,6 +316,10 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
     return { items: store.listDistributionTasks() };
   });
+  app.get('/api/v1/transfer-monitor', async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
+    return store.listTransferMonitor();
+  });
   app.get('/api/v1/distribution-tasks/:taskId', async (request, reply) => {
     if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
     const item = store.getDistributionTask(request.params.taskId);
@@ -326,6 +330,16 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
     try { return reply.code(201).send({ item: store.createDistributionTask(request.body ?? {}) }); }
     catch (err) { return error(reply, err.code === 'artifact_not_found' ? 404 : 409, err.code ?? 'distribution_task_invalid', err.message); }
+  });
+  app.post('/api/v1/distribution-tasks/:taskId/start', { bodyLimit: 4096 }, async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
+    try { return { item: store.startDistributionTask(request.params.taskId) }; }
+    catch (err) { return error(reply, 409, err.code ?? 'distribution_start_rejected', err.message); }
+  });
+  app.post('/api/v1/distribution-tasks/:taskId/retry', { bodyLimit: 4096 }, async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
+    try { return { item: store.retryDistributionTaskFromCore(request.params.taskId) }; }
+    catch (err) { return error(reply, 409, err.code ?? 'distribution_retry_rejected', err.message); }
   });
   app.get('/api/v1/agent/available-artifacts', async (request, reply) => {
     const taskByArtifact = store.listLatestAgentDistributionTasks(request.agentPrincipal.agentId);

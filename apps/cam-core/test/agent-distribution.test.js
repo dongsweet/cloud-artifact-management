@@ -32,6 +32,14 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     const task = app.coreStore.createDistributionTask({ agentId: west.agentId, artifactId: 'BASELINE-REQ-AGENT' });
     const scheduledTask = app.coreStore.createDistributionTask({ agentId: west.agentId, artifactId: 'BASELINE-REQ-AGENT', scheduledAt: new Date(Date.now() + 60_000).toISOString(), chunkConcurrency: 8 });
     assert.equal(scheduledTask.status, 'SCHEDULED'); assert.equal(scheduledTask.chunkConcurrency, 8); assert.ok(!app.coreStore.listAgentTasks(west.agentId).some((item) => item.taskId === scheduledTask.taskId), 'future tasks stay out of the Agent queue');
+    const monitorBefore = await app.inject({ method: 'GET', url: '/api/v1/transfer-monitor' });
+    assert.equal(monitorBefore.statusCode, 200, monitorBefore.body);
+    assert.equal(monitorBefore.json().edgeToCore.length, 1);
+    assert.ok(monitorBefore.json().coreToAgent.some((item) => item.taskId === scheduledTask.taskId && item.displayStatus === 'SCHEDULED'));
+    const started = await app.inject({ method: 'POST', url: `/api/v1/distribution-tasks/${scheduledTask.taskId}/start`, payload: {} });
+    assert.equal(started.statusCode, 200, started.body); assert.equal(started.json().item.status, 'QUEUED');
+    const monitorAfterStart = await app.inject({ method: 'GET', url: '/api/v1/transfer-monitor' });
+    assert.equal(monitorAfterStart.json().coreToAgent.find((item) => item.taskId === scheduledTask.taskId).displayStatus, 'QUEUED');
     db.prepare('UPDATE core_distribution_tasks SET scheduled_at = ? WHERE task_id = ?').run(new Date(Date.now() - 1_000).toISOString(), scheduledTask.taskId);
     assert.ok(app.coreStore.listAgentTasks(west.agentId).some((item) => item.taskId === scheduledTask.taskId), 'due tasks become available automatically');
 
@@ -85,6 +93,8 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     const retryBody = '{}';
     const retried = await app.inject({ method: 'POST', url: retryPath, headers: { ...auth(east, eastIdentity, 'POST', retryPath, retryBody), 'content-type': 'application/json' }, payload: {} });
     assert.equal(retried.statusCode, 200, retried.body); assert.equal(retried.json().item.status, 'QUEUED'); assert.equal(retried.json().item.lastError, '模拟链路中断'); assert.ok(Date.parse(retried.json().item.retryAt) <= Date.now());
+    const coreRetry = await app.inject({ method: 'POST', url: `/api/v1/distribution-tasks/${retryTask.taskId}/retry`, payload: {} });
+    assert.equal(coreRetry.statusCode, 200, coreRetry.body); assert.equal(coreRetry.json().item.status, 'QUEUED');
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 

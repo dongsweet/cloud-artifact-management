@@ -2,7 +2,7 @@ import { renderGatePairing } from './gate-pairing.js?v=20261020-peer-save-feedba
 import { refreshPaginatedTables } from './table-pagination.js?v=20261020-table-pagination';
 import { mountArtifactCatalog } from './artifact-catalog.js?v=20261020-shared-artifact-catalog';
 import { auditEventsMarkup, mountAuditEvents } from './audit-events.js?v=20261022-audit-permissions';
-import { CORE_PAGE_PERMISSIONS, canCorePage, hasCorePermission } from './role-permissions.js?v=20261023-auditor-scope';
+import { CORE_PAGE_PERMISSIONS, canCorePage, hasCorePermission } from './role-permissions.js?v=20261025-transfer-monitor';
 import { renderRoleGroups } from './role-display.js?v=20261022-role-display';
 import { mountAaaConfig } from './aaa-config.js?v=20261023-shared-aaa-ui';
 let csrf = null;
@@ -15,11 +15,15 @@ let coreUsers = [];
 let coreAgents = [];
 let distributionTasks = [];
 let distributionArtifacts = [];
+let transferMonitor = { edgeToCore: [], coreToAgent: [], summary: {} };
 let resetUserId = null;
 let cloudMappings = null;
 let requestPollTimer = null;
 let gatePeerTrusted = false;
 const $ = (selector) => document.querySelector(selector);
+// Keep task dialogs outside page sections so they remain usable when opened from
+// the unified transfer monitor page.
+document.querySelector('.app-content .container-fluid')?.append($('#detail'), $('#distribution-detail'));
 const pagePermissions = CORE_PAGE_PERMISSIONS;
 function canCore(permission) {
   return hasCorePermission(currentUser?.roles ?? [], permission);
@@ -240,6 +244,67 @@ async function loadDistribution() {
     renderDistributionOptions(); renderDistributionTasks(); clearMessage();
   } catch (error) { message(error.message, 'danger'); }
 }
+const monitorStatusLabels = {
+  WAITING_AUTHORIZATION: '等待授权', WAITING_EDGE: '等待 Edge', RETRY_WAIT: '重试等待', RECEIVING: '接收中', VERIFYING: '校验中', FAILED: '失败', COMPLETED: '已完成',
+  SCHEDULED: '已计划', QUEUED: '排队中', RUNNING: '传输中'
+};
+const monitorStatusColors = { WAITING_AUTHORIZATION: 'secondary', WAITING_EDGE: 'warning', RETRY_WAIT: 'danger', RECEIVING: 'primary', VERIFYING: 'primary', FAILED: 'danger', COMPLETED: 'success', SCHEDULED: 'info', QUEUED: 'warning', RUNNING: 'primary' };
+function monitorStatusBadge(status) { return `<span class="badge text-bg-${monitorStatusColors[status] ?? 'secondary'}">${escapeHtml(monitorStatusLabels[status] ?? status ?? '-')}</span>`; }
+function monitorProgressText(summary) {
+  if (!summary) return '-';
+  const files = `${summary.completedFiles ?? 0} / ${summary.fileCount ?? 0} 个文件`;
+  const bytes = `${formatTransferBytes(summary.receivedBytes ?? summary.completedBytes ?? 0)} / ${formatTransferBytes(summary.totalBytes ?? 0)}`;
+  return `${files}<div class="small text-body-secondary">${escapeHtml(bytes)}</div>`;
+}
+function renderTransferMonitor(data) {
+  transferMonitor = data ?? { edgeToCore: [], coreToAgent: [], summary: {} };
+  const edgeItems = transferMonitor.edgeToCore ?? [];
+  const agentItems = transferMonitor.coreToAgent ?? [];
+  const edgeSummary = transferMonitor.summary?.edgeToCore ?? {};
+  const agentSummary = transferMonitor.summary?.coreToAgent ?? {};
+  const stats = [
+    ['Edge → Core 接收中', edgeSummary.transferring ?? 0, 'primary'], ['Edge → Core 重试', edgeSummary.retry ?? 0, 'danger'], ['Edge → Core 已完成', edgeSummary.completed ?? 0, 'success'],
+    ['Core → Agent 排队', (agentSummary.scheduled ?? 0) + (agentSummary.queued ?? 0), 'warning'], ['Core → Agent 传输中', agentSummary.transferring ?? 0, 'primary'], ['Core → Agent 重试', agentSummary.retry ?? 0, 'danger'], ['Core → Agent 已完成', agentSummary.completed ?? 0, 'success']
+  ];
+  $('#transfer-monitor-summary').innerHTML = stats.map(([label, value, color]) => `<div class="col-6 col-md"><div class="border rounded p-2 h-100"><div class="small text-body-secondary">${escapeHtml(label)}</div><div class="h5 mb-0 mt-1 text-${color}">${escapeHtml(value)}</div></div></div>`).join('');
+  $('#monitor-edge-rows').innerHTML = edgeItems.length ? edgeItems.map((item) => {
+    const retryable = ['FAILED', 'RETRY_WAIT'].includes(item.status) && item.requestId;
+    const version = item.productName ? `${item.productName} · ${item.displayVersion ?? item.version ?? '未知版本'}` : '历史申请';
+    const round = item.roundNo ? `第 ${item.roundNo} 轮` : '-';
+    return `<tr><td><div class="fw-semibold">${escapeHtml(version)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(item.requestId)}</div></td><td>${escapeHtml(round)}<div class="small text-body-secondary font-monospace">${escapeHtml(item.roundId ?? '-')}</div></td><td><code>${escapeHtml(item.transferTaskId ?? '-')}</code></td><td>${monitorStatusBadge(item.status)}</td><td>${monitorProgressText(item.summary)}</td><td>${escapeHtml(item.attempts ?? 0)}${item.retryAt ? `<div class="small text-warning-emphasis">${escapeHtml(displayTime(item.retryAt))}</div>` : ''}</td><td>${item.lastError ? `<span class="small text-danger" title="${escapeHtml(item.lastError)}">${escapeHtml(item.lastError.length > 80 ? `${item.lastError.slice(0, 80)}…` : item.lastError)}</span>` : '-'}</td><td>${escapeHtml(displayTime(item.updatedAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button type="button" class="btn btn-outline-primary btn-sm monitor-edge-detail" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-eye me-1"></i>详情</button>${retryable ? `<button type="button" class="btn btn-outline-warning btn-sm monitor-edge-retry" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-arrow-repeat me-1"></i>重试</button>` : ''}</div></td></tr>`;
+  }).join('') : '<tr><td colspan="9" class="text-center text-body-secondary py-4">暂无 Edge → Core 传输任务</td></tr>';
+  $('#monitor-agent-rows').innerHTML = agentItems.length ? agentItems.map((task) => {
+    const retryable = task.displayStatus === 'RETRY_WAIT' || (task.displayStatus === 'QUEUED' && task.lastError);
+    const version = task.productName ? `${task.productName} · ${task.displayVersion ?? task.version ?? '未知版本'}` : task.artifactId;
+    const progress = task.progress ?? {};
+    const completedFiles = progress.completedFiles ?? 0;
+    const totalFiles = task.fileCount ?? task.files?.length ?? 0;
+    const totalBytes = task.totalBytes ?? 0;
+    const completedBytes = task.completedBytes ?? progress.bytesDownloaded ?? 0;
+    const progressText = `${completedFiles} / ${totalFiles} 个文件<div class="small text-body-secondary">${escapeHtml(formatTransferBytes(completedBytes))} / ${escapeHtml(formatTransferBytes(totalBytes))}</div>`;
+    return `<tr><td><div class="fw-semibold">${escapeHtml(task.agentName ?? task.agentId)}</div><div class="small text-body-secondary">${escapeHtml(task.centerId ?? task.agentId)}</div></td><td>${escapeHtml(version)}${task.roundNo ? `<div class="small text-body-secondary">第 ${escapeHtml(task.roundNo)} 轮</div>` : ''}</td><td><code>${escapeHtml(task.taskId)}</code></td><td>${monitorStatusBadge(task.displayStatus)}</td><td>${progressText}</td><td>${escapeHtml(task.chunkConcurrency ?? '-')}</td><td>${escapeHtml(task.attempts ?? 0)}${task.retryAt && task.displayStatus === 'RETRY_WAIT' ? `<div class="small text-warning-emphasis">${escapeHtml(displayTime(task.retryAt))}</div>` : ''}</td><td>${task.lastError ? `<span class="small text-danger" title="${escapeHtml(task.lastError)}">${escapeHtml(task.lastError.length > 80 ? `${task.lastError.slice(0, 80)}…` : task.lastError)}</span>` : '-'}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button type="button" class="btn btn-outline-primary btn-sm monitor-agent-detail" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-eye me-1"></i>详情</button>${task.displayStatus === 'SCHEDULED' ? `<button type="button" class="btn btn-outline-primary btn-sm monitor-agent-start" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-play me-1"></i>立即开始</button>` : ''}${retryable ? `<button type="button" class="btn btn-outline-warning btn-sm monitor-agent-retry" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-arrow-repeat me-1"></i>重试</button>` : ''}</div></td></tr>`;
+  }).join('') : '<tr><td colspan="9" class="text-center text-body-secondary py-4">暂无 Core → Agent 传输任务</td></tr>';
+  refreshPaginatedTables($('#page-transfer-monitor'));
+  document.querySelectorAll('.monitor-edge-detail').forEach((button) => { button.onclick = () => showDetail(button.dataset.requestId); });
+  document.querySelectorAll('.monitor-agent-detail').forEach((button) => { button.onclick = () => showDistributionDetail(button.dataset.taskId); });
+  document.querySelectorAll('.monitor-edge-retry').forEach((button) => { button.onclick = () => retryEdgeTransfer(button.dataset.requestId, button); });
+  document.querySelectorAll('.monitor-agent-start').forEach((button) => { button.onclick = () => controlDistributionTask(button.dataset.taskId, 'start', button); });
+  document.querySelectorAll('.monitor-agent-retry').forEach((button) => { button.onclick = () => controlDistributionTask(button.dataset.taskId, 'retry', button); });
+}
+async function loadTransferMonitor() {
+  try { renderTransferMonitor(await api('/api/v1/transfer-monitor')); clearMessage(); }
+  catch (error) { message(error.message, 'danger'); }
+}
+async function retryEdgeTransfer(requestId, button) {
+  button.disabled = true;
+  try { await api(`/api/v1/approval-requests/${encodeURIComponent(requestId)}/transfer/retry`, { method: 'POST', body: '{}' }); message('已向 Edge 下发传输重试指令'); await loadTransferMonitor(); }
+  catch (error) { message(error.message, 'danger'); button.disabled = false; }
+}
+async function controlDistributionTask(taskId, action, button) {
+  button.disabled = true;
+  try { await api(`/api/v1/distribution-tasks/${encodeURIComponent(taskId)}/${action}`, { method: 'POST', body: '{}' }); message(action === 'start' ? '已将任务放入可领取队列' : '已将任务立即放回重试队列'); await loadTransferMonitor(); await loadDistribution(); }
+  catch (error) { message(error.message, 'danger'); button.disabled = false; }
+}
 async function createDistributionTask(event) {
   event.preventDefault();
   const button = event.submitter; button.disabled = true; $('#distribution-error').classList.add('d-none');
@@ -259,7 +324,17 @@ async function showDistributionDetail(taskId) {
     const labels = { SCHEDULED: '已计划', QUEUED: '排队中', RETRY_WAIT: '重试等待', RUNNING: '传输中', COMPLETED: '已就绪' };
     const displayStatus = distributionDisplayStatus(task);
     $('#distribution-detail-title').textContent = artifact ? `${artifact.productName ?? '历史产品'} · ${artifact.displayVersion ?? artifact.version ?? '未知版本'}` : task.artifactId;
-    $('#distribution-detail-content').innerHTML = `<div class="row g-2 mb-3"><div class="col-md-4"><div class="small text-body-secondary">传输任务编号</div><code>${escapeHtml(task.taskId)}</code></div><div class="col-md-4"><div class="small text-body-secondary">目标 Agent</div><span>${escapeHtml(agent?.name ?? task.agentId)}</span></div><div class="col-md-4"><div class="small text-body-secondary">状态</div><span class="badge text-bg-${displayStatus === 'COMPLETED' ? 'success' : displayStatus === 'RUNNING' ? 'primary' : displayStatus === 'SCHEDULED' ? 'info' : displayStatus === 'RETRY_WAIT' ? 'danger' : 'warning'}">${escapeHtml(labels[displayStatus] ?? displayStatus)}</span></div><div class="col-md-4"><div class="small text-body-secondary">计划开始</div><span>${escapeHtml(displayTime(task.scheduledAt))}</span></div><div class="col-md-4"><div class="small text-body-secondary">单文件并发</div><span>${escapeHtml(task.chunkConcurrency ?? '-')} 线程</span></div><div class="col-md-4"><div class="small text-body-secondary">尝试次数</div><span>${escapeHtml(task.attempts ?? 0)}</span></div></div>${task.lastError ? `<div class="alert alert-danger">${escapeHtml(task.lastError)}</div>` : ''}<div class="small text-body-secondary mb-2">${escapeHtml(distributionProgress(task))}</div><div class="table-responsive"><table class="table table-sm table-hover align-middle"><thead><tr><th>文件</th><th>大小</th><th>SHA-256</th></tr></thead><tbody>${(task.files ?? []).map((file) => `<tr><td>${escapeHtml(file.fileName)}</td><td>${escapeHtml(file.sizeBytes)}</td><td><code class="small">${escapeHtml(file.sha256)}</code></td></tr>`).join('')}</tbody></table></div>`;
+    const progress = task.progress ?? {};
+    const detailRows = (task.files ?? []).map((file) => {
+      const current = progress.sha256 === file.sha256;
+      const completed = displayStatus === 'COMPLETED' || progress.state === 'ready';
+      const fileStatus = completed ? '已完成' : current ? '传输中' : '待传输';
+      const fileColor = completed ? 'success' : current ? 'primary' : 'secondary';
+      const parts = completed ? '-' : current ? `${progress.completedParts ?? 0} / ${progress.totalParts ?? 0}` : '-';
+      const bytes = completed ? Number(file.sizeBytes ?? 0) : current ? Number(progress.bytesDownloaded ?? 0) : 0;
+      return `<tr><td><div class="fw-semibold">${escapeHtml(file.fileName)}</div><div class="small text-body-secondary">${escapeHtml(file.packageKey ?? '')}</div></td><td>${escapeHtml(formatTransferBytes(file.sizeBytes))}</td><td><span class="badge text-bg-${fileColor}">${fileStatus}</span><div class="small text-body-secondary mt-1">分块：${escapeHtml(parts)}</div><div class="small text-body-secondary">${escapeHtml(formatTransferBytes(bytes))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div></td><td><code class="small cam-break-anywhere">${escapeHtml(file.sha256)}</code></td></tr>`;
+    }).join('');
+    $('#distribution-detail-content').innerHTML = `<div class="row g-2 mb-3"><div class="col-md-4"><div class="small text-body-secondary">传输任务编号</div><code>${escapeHtml(task.taskId)}</code></div><div class="col-md-4"><div class="small text-body-secondary">目标 Agent</div><span>${escapeHtml(agent?.name ?? task.agentId)}</span></div><div class="col-md-4"><div class="small text-body-secondary">状态</div><span class="badge text-bg-${displayStatus === 'COMPLETED' ? 'success' : displayStatus === 'RUNNING' ? 'primary' : displayStatus === 'SCHEDULED' ? 'info' : displayStatus === 'RETRY_WAIT' ? 'danger' : 'warning'}">${escapeHtml(labels[displayStatus] ?? displayStatus)}</span></div><div class="col-md-4"><div class="small text-body-secondary">计划开始</div><span>${escapeHtml(displayTime(task.scheduledAt))}</span></div><div class="col-md-4"><div class="small text-body-secondary">单文件并发</div><span>${escapeHtml(task.chunkConcurrency ?? '-')} 线程</span></div><div class="col-md-4"><div class="small text-body-secondary">尝试次数</div><span>${escapeHtml(task.attempts ?? 0)}</span></div></div>${task.lastError ? `<div class="alert alert-danger">${escapeHtml(task.lastError)}</div>` : ''}<div class="small text-body-secondary mb-2">${escapeHtml(distributionProgress(task))}</div><div class="table-responsive"><table class="table table-sm table-hover align-middle"><thead><tr><th>文件</th><th>大小</th><th>状态 / 分块进度</th><th>SHA-256</th></tr></thead><tbody>${detailRows || '<tr><td colspan="4" class="text-center text-body-secondary py-3">暂无文件清单</td></tr>'}</tbody></table></div>`;
     $('#distribution-detail').showModal();
   } catch (error) { message(error.message, 'danger'); }
 }
@@ -507,14 +582,15 @@ function showPage(page, loadData = true) {
   if (!Object.hasOwn(pagePermissions, page)) page = firstAllowedPage();
   if (!canCorePage(currentUser?.roles ?? [], page)) page = firstAllowedPage();
   if (window.location.hash.slice(1).split('?')[0] !== page) history.replaceState(null, '', `#${page}`);
-  const pages = ['requests', 'artifacts', 'distribution', 'cloud-config', 'aaa-config', 'gate-config', 'agents', 'users', 'audit'];
+  const pages = ['requests', 'artifacts', 'distribution', 'transfer-monitor', 'cloud-config', 'aaa-config', 'gate-config', 'agents', 'users', 'audit'];
   for (const item of pages) $(`#page-${item}`).classList.toggle('d-none', item !== page);
-  const titles = { requests: '审批请求', artifacts: '正式制品', distribution: 'Agent 分发', 'cloud-config': '云管对接配置', 'aaa-config': 'AAA 对接配置', 'gate-config': '网闸对接配置', agents: 'Agent 管理', users: '账号管理', audit: '审计日志' };
+  const titles = { requests: '审批请求', artifacts: '正式制品', distribution: 'Agent 分发', 'transfer-monitor': '传输监测', 'cloud-config': '云管对接配置', 'aaa-config': 'AAA 对接配置', 'gate-config': '网闸对接配置', agents: 'Agent 管理', users: '账号管理', audit: '审计日志' };
   $('#page-title').textContent = titles[page] ?? '审批请求';
   document.querySelectorAll('[data-page]').forEach((link) => link.classList.toggle('active', link.dataset.page === page));
   if (!loadData || forcedPasswordChange) return;
   if (page === 'artifacts') loadArtifacts();
   if (page === 'distribution') loadDistribution();
+  if (page === 'transfer-monitor') loadTransferMonitor();
   if (page === 'cloud-config') loadCloudConfig();
   if (page === 'aaa-config') void aaaConfigComponent?.load();
   if (page === 'gate-config') loadGateConfig();
@@ -623,6 +699,7 @@ $('#logout').addEventListener('click', async () => { await api('/api/v1/auth/log
 $('#detail-close').addEventListener('click', () => $('#detail').close());
 $('#detail').addEventListener('click', (event) => { if (event.target === $('#detail')) $('#detail').close(); }); $('#artifacts-refresh').addEventListener('click', loadArtifacts);
 $('#distribution-refresh').addEventListener('click', loadDistribution);
+$('#transfer-monitor-refresh').addEventListener('click', loadTransferMonitor);
 $('#distribution-form').addEventListener('submit', createDistributionTask);
 $('#distribution-detail-close').addEventListener('click', () => $('#distribution-detail').close());
 $('#distribution-detail').addEventListener('click', (event) => { if (event.target === $('#distribution-detail')) $('#distribution-detail').close(); });
@@ -711,3 +788,4 @@ try { const result = await api('/api/v1/auth/me'); csrf = result.csrfToken; show
 setInterval(() => { if (!forcedPasswordChange && !document.hidden && !$('#page-gate-config').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadGateKeys({ preserveInputs: true }).catch(() => {}); }, 5000);
 setInterval(() => { if (!forcedPasswordChange && !document.hidden && !$('#page-agents').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadAgents(); }, 5000);
 setInterval(() => { if (!forcedPasswordChange && !document.hidden && !$('#page-distribution').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadDistribution(); }, 5000);
+setInterval(() => { if (!forcedPasswordChange && !document.hidden && !$('#page-transfer-monitor').classList.contains('d-none') && !$('#app').classList.contains('d-none')) void loadTransferMonitor(); }, 5000);
