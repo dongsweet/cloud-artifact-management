@@ -611,6 +611,12 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     return item ? reply.send({ item }) : error(reply, 404, 'request_not_found', 'approval request not found');
   });
 
+  app.get('/api/v1/approval-requests/:requestId/transfer-progress', async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
+    const item = store.getTransferProgress(request.params.requestId);
+    return item ? reply.send({ item }) : error(reply, 404, 'request_not_found', 'approval request not found');
+  });
+
   app.post('/api/v1/approval-requests/:requestId/retry', async (request, reply) => {
     if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
     const item = store.get(request.params.requestId);

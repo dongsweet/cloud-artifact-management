@@ -85,6 +85,16 @@ GET /api/v1/artifacts/:artifactId
 
 Core 分发页面使用业务只读接口 `GET /api/v1/distribution-agents` 获取 Agent 的基本信息，并在页面上只允许选择处于启用状态的 Agent。该接口只返回 Agent 编号、中心、名称和状态；身份公钥、轮换状态等配置详情仍由 `GET /api/v1/agents` 管理接口提供。
 
+### Core 接收传输监控
+
+审批详情页使用下面的业务只读接口展示 Edge → Core 的接收过程：
+
+```http
+GET /api/v1/approval-requests/:requestId/transfer-progress
+```
+
+响应包含传输任务通知状态、总体状态、文件/字节汇总，以及每个文件的 SHA-256、已接收分块数、分块总数、已接收字节和本机是否已入库。总体状态包括 `WAITING_AUTHORIZATION`、`WAITING_EDGE`、`RECEIVING`、`VERIFYING` 和 `COMPLETED`。相同 SHA-256 被多个包引用时，每个包仍单独展示清单进度，但已存在的内容寻址对象标记为可复用，不会重复占用存储空间。
+
 ### 下载正式制品
 
 ```http

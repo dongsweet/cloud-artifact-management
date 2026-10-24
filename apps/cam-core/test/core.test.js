@@ -435,6 +435,10 @@ test('Core stores approved files by SHA-256 and lets multiple package entries sh
     assert.equal(registeredManifest.statusCode, 200, registeredManifest.body);
     assert.equal(registeredManifest.json().item.fileCount, 2);
     assert.equal(app.coreStore.get('FREEZE-FILES').artifacts.length, 2, 'legacy request gets release artifact references when Edge synchronizes its manifest');
+    const waitingProgress = await app.inject({ method: 'GET', url: '/api/v1/approval-requests/FREEZE-FILES/transfer-progress' });
+    assert.equal(waitingProgress.statusCode, 200, waitingProgress.body);
+    assert.equal(waitingProgress.json().item.status, 'WAITING_EDGE');
+    assert.equal(waitingProgress.json().item.summary.completedFiles, 0);
     const fetchedManifest = await app.inject({ method: 'GET', url: manifestPath, headers: await headers('GET', manifestPath) });
     assert.equal(fetchedManifest.statusCode, 200, fetchedManifest.body);
     assert.deepEqual(fetchedManifest.json().items.map((item) => item.receivedParts), [[], []]);
@@ -442,6 +446,10 @@ test('Core stores approved files by SHA-256 and lets multiple package entries sh
     const upload = await app.inject({ method: 'PUT', url: uploadPath, headers: await headers('PUT', uploadPath, bytes, { 'content-type': 'application/octet-stream' }), payload: bytes });
     assert.equal(upload.statusCode, 200, upload.body);
     assert.deepEqual(upload.json().packages, ['os-iso', 'base-image']);
+    const receivedProgress = await app.inject({ method: 'GET', url: '/api/v1/approval-requests/FREEZE-FILES/transfer-progress' });
+    assert.equal(receivedProgress.json().item.status, 'VERIFYING');
+    assert.equal(receivedProgress.json().item.summary.completedFiles, 2, 'duplicate SHA-256 references both show complete');
+    assert.equal(receivedProgress.json().item.files.filter((file) => file.reused).length, 1, 'the second package reference identifies the shared object as reusable');
     const receiptPayload = { requestId: 'FREEZE-FILES', transferTaskId, manifestSha256 };
     const prematureReceipt = await app.inject({ method: 'POST', url: '/api/v1/gate/receipts', headers: await headers('POST', '/api/v1/gate/receipts', receiptPayload), payload: receiptPayload });
     assert.equal(prematureReceipt.statusCode, 200, prematureReceipt.body);

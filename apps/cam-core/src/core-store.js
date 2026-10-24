@@ -569,6 +569,60 @@ export class CoreStore {
     return this.db.prepare('SELECT part_index AS partIndex, chunk_size AS chunkSize, chunk_count AS chunkCount, byte_offset AS offset, size_bytes AS size, part_sha256 AS sha256 FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ? ORDER BY part_index')
       .all(transferTaskId, String(sha256).toLowerCase());
   }
+  getTransferProgress(requestId) {
+    const current = this.get(requestId);
+    if (!current) return null;
+    const task = this.db.prepare('SELECT * FROM core_transfer_tasks WHERE request_id = ?').get(requestId);
+    const envelope = this.envelope(requestId) ?? {};
+    const manifestItems = Array.isArray(envelope.manifest?.items) && envelope.manifest.items.length
+      ? envelope.manifest.items
+      : this.listReleaseArtifacts(requestId).map((item) => ({
+        packageKey: item.packageKey, candidateId: item.candidateId, fileName: item.fileName,
+        sizeBytes: item.sizeBytes, actualSha256: item.sha256, source: item.source,
+        inheritedFromRoundId: item.inheritedFromRoundId
+      }));
+    const taskId = task?.transfer_task_id ?? current.transferTaskId ?? null;
+    const artifactRows = new Map();
+    for (const item of manifestItems) {
+      const sha256 = String(item.actualSha256 ?? item.sha256 ?? '').toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(sha256)) continue;
+      if (!artifactRows.has(sha256)) artifactRows.set(sha256, { parts: taskId ? this.listTransferParts(taskId, sha256) : [] });
+    }
+    const seenDigests = new Set();
+    const files = manifestItems.map((item) => {
+      const sha256 = String(item.actualSha256 ?? item.sha256 ?? '').toLowerCase();
+      const entry = artifactRows.get(sha256) ?? { parts: [] };
+      const stored = /^[a-f0-9]{64}$/.test(sha256) && Boolean(this.artifactPath(sha256));
+      const parts = entry.parts;
+      const chunkSize = parts[0]?.chunkSize ?? Math.max(1, Number(item.sizeBytes ?? 0));
+      const chunkCount = stored ? (parts[0]?.chunkCount ?? Math.max(1, Math.ceil(Number(item.sizeBytes ?? 0) / chunkSize))) : (parts[0]?.chunkCount ?? null);
+      const receivedParts = stored ? (chunkCount ?? 1) : parts.length;
+      const receivedBytes = stored ? Number(item.sizeBytes ?? 0) : parts.reduce((total, part) => total + Number(part.size ?? 0), 0);
+      const status = stored ? 'COMPLETED' : parts.length ? 'RECEIVING' : 'WAITING';
+      const reused = stored && (seenDigests.has(sha256) || Boolean(this.db.prepare('SELECT 1 FROM core_artifacts WHERE sha256 = ? AND received_at < ?').get(sha256, task?.created_at ?? now())));
+      seenDigests.add(sha256);
+      return {
+        packageKey: item.packageKey ?? null, candidateId: item.candidateId ?? null, fileName: item.fileName ?? item.packageKey ?? sha256,
+        sizeBytes: Number(item.sizeBytes ?? 0), sha256, source: item.source ?? null,
+        inheritedFromRoundId: item.inheritedFromRoundId ?? null, stored, reused,
+        status, receivedParts, chunkCount, receivedBytes, updatedAt: task?.updated_at ?? current.updatedAt
+      };
+    });
+    const totalBytes = files.reduce((total, file) => total + file.sizeBytes, 0);
+    const receivedBytes = files.reduce((total, file) => total + Math.min(file.sizeBytes, file.receivedBytes), 0);
+    const completedFiles = files.filter((file) => file.stored).length;
+    const receivingFiles = files.filter((file) => file.status === 'RECEIVING').length;
+    const allStored = files.length > 0 && completedFiles === files.length;
+    let status = 'WAITING_AUTHORIZATION';
+    if (taskId) status = task?.status === 'RECEIVED' ? 'COMPLETED' : allStored ? 'VERIFYING' : receivingFiles ? 'RECEIVING' : 'WAITING_EDGE';
+    return {
+      requestId, transferTaskId: taskId, status, updatedAt: task?.updated_at ?? current.updatedAt,
+      notification: { state: current.transferNotificationState, attempts: current.transferNotificationAttempts, lastError: current.transferNotificationLastError, nextAttemptAt: current.transferNotificationNextAttemptAt },
+      report: { received: current.reportReceived, fileName: current.reportFileName, sizeBytes: current.reportSize },
+      summary: { fileCount: files.length, completedFiles, receivingFiles, totalBytes, receivedBytes, percent: totalBytes ? Math.min(100, Math.round(receivedBytes * 100 / totalBytes)) : 0 },
+      files
+    };
+  }
   async saveTransferPart(transferTaskId, sha256, part) {
     const transfer = this.expectedTransferArtifacts(transferTaskId);
     const digestValue = String(sha256).toLowerCase();

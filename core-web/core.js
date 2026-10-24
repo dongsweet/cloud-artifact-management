@@ -272,8 +272,41 @@ async function updateAgentStatus(button) {
     await loadAgents();
   } catch (error) { message(error.message, 'danger'); button.disabled = false; }
 }
+function formatTransferBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return '-';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let amount = bytes;
+  let unit = -1;
+  while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
+  return `${amount.toFixed(amount >= 100 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+function transferProgressLabel(status) {
+  return { WAITING_AUTHORIZATION: '等待 Core 授权', WAITING_EDGE: '等待 Edge 开始传输', RECEIVING: 'Edge → Core 接收中', VERIFYING: '校验并准备回执', COMPLETED: '已完成' }[status] ?? status ?? '未开始';
+}
+function transferProgressColor(status) {
+  return status === 'COMPLETED' ? 'success' : ['RECEIVING', 'VERIFYING'].includes(status) ? 'primary' : status === 'WAITING_EDGE' ? 'warning' : 'secondary';
+}
+function transferProgressMarkup(progress) {
+  if (!progress) return '<div class="text-body-secondary">暂无传输进度数据</div>';
+  const summary = progress.summary ?? {};
+  const percent = Number(summary.percent ?? 0);
+  const files = progress.files ?? [];
+  const fileStatus = { COMPLETED: '已入库', RECEIVING: '接收中', WAITING: '待接收' };
+  const fileColor = { COMPLETED: 'success', RECEIVING: 'primary', WAITING: 'secondary' };
+  const detailRows = files.length ? files.map((file) => `<tr><td><div class="fw-semibold">${escapeHtml(file.fileName)}</div><div class="small text-body-secondary">${escapeHtml(file.packageKey ?? '')}${file.reused ? ' · 本机已缓存，可复用' : ''}</div></td><td>${escapeHtml(formatTransferBytes(file.sizeBytes))}</td><td><span class="badge text-bg-${fileColor[file.status] ?? 'secondary'}">${escapeHtml(fileStatus[file.status] ?? file.status ?? '-')}</span><div class="small text-body-secondary mt-1">${file.chunkCount ? `${escapeHtml(file.receivedParts)} / ${escapeHtml(file.chunkCount)} 个分块` : (file.stored ? '完整文件' : '尚未开始')}</div></td><td><div>${escapeHtml(formatTransferBytes(file.receivedBytes))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div><code class="small cam-break-anywhere">${escapeHtml(file.sha256)}</code></td></tr>`).join('') : '<tr><td colspan="4" class="text-center text-body-secondary py-3">Edge 尚未同步正式制品清单</td></tr>';
+  const notification = progress.notification ?? {};
+  const notificationText = notification.state === 'DELIVERED' ? 'Edge 已确认接收传输任务' : notification.state === 'RETRY_WAIT' ? `Edge 通知等待重试${notification.lastError ? `：${notification.lastError}` : ''}` : notification.state === 'SENDING' ? '正在通知 Edge' : progress.transferTaskId ? '等待通知 Edge' : '尚未创建传输任务';
+  return `<div class="cam-transfer-progress-summary"><div class="cam-transfer-progress-stat"><span>文件</span><strong>${escapeHtml(summary.completedFiles ?? 0)} / ${escapeHtml(summary.fileCount ?? 0)}</strong></div><div class="cam-transfer-progress-stat"><span>字节</span><strong>${escapeHtml(formatTransferBytes(summary.receivedBytes))} / ${escapeHtml(formatTransferBytes(summary.totalBytes))}</strong></div><div class="cam-transfer-progress-stat"><span>验证报告</span><strong>${progress.report?.received ? '已接收' : '待接收'}</strong></div><div class="cam-transfer-progress-stat"><span>任务通知</span><strong>${escapeHtml(notificationText)}</strong></div></div><div class="progress cam-transfer-progress-bar" role="progressbar" aria-label="Edge 到 Core 接收进度" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar progress-bar-striped ${['RECEIVING', 'VERIFYING'].includes(progress.status) ? 'progress-bar-animated' : ''}" style="width:${percent}%">${percent}%</div></div><div class="d-flex justify-content-between align-items-center small text-body-secondary mt-2"><span><span class="badge text-bg-${transferProgressColor(progress.status)}">${escapeHtml(transferProgressLabel(progress.status))}</span>${progress.transferTaskId ? ` <code>${escapeHtml(progress.transferTaskId)}</code>` : ''}</span><span>${escapeHtml(progress.updatedAt ? displayTime(progress.updatedAt) : '-')}</span></div><details class="cam-transfer-files" data-detail-key="transfer-files"><summary><i class="bi bi-chevron-right me-2"></i>文件与分块明细</summary><div class="table-responsive mt-2"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>文件</th><th>大小</th><th>状态 / 分块</th><th>已接收 / SHA-256</th></tr></thead><tbody>${detailRows}</tbody></table></div></details>`;
+}
 async function showDetail(id) {
-  const item = (await api(`/api/v1/approval-requests/${encodeURIComponent(id)}`)).item;
+  const encodedId = encodeURIComponent(id);
+  const [{ item }, transferResult] = await Promise.all([
+    api(`/api/v1/approval-requests/${encodedId}`),
+    api(`/api/v1/approval-requests/${encodedId}/transfer-progress`).catch(() => ({ item: null }))
+  ]);
+  const transferProgress = transferResult?.item ?? null;
   const dialog = $('#detail');
   const openDetailSections = new Set([...dialog.querySelectorAll('details[data-detail-key]')].filter((section) => section.open).map((section) => section.dataset.detailKey));
   dialog.dataset.requestId = id;
@@ -309,6 +342,7 @@ async function showDetail(id) {
         : '审批通过后可准备传输';
   const notificationFailed = ['SENDING', 'RETRY_WAIT'].includes(item.transferNotificationState);
   const transferPanel = `<div class="cam-transfer-state"><span class="badge text-bg-${item.transferStatus === 'RECEIVED' ? 'success' : item.transferTaskId ? 'primary' : item.status === 'APPROVED' ? 'warning' : 'secondary'}">${escapeHtml(transferLabel)}</span>${item.transferTaskId && item.transferNotificationAttempts ? `<div class="small text-body-secondary mt-1">授权通知 Edge：${item.transferNotificationState === 'DELIVERED' ? '已送达' : item.transferNotificationState === 'RETRY_WAIT' ? '等待自动重试' : item.transferNotificationState === 'SENDING' ? '发送中' : '准备中'} · 已尝试 ${item.transferNotificationAttempts} 次</div>` : ''}${notificationFailed && item.transferNotificationLastError ? `<div class="small text-danger mt-1">${escapeHtml(item.transferNotificationLastError)}</div>` : ''}${item.transferStatus === 'RECEIVED' && item.updatedAt ? `<div class="small text-body-secondary mt-1">最近更新：${escapeHtml(displayTime(item.updatedAt))}</div>` : ''}${item.status === 'APPROVED' && !item.transferTaskId ? '<div class="small text-body-secondary mt-1">准备动作会绑定云管审批返回的任务编号和已批准清单，不会修改制品内容。</div>' : ''}</div>`;
+  const transferProgressPanel = transferProgressMarkup(transferProgress);
   const cloudApprovalPanel = `<div class="cam-status-panel">${item.cloudApprovalId ? `<div class="small text-body-secondary font-monospace text-break">${escapeHtml(item.cloudApprovalId)}</div>` : '<div class="small text-body-secondary">尚未创建云管工单</div>'}${item.cloudWorkflowStep ? `<div class="small text-body-secondary mt-1">当前环节：${escapeHtml(item.cloudWorkflowStep)}</div>` : ''}<div class="small mt-1">${item.cloudResponseSummary ? escapeHtml(item.cloudResponseSummary) : '<span class="text-body-secondary">尚未返回处理意见</span>'}</div></div>`;
   const reportPanel = `<div>${reportLink}</div><div class="small text-body-secondary mt-1">${item.reportReceived ? 'Core 已校验' : '待从 Edge 接收'}</div>`;
   const versionPanel = `<div>${escapeHtml(item.displayVersion ?? item.version ?? '-')}<div class="small text-body-secondary font-monospace mt-1">${escapeHtml(item.releaseId ?? '-')}</div></div>`;
@@ -322,7 +356,7 @@ async function showDetail(id) {
       ${textField('软件产品', item.productName)}${detailField('软件版本', versionPanel)}${detailField('候选轮次', roundPanel)}${textField('验证报告标题', item.reportTitle ?? '旧版请求未携带')}${textField('验证环境', item.environment ?? '旧版请求未携带')}${textField('提交人', submitterLabel)}
     </div></section>
     <section class="cam-detail-section"><h4><i class="bi bi-arrow-left-right me-2"></i>处理状态</h4><div class="cam-detail-grid">
-      ${detailField('云管审批', cloudApprovalPanel)}${detailField('云管提交', retryPanel)}${detailField('正式制品传输', transferPanel)}${detailField('验证报告', reportPanel)}
+      ${detailField('云管审批', cloudApprovalPanel)}${detailField('云管提交', retryPanel)}${detailField('正式制品传输', transferPanel)}${detailField('验证报告', reportPanel)}${detailField('Edge → Core 接收进度', transferProgressPanel, { wide: true })}
     </div></section>
     <section class="cam-detail-section"><h4><i class="bi bi-shield-check me-2"></i>完整性摘要</h4><div class="cam-detail-grid">
       ${textField('清单 SHA-256', item.manifestSha256, { mono: true })}${textField('报告 SHA-256', item.reportSha256, { mono: true })}

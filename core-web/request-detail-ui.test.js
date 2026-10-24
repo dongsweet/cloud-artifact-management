@@ -22,5 +22,9 @@ test('Core approval details keep the primary workflow visible and the file list 
   assert.doesNotMatch(script, /const parentDialog = \[\.\.\.document\.querySelectorAll\('dialog\[open\]'\)\]/u);
   assert.doesNotMatch(script, /parentDialog\.close\('confirmation'\)/u);
   assert.match(script, /openDetailSections/u);
+  assert.match(script, /transfer-progress/u);
+  assert.match(script, /Edge → Core 接收进度/u);
+  assert.match(script, /文件与分块明细/u);
   assert.match(css, /\.cam-detail-advanced > summary \{[\s\S]*?cursor: pointer/u);
+  assert.match(css, /\.cam-transfer-progress-summary/u);
 });

@@ -121,6 +121,18 @@
 .cam-detail-label { color: var(--bs-secondary-color); font-size: .78rem; margin-bottom: .22rem; }
 .cam-detail-value { min-width: 0; overflow-wrap: anywhere; word-break: break-word; line-height: 1.45; }
 .cam-status-panel { min-width: 0; overflow-wrap: anywhere; }
+.cam-transfer-progress-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem; margin-bottom: .75rem; }
+.cam-transfer-progress-stat { min-width: 0; padding: .55rem .65rem; border: 1px solid var(--bs-border-color-translucent); border-radius: .35rem; background: var(--bs-body-bg); }
+.cam-transfer-progress-stat span { display: block; color: var(--bs-secondary-color); font-size: .75rem; margin-bottom: .15rem; }
+.cam-transfer-progress-stat strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .88rem; }
+.cam-transfer-progress-bar { height: 1.25rem; }
+.cam-transfer-files { margin-top: .75rem; border-top: 1px solid var(--bs-border-color-translucent); padding-top: .55rem; }
+.cam-transfer-files > summary { cursor: pointer; list-style: none; font-weight: 600; }
+.cam-transfer-files > summary::-webkit-details-marker { display: none; }
+.cam-transfer-files > summary .bi { transition: transform .15s ease; }
+.cam-transfer-files[open] > summary .bi { transform: rotate(90deg); }
+.cam-transfer-files .table { font-size: .82rem; }
+.cam-transfer-files .table th { white-space: nowrap; }
 .cam-detail-advanced { margin-top: .75rem; border: 1px solid var(--bs-border-color-translucent); border-radius: .4rem; background: var(--bs-tertiary-bg); }
 .cam-detail-advanced > summary { cursor: pointer; list-style: none; padding: .65rem .75rem; font-weight: 600; }
 .cam-detail-advanced > summary::-webkit-details-marker { display: none; }
@@ -163,6 +175,7 @@
   .cam-artifact-version > summary .small { width: 100%; margin-left: 1.3rem; }
   .cam-artifact-metadata { grid-template-columns: 1fr; }
   .cam-artifact-detail-metadata { grid-template-columns: 1fr; }
+  .cam-transfer-progress-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 .cam-confirm-modal { width: min(480px, calc(100vw - 2rem)); max-width: none; padding: 0; border: 0; border-radius: .5rem; color: inherit; background: transparent; box-shadow: 0 1rem 3rem rgb(0 0 0 / 25%); }
