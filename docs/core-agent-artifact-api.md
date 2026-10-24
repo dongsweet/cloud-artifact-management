@@ -85,6 +85,16 @@ GET /api/v1/artifacts/:artifactId
 
 Core 分发页面使用业务只读接口 `GET /api/v1/distribution-agents` 获取 Agent 的基本信息，并在页面上只允许选择处于启用状态的 Agent。该接口只返回 Agent 编号、中心、名称和状态；身份公钥、轮换状态等配置详情仍由 `GET /api/v1/agents` 管理接口提供。
 
+Core 传输监测页使用 `GET /api/v1/transfer-monitor` 同时查看 Edge → Core 与 Core → Agent 任务。Edge → Core 按固化申请/传输任务展示进度、失败原因和重试时间，人工重试仍由 Core 调用 `POST /api/v1/approval-requests/:requestId/transfer/retry` 下发到 Edge。Core → Agent 按单个 Agent 分发任务展示文件/字节进度、并发线程、尝试次数和最近错误，并由 Core 调用下面的任务级接口控制：
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `POST /api/v1/distribution-tasks/:taskId/start` | 立即将计划任务放入 Agent 可领取队列 |
+| `POST /api/v1/distribution-tasks/:taskId/retry` | 将失败任务立即放回可领取队列 |
+| `POST /api/v1/distribution-tasks/:taskId/control` | `{"action":"pause"}`、`resume` 或 `cancel`；控制粒度是 Agent 分发任务，不是单个文件 |
+
+运行中的暂停/取消先记录为 `PAUSE_REQUESTED`/`CANCEL_REQUESTED`，Agent 在完成当前分块后上报并进入 `PAUSED`/`CANCELLED`；排队任务可以立即暂停或取消。已取消任务是终态，不能继续或重试。文件详情只展示分块进度、复用状态和错误。
+
 ### Core 接收传输监控
 
 审批详情页使用下面的业务只读接口展示 Edge → Core 的接收过程：

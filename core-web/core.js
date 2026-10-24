@@ -217,19 +217,23 @@ function distributionProgress(task) {
 }
 function distributionDisplayStatus(task) {
   if (task.status === 'SCHEDULED') return 'SCHEDULED';
+  if (task.status === 'PAUSED') return 'PAUSED';
+  if (task.status === 'CANCELLED') return 'CANCELLED';
+  if (task.controlState === 'PAUSE_REQUESTED') return 'PAUSE_REQUESTED';
+  if (task.controlState === 'CANCEL_REQUESTED') return 'CANCEL_REQUESTED';
   if (task.status === 'COMPLETED') return 'COMPLETED';
   if (task.status === 'RUNNING') return 'RUNNING';
   if (task.lastError && task.retryAt && Date.parse(task.retryAt) > Date.now()) return 'RETRY_WAIT';
   return task.status;
 }
 function renderDistributionTasks() {
-  const labels = { SCHEDULED: '已计划', QUEUED: '排队中', RETRY_WAIT: '重试等待', RUNNING: '传输中', COMPLETED: '已就绪' };
+  const labels = { SCHEDULED: '已计划', QUEUED: '排队中', RETRY_WAIT: '重试等待', RUNNING: '传输中', COMPLETED: '已就绪', PAUSE_REQUESTED: '等待暂停', PAUSED: '已暂停', CANCEL_REQUESTED: '等待取消', CANCELLED: '已取消' };
   $('#distribution-rows').innerHTML = distributionTasks.length ? distributionTasks.map((task) => {
     const agent = coreAgents.find((item) => item.agentId === task.agentId);
     const artifact = distributionArtifacts.find((item) => item.artifactId === task.artifactId);
     const displayStatus = distributionDisplayStatus(task);
     const status = labels[displayStatus] ?? displayStatus;
-    const color = displayStatus === 'COMPLETED' ? 'success' : displayStatus === 'RUNNING' ? 'primary' : displayStatus === 'SCHEDULED' ? 'info' : displayStatus === 'RETRY_WAIT' ? 'danger' : 'warning';
+    const color = displayStatus === 'COMPLETED' ? 'success' : displayStatus === 'RUNNING' ? 'primary' : displayStatus === 'SCHEDULED' ? 'info' : displayStatus === 'RETRY_WAIT' ? 'danger' : ['PAUSED', 'CANCELLED'].includes(displayStatus) ? 'secondary' : 'warning';
     return `<tr><td><code>${escapeHtml(task.taskId)}</code></td><td>${escapeHtml(agent?.name ?? task.agentId)}</td><td>${escapeHtml(artifact ? `${artifact.productName ?? '历史产品'} · ${artifact.displayVersion ?? artifact.version ?? '未知版本'}` : task.artifactId)}</td><td><span class="badge text-bg-${color}">${escapeHtml(status)}</span>${task.lastError ? `<div class="small text-danger mt-1">${escapeHtml(task.lastError)}</div>` : ''}</td><td>${escapeHtml(displayTime(task.scheduledAt))}</td><td>${escapeHtml(task.chunkConcurrency ?? '-')}</td><td>${escapeHtml(distributionProgress(task))}${task.attempts ? `<div class="small text-body-secondary">失败重试 ${escapeHtml(task.attempts)} 次</div>` : ''}</td><td>${escapeHtml(displayTime(task.updatedAt))}</td><td class="text-end"><button type="button" class="btn btn-outline-primary btn-sm distribution-detail-button" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-eye me-1"></i>详情</button></td></tr>`;
   }).join('') : '<tr><td colspan="9" class="text-center text-body-secondary py-4">暂无传输任务</td></tr>';
   refreshPaginatedTables($('#page-distribution'));
@@ -246,9 +250,9 @@ async function loadDistribution() {
 }
 const monitorStatusLabels = {
   WAITING_AUTHORIZATION: '等待授权', WAITING_EDGE: '等待 Edge', RETRY_WAIT: '重试等待', RECEIVING: '接收中', VERIFYING: '校验中', FAILED: '失败', COMPLETED: '已完成',
-  SCHEDULED: '已计划', QUEUED: '排队中', RUNNING: '传输中'
+  SCHEDULED: '已计划', QUEUED: '排队中', RUNNING: '传输中', PAUSE_REQUESTED: '等待暂停', PAUSED: '已暂停', CANCEL_REQUESTED: '等待取消', CANCELLED: '已取消'
 };
-const monitorStatusColors = { WAITING_AUTHORIZATION: 'secondary', WAITING_EDGE: 'warning', RETRY_WAIT: 'danger', RECEIVING: 'primary', VERIFYING: 'primary', FAILED: 'danger', COMPLETED: 'success', SCHEDULED: 'info', QUEUED: 'warning', RUNNING: 'primary' };
+const monitorStatusColors = { WAITING_AUTHORIZATION: 'secondary', WAITING_EDGE: 'warning', RETRY_WAIT: 'danger', RECEIVING: 'primary', VERIFYING: 'primary', FAILED: 'danger', COMPLETED: 'success', SCHEDULED: 'info', QUEUED: 'warning', RUNNING: 'primary', PAUSE_REQUESTED: 'warning', PAUSED: 'secondary', CANCEL_REQUESTED: 'danger', CANCELLED: 'secondary' };
 function monitorStatusBadge(status) { return `<span class="badge text-bg-${monitorStatusColors[status] ?? 'secondary'}">${escapeHtml(monitorStatusLabels[status] ?? status ?? '-')}</span>`; }
 function monitorProgressText(summary) {
   if (!summary) return '-';
@@ -258,20 +262,21 @@ function monitorProgressText(summary) {
 }
 function renderTransferMonitor(data) {
   transferMonitor = data ?? { edgeToCore: [], coreToAgent: [], summary: {} };
+  const canControl = canCore('businessWrite');
   const edgeItems = transferMonitor.edgeToCore ?? [];
   const agentItems = transferMonitor.coreToAgent ?? [];
   const edgeSummary = transferMonitor.summary?.edgeToCore ?? {};
   const agentSummary = transferMonitor.summary?.coreToAgent ?? {};
   const stats = [
     ['Edge → Core 接收中', edgeSummary.transferring ?? 0, 'primary'], ['Edge → Core 重试', edgeSummary.retry ?? 0, 'danger'], ['Edge → Core 已完成', edgeSummary.completed ?? 0, 'success'],
-    ['Core → Agent 排队', (agentSummary.scheduled ?? 0) + (agentSummary.queued ?? 0), 'warning'], ['Core → Agent 传输中', agentSummary.transferring ?? 0, 'primary'], ['Core → Agent 重试', agentSummary.retry ?? 0, 'danger'], ['Core → Agent 已完成', agentSummary.completed ?? 0, 'success']
+    ['Core → Agent 排队', (agentSummary.scheduled ?? 0) + (agentSummary.queued ?? 0), 'warning'], ['Core → Agent 传输中', agentSummary.transferring ?? 0, 'primary'], ['Core → Agent 重试', agentSummary.retry ?? 0, 'danger'], ['Core → Agent 暂停', agentSummary.paused ?? 0, 'secondary'], ['Core → Agent 已取消', agentSummary.cancelled ?? 0, 'secondary'], ['Core → Agent 已完成', agentSummary.completed ?? 0, 'success']
   ];
   $('#transfer-monitor-summary').innerHTML = stats.map(([label, value, color]) => `<div class="col-6 col-md"><div class="border rounded p-2 h-100"><div class="small text-body-secondary">${escapeHtml(label)}</div><div class="h5 mb-0 mt-1 text-${color}">${escapeHtml(value)}</div></div></div>`).join('');
   $('#monitor-edge-rows').innerHTML = edgeItems.length ? edgeItems.map((item) => {
     const retryable = ['FAILED', 'RETRY_WAIT'].includes(item.status) && item.requestId;
     const version = item.productName ? `${item.productName} · ${item.displayVersion ?? item.version ?? '未知版本'}` : '历史申请';
     const round = item.roundNo ? `第 ${item.roundNo} 轮` : '-';
-    return `<tr><td><div class="fw-semibold">${escapeHtml(version)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(item.requestId)}</div></td><td>${escapeHtml(round)}<div class="small text-body-secondary font-monospace">${escapeHtml(item.roundId ?? '-')}</div></td><td><code>${escapeHtml(item.transferTaskId ?? '-')}</code></td><td>${monitorStatusBadge(item.status)}</td><td>${monitorProgressText(item.summary)}</td><td>${escapeHtml(item.attempts ?? 0)}${item.retryAt ? `<div class="small text-warning-emphasis">${escapeHtml(displayTime(item.retryAt))}</div>` : ''}</td><td>${item.lastError ? `<span class="small text-danger" title="${escapeHtml(item.lastError)}">${escapeHtml(item.lastError.length > 80 ? `${item.lastError.slice(0, 80)}…` : item.lastError)}</span>` : '-'}</td><td>${escapeHtml(displayTime(item.updatedAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button type="button" class="btn btn-outline-primary btn-sm monitor-edge-detail" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-eye me-1"></i>详情</button>${retryable ? `<button type="button" class="btn btn-outline-warning btn-sm monitor-edge-retry" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-arrow-repeat me-1"></i>重试</button>` : ''}</div></td></tr>`;
+    return `<tr><td><div class="fw-semibold">${escapeHtml(version)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(item.requestId)}</div></td><td>${escapeHtml(round)}<div class="small text-body-secondary font-monospace">${escapeHtml(item.roundId ?? '-')}</div></td><td><code>${escapeHtml(item.transferTaskId ?? '-')}</code></td><td>${monitorStatusBadge(item.status)}</td><td>${monitorProgressText(item.summary)}</td><td>${escapeHtml(item.attempts ?? 0)}${item.retryAt ? `<div class="small text-warning-emphasis">${escapeHtml(displayTime(item.retryAt))}</div>` : ''}</td><td>${item.lastError ? `<span class="small text-danger" title="${escapeHtml(item.lastError)}">${escapeHtml(item.lastError.length > 80 ? `${item.lastError.slice(0, 80)}…` : item.lastError)}</span>` : '-'}</td><td>${escapeHtml(displayTime(item.updatedAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button type="button" class="btn btn-outline-primary btn-sm monitor-edge-detail" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-eye me-1"></i>详情</button>${canControl && retryable ? `<button type="button" class="btn btn-outline-warning btn-sm monitor-edge-retry" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-arrow-repeat me-1"></i>重试</button>` : ''}</div></td></tr>`;
   }).join('') : '<tr><td colspan="9" class="text-center text-body-secondary py-4">暂无 Edge → Core 传输任务</td></tr>';
   $('#monitor-agent-rows').innerHTML = agentItems.length ? agentItems.map((task) => {
     const retryable = task.displayStatus === 'RETRY_WAIT' || (task.displayStatus === 'QUEUED' && task.lastError);
@@ -282,7 +287,8 @@ function renderTransferMonitor(data) {
     const totalBytes = task.totalBytes ?? 0;
     const completedBytes = task.completedBytes ?? progress.bytesDownloaded ?? 0;
     const progressText = `${completedFiles} / ${totalFiles} 个文件<div class="small text-body-secondary">${escapeHtml(formatTransferBytes(completedBytes))} / ${escapeHtml(formatTransferBytes(totalBytes))}</div>`;
-    return `<tr><td><div class="fw-semibold">${escapeHtml(task.agentName ?? task.agentId)}</div><div class="small text-body-secondary">${escapeHtml(task.centerId ?? task.agentId)}</div></td><td>${escapeHtml(version)}${task.roundNo ? `<div class="small text-body-secondary">第 ${escapeHtml(task.roundNo)} 轮</div>` : ''}</td><td><code>${escapeHtml(task.taskId)}</code></td><td>${monitorStatusBadge(task.displayStatus)}</td><td>${progressText}</td><td>${escapeHtml(task.chunkConcurrency ?? '-')}</td><td>${escapeHtml(task.attempts ?? 0)}${task.retryAt && task.displayStatus === 'RETRY_WAIT' ? `<div class="small text-warning-emphasis">${escapeHtml(displayTime(task.retryAt))}</div>` : ''}</td><td>${task.lastError ? `<span class="small text-danger" title="${escapeHtml(task.lastError)}">${escapeHtml(task.lastError.length > 80 ? `${task.lastError.slice(0, 80)}…` : task.lastError)}</span>` : '-'}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button type="button" class="btn btn-outline-primary btn-sm monitor-agent-detail" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-eye me-1"></i>详情</button>${task.displayStatus === 'SCHEDULED' ? `<button type="button" class="btn btn-outline-primary btn-sm monitor-agent-start" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-play me-1"></i>立即开始</button>` : ''}${retryable ? `<button type="button" class="btn btn-outline-warning btn-sm monitor-agent-retry" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-arrow-repeat me-1"></i>重试</button>` : ''}</div></td></tr>`;
+    const stateControl = !canControl ? '' : task.displayStatus === 'PAUSED' ? `<button type="button" class="btn btn-outline-primary btn-sm monitor-agent-control" data-action="resume" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-play me-1"></i>继续</button>` : ['SCHEDULED', 'QUEUED', 'RUNNING', 'RETRY_WAIT', 'PAUSE_REQUESTED'].includes(task.displayStatus) ? `<button type="button" class="btn btn-outline-warning btn-sm monitor-agent-control" data-action="pause" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-pause me-1"></i>暂停</button><button type="button" class="btn btn-outline-danger btn-sm monitor-agent-control" data-action="cancel" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-x-circle me-1"></i>取消</button>` : '';
+    return `<tr><td><div class="fw-semibold">${escapeHtml(task.agentName ?? task.agentId)}</div><div class="small text-body-secondary">${escapeHtml(task.centerId ?? task.agentId)}</div></td><td>${escapeHtml(version)}${task.roundNo ? `<div class="small text-body-secondary">第 ${escapeHtml(task.roundNo)} 轮</div>` : ''}</td><td><code>${escapeHtml(task.taskId)}</code></td><td>${monitorStatusBadge(task.displayStatus)}</td><td>${progressText}</td><td>${escapeHtml(task.chunkConcurrency ?? '-')}</td><td>${escapeHtml(task.attempts ?? 0)}${task.retryAt && task.displayStatus === 'RETRY_WAIT' ? `<div class="small text-warning-emphasis">${escapeHtml(displayTime(task.retryAt))}</div>` : ''}</td><td>${task.lastError ? `<span class="small text-danger" title="${escapeHtml(task.lastError)}">${escapeHtml(task.lastError.length > 80 ? `${task.lastError.slice(0, 80)}…` : task.lastError)}</span>` : '-'}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button type="button" class="btn btn-outline-primary btn-sm monitor-agent-detail" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-eye me-1"></i>详情</button>${canControl && task.displayStatus === 'SCHEDULED' ? `<button type="button" class="btn btn-outline-primary btn-sm monitor-agent-start" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-play me-1"></i>立即开始</button>` : ''}${canControl && retryable ? `<button type="button" class="btn btn-outline-warning btn-sm monitor-agent-retry" data-task-id="${escapeHtml(task.taskId)}"><i class="bi bi-arrow-repeat me-1"></i>重试</button>` : ''}${stateControl}</div></td></tr>`;
   }).join('') : '<tr><td colspan="9" class="text-center text-body-secondary py-4">暂无 Core → Agent 传输任务</td></tr>';
   refreshPaginatedTables($('#page-transfer-monitor'));
   document.querySelectorAll('.monitor-edge-detail').forEach((button) => { button.onclick = () => showDetail(button.dataset.requestId); });
@@ -290,6 +296,7 @@ function renderTransferMonitor(data) {
   document.querySelectorAll('.monitor-edge-retry').forEach((button) => { button.onclick = () => retryEdgeTransfer(button.dataset.requestId, button); });
   document.querySelectorAll('.monitor-agent-start').forEach((button) => { button.onclick = () => controlDistributionTask(button.dataset.taskId, 'start', button); });
   document.querySelectorAll('.monitor-agent-retry').forEach((button) => { button.onclick = () => controlDistributionTask(button.dataset.taskId, 'retry', button); });
+  document.querySelectorAll('.monitor-agent-control').forEach((button) => { button.onclick = () => controlDistributionState(button.dataset.taskId, button.dataset.action, button); });
 }
 async function loadTransferMonitor() {
   try { renderTransferMonitor(await api('/api/v1/transfer-monitor')); clearMessage(); }
@@ -303,6 +310,12 @@ async function retryEdgeTransfer(requestId, button) {
 async function controlDistributionTask(taskId, action, button) {
   button.disabled = true;
   try { await api(`/api/v1/distribution-tasks/${encodeURIComponent(taskId)}/${action}`, { method: 'POST', body: '{}' }); message(action === 'start' ? '已将任务放入可领取队列' : '已将任务立即放回重试队列'); await loadTransferMonitor(); await loadDistribution(); }
+  catch (error) { message(error.message, 'danger'); button.disabled = false; }
+}
+async function controlDistributionState(taskId, action, button) {
+  if (action === 'cancel' && !await confirmDialog({ title: '取消传输任务', text: '取消后任务将停止领取，已完成的文件会保留，但任务不能继续或重试。确认取消吗？', confirmLabel: '取消任务', confirmClass: 'btn-danger' })) return;
+  button.disabled = true;
+  try { await api(`/api/v1/distribution-tasks/${encodeURIComponent(taskId)}/control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }) }); message(action === 'pause' ? '已请求暂停任务' : action === 'resume' ? '任务已继续排队' : '已请求取消任务'); await loadTransferMonitor(); }
   catch (error) { message(error.message, 'danger'); button.disabled = false; }
 }
 async function createDistributionTask(event) {
@@ -321,7 +334,7 @@ async function showDistributionDetail(taskId) {
     const task = (await api(`/api/v1/distribution-tasks/${encodeURIComponent(taskId)}`)).item;
     const artifact = distributionArtifacts.find((item) => item.artifactId === task.artifactId);
     const agent = coreAgents.find((item) => item.agentId === task.agentId);
-    const labels = { SCHEDULED: '已计划', QUEUED: '排队中', RETRY_WAIT: '重试等待', RUNNING: '传输中', COMPLETED: '已就绪' };
+    const labels = { SCHEDULED: '已计划', QUEUED: '排队中', RETRY_WAIT: '重试等待', RUNNING: '传输中', COMPLETED: '已就绪', PAUSE_REQUESTED: '等待暂停', PAUSED: '已暂停', CANCEL_REQUESTED: '等待取消', CANCELLED: '已取消' };
     const displayStatus = distributionDisplayStatus(task);
     $('#distribution-detail-title').textContent = artifact ? `${artifact.productName ?? '历史产品'} · ${artifact.displayVersion ?? artifact.version ?? '未知版本'}` : task.artifactId;
     const progress = task.progress ?? {};

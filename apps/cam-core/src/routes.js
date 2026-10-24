@@ -341,6 +341,11 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     try { return { item: store.retryDistributionTaskFromCore(request.params.taskId) }; }
     catch (err) { return error(reply, 409, err.code ?? 'distribution_retry_rejected', err.message); }
   });
+  app.post('/api/v1/distribution-tasks/:taskId/control', { bodyLimit: 4096 }, async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
+    try { return { item: store.controlDistributionTask(request.params.taskId, request.body?.action) }; }
+    catch (err) { return error(reply, 409, err.code ?? 'distribution_control_rejected', err.message); }
+  });
   app.get('/api/v1/agent/available-artifacts', async (request, reply) => {
     const taskByArtifact = store.listLatestAgentDistributionTasks(request.agentPrincipal.agentId);
     return reply.send({ items: store.listArtifacts({ includeRoundMetadata: true }).map(({ artifactId, productName, displayVersion, version, revision, releaseId, roundId, roundNo, manifestSha256, cloudApprovalId, transferTaskId, files, receivedAt }) => {

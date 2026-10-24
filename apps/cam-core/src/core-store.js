@@ -145,7 +145,7 @@ export class CoreStore {
       CREATE TABLE IF NOT EXISTS core_distribution_tasks (
         task_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES core_agents(agent_id),
         artifact_id TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, files_json TEXT NOT NULL,
-        status TEXT NOT NULL, progress_json TEXT NOT NULL DEFAULT '{}', last_error TEXT,
+        status TEXT NOT NULL, control_state TEXT NOT NULL DEFAULT 'RUN', progress_json TEXT NOT NULL DEFAULT '{}', last_error TEXT,
         attempts INTEGER NOT NULL DEFAULT 0, retry_at TEXT NOT NULL,
         scheduled_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
         chunk_concurrency INTEGER NOT NULL DEFAULT 4,
@@ -205,6 +205,7 @@ export class CoreStore {
     `);
     db.exec('CREATE TABLE IF NOT EXISTS core_agent_nonces (agent_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (agent_id, nonce))');
     const distributionColumns = new Set(db.prepare('PRAGMA table_info(core_distribution_tasks)').all().map((column) => column.name));
+    if (!distributionColumns.has('control_state')) db.exec("ALTER TABLE core_distribution_tasks ADD COLUMN control_state TEXT NOT NULL DEFAULT 'RUN'");
     if (!distributionColumns.has('attempts')) db.exec('ALTER TABLE core_distribution_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
     if (!distributionColumns.has('retry_at')) db.exec(`ALTER TABLE core_distribution_tasks ADD COLUMN retry_at TEXT NOT NULL DEFAULT '${now()}'`);
     if (!distributionColumns.has('scheduled_at')) db.exec("ALTER TABLE core_distribution_tasks ADD COLUMN scheduled_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
@@ -356,7 +357,7 @@ export class CoreStore {
   }
   getDistributionTask(taskId) {
     const row = this.db.prepare('SELECT * FROM core_distribution_tasks WHERE task_id = ?').get(taskId);
-    return row ? { taskId: row.task_id, agentId: row.agent_id, artifactId: row.artifact_id, manifestSha256: row.manifest_sha256, files: JSON.parse(row.files_json), status: row.status, progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, scheduledAt: row.scheduled_at, chunkConcurrency: row.chunk_concurrency, lastError: row.last_error, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at } : null;
+    return row ? { taskId: row.task_id, agentId: row.agent_id, artifactId: row.artifact_id, manifestSha256: row.manifest_sha256, files: JSON.parse(row.files_json), status: row.status, controlState: row.control_state ?? 'RUN', progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, scheduledAt: row.scheduled_at, chunkConcurrency: row.chunk_concurrency, lastError: row.last_error, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at } : null;
   }
   listLatestAgentDistributionTasks(agentId) {
     const latest = new Map();
@@ -396,11 +397,19 @@ export class CoreStore {
       const artifact = this.getArtifact(task.artifactId);
       const displayStatus = task.status === 'SCHEDULED'
         ? 'SCHEDULED'
-        : task.status === 'COMPLETED'
-          ? 'COMPLETED'
-          : task.status === 'RUNNING'
-            ? 'RUNNING'
-            : task.lastError && task.retryAt && Date.parse(task.retryAt) > Date.now() ? 'RETRY_WAIT' : task.status;
+        : task.status === 'PAUSED'
+          ? 'PAUSED'
+          : task.status === 'CANCELLED'
+            ? 'CANCELLED'
+            : task.controlState === 'PAUSE_REQUESTED'
+              ? 'PAUSE_REQUESTED'
+              : task.controlState === 'CANCEL_REQUESTED'
+                ? 'CANCEL_REQUESTED'
+                : task.status === 'COMPLETED'
+                  ? 'COMPLETED'
+                  : task.status === 'RUNNING'
+                    ? 'RUNNING'
+                    : task.lastError && task.retryAt && Date.parse(task.retryAt) > Date.now() ? 'RETRY_WAIT' : task.status;
       return {
         ...task,
         displayStatus,
@@ -422,53 +431,82 @@ export class CoreStore {
       coreToAgent,
       summary: {
         edgeToCore: { waiting: count(edgeToCore, 'WAITING_EDGE') + count(edgeToCore, 'WAITING_AUTHORIZATION'), transferring: count(edgeToCore, 'RECEIVING') + count(edgeToCore, 'VERIFYING'), retry: count(edgeToCore, 'RETRY_WAIT'), failed: count(edgeToCore, 'FAILED'), completed: count(edgeToCore, 'COMPLETED') },
-        coreToAgent: { scheduled: count(coreToAgent, 'SCHEDULED'), queued: count(coreToAgent, 'QUEUED'), transferring: count(coreToAgent, 'RUNNING'), retry: count(coreToAgent, 'RETRY_WAIT'), completed: count(coreToAgent, 'COMPLETED') }
+        coreToAgent: { scheduled: count(coreToAgent, 'SCHEDULED'), queued: count(coreToAgent, 'QUEUED'), transferring: count(coreToAgent, 'RUNNING'), retry: count(coreToAgent, 'RETRY_WAIT'), paused: count(coreToAgent, 'PAUSED') + count(coreToAgent, 'PAUSE_REQUESTED'), cancelled: count(coreToAgent, 'CANCELLED') + count(coreToAgent, 'CANCEL_REQUESTED'), completed: count(coreToAgent, 'COMPLETED') }
       }
     };
   }
   listAgentTasks(agentId) {
     const timestamp = now();
-    this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', updated_at = ? WHERE agent_id = ? AND status = 'SCHEDULED' AND scheduled_at <= ? AND retry_at <= ?").run(timestamp, agentId, timestamp, timestamp);
-    return this.db.prepare("SELECT task_id FROM core_distribution_tasks WHERE agent_id = ? AND status IN ('QUEUED','RUNNING') AND scheduled_at <= ? AND retry_at <= ? ORDER BY created_at LIMIT 20").all(agentId, timestamp, timestamp).map(({ task_id }) => this.getDistributionTask(task_id));
+    this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', updated_at = ? WHERE agent_id = ? AND status = 'SCHEDULED' AND control_state = 'RUN' AND scheduled_at <= ? AND retry_at <= ?").run(timestamp, agentId, timestamp, timestamp);
+    return this.db.prepare("SELECT task_id FROM core_distribution_tasks WHERE agent_id = ? AND status IN ('QUEUED','RUNNING') AND control_state = 'RUN' AND scheduled_at <= ? AND retry_at <= ? ORDER BY created_at LIMIT 20").all(agentId, timestamp, timestamp).map(({ task_id }) => this.getDistributionTask(task_id));
   }
   updateDistributionTask(agentId, taskId, { status, progress = {}, error = null }) {
     const task = this.getDistributionTask(taskId);
     if (!task || task.agentId !== agentId) throw Object.assign(new Error('task not found for this agent'), { code: 'distribution_task_not_found' });
-    if (!['RUNNING', 'COMPLETED', 'FAILED'].includes(status)) throw Object.assign(new Error('invalid distribution task status'), { code: 'distribution_status_invalid' });
+    if (!['RUNNING', 'COMPLETED', 'FAILED', 'PAUSED', 'CANCELLED'].includes(status)) throw Object.assign(new Error('invalid distribution task status'), { code: 'distribution_status_invalid' });
     if (task.status === 'COMPLETED' && status !== 'COMPLETED') return task;
+    if (status === 'RUNNING' && ['PAUSE_REQUESTED', 'CANCEL_REQUESTED'].includes(task.controlState)) return task;
+    if (status === 'PAUSED' && !['PAUSE_REQUESTED', 'PAUSED'].includes(task.controlState)) throw Object.assign(new Error('任务尚未请求暂停'), { code: 'distribution_pause_not_requested' });
+    if (status === 'CANCELLED' && !['CANCEL_REQUESTED', 'CANCELLED'].includes(task.controlState)) throw Object.assign(new Error('任务尚未请求取消'), { code: 'distribution_cancel_not_requested' });
     const timestamp = now();
     const attempts = status === 'FAILED' ? task.attempts + 1 : task.attempts;
-    const retryAt = status === 'FAILED' ? new Date(Date.now() + Math.min(300_000, 5_000 * (2 ** Math.min(attempts - 1, 6)))).toISOString() : timestamp;
+    const requestedControl = status === 'FAILED' ? task.controlState : null;
+    const retryAt = status === 'FAILED' && !['PAUSE_REQUESTED', 'CANCEL_REQUESTED'].includes(requestedControl) ? new Date(Date.now() + Math.min(300_000, 5_000 * (2 ** Math.min(attempts - 1, 6)))).toISOString() : timestamp;
     const persistedStatus = status === 'FAILED' ? 'QUEUED' : status;
-    this.db.prepare('UPDATE core_distribution_tasks SET status = ?, attempts = ?, retry_at = ?, progress_json = ?, last_error = ?, updated_at = ?, completed_at = ? WHERE task_id = ? AND agent_id = ?')
-      .run(persistedStatus, attempts, retryAt, JSON.stringify(progress), typeof error === 'string' ? error.slice(0, 1000) : null, timestamp, status === 'COMPLETED' ? timestamp : null, taskId, agentId);
+    const controlledStatus = status === 'FAILED' && requestedControl === 'PAUSE_REQUESTED' ? 'PAUSED' : status === 'FAILED' && requestedControl === 'CANCEL_REQUESTED' ? 'CANCELLED' : ['PAUSED', 'CANCELLED'].includes(status) ? status : persistedStatus;
+    const controlState = status === 'PAUSED' || (status === 'FAILED' && requestedControl === 'PAUSE_REQUESTED') ? 'PAUSED' : status === 'CANCELLED' || (status === 'FAILED' && requestedControl === 'CANCEL_REQUESTED') ? 'CANCELLED' : 'RUN';
+    this.db.prepare('UPDATE core_distribution_tasks SET status = ?, control_state = ?, attempts = ?, retry_at = ?, progress_json = ?, last_error = ?, updated_at = ?, completed_at = ? WHERE task_id = ? AND agent_id = ?')
+      .run(controlledStatus, controlState, attempts, retryAt, JSON.stringify(progress), typeof error === 'string' ? error.slice(0, 1000) : null, timestamp, status === 'COMPLETED' ? timestamp : null, taskId, agentId);
     return this.getDistributionTask(taskId);
   }
   retryDistributionTask(agentId, taskId) {
     const task = this.getDistributionTask(taskId);
     if (!task || task.agentId !== agentId) throw Object.assign(new Error('task not found for this agent'), { code: 'distribution_task_not_found' });
     if (task.status === 'COMPLETED') throw Object.assign(new Error('已完成的分发任务不能重试'), { code: 'distribution_task_completed' });
+    if (task.status === 'CANCELLED') throw Object.assign(new Error('已取消的分发任务不能重试'), { code: 'distribution_task_cancelled' });
     if (task.status === 'RUNNING') throw Object.assign(new Error('分发任务正在传输，不能重复重试'), { code: 'distribution_task_active' });
     const timestamp = now();
-    this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', retry_at = ?, updated_at = ? WHERE task_id = ? AND agent_id = ?").run(timestamp, timestamp, taskId, agentId);
+    this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', control_state = 'RUN', retry_at = ?, updated_at = ? WHERE task_id = ? AND agent_id = ?").run(timestamp, timestamp, taskId, agentId);
     return this.getDistributionTask(taskId);
   }
   startDistributionTask(taskId) {
     const task = this.getDistributionTask(taskId);
     if (!task) throw Object.assign(new Error('分发任务不存在'), { code: 'distribution_task_not_found' });
     if (task.status === 'COMPLETED') throw Object.assign(new Error('已完成的分发任务不能重新开始'), { code: 'distribution_task_completed' });
+    if (task.status === 'CANCELLED') throw Object.assign(new Error('已取消的分发任务不能重新开始'), { code: 'distribution_task_cancelled' });
     if (task.status === 'RUNNING') throw Object.assign(new Error('分发任务正在传输'), { code: 'distribution_task_active' });
     const timestamp = now();
-    this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', scheduled_at = ?, retry_at = ?, updated_at = ? WHERE task_id = ?").run(timestamp, timestamp, timestamp, taskId);
+    this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', control_state = 'RUN', scheduled_at = ?, retry_at = ?, updated_at = ? WHERE task_id = ?").run(timestamp, timestamp, timestamp, taskId);
     return this.getDistributionTask(taskId);
   }
   retryDistributionTaskFromCore(taskId) {
     const task = this.getDistributionTask(taskId);
     if (!task) throw Object.assign(new Error('分发任务不存在'), { code: 'distribution_task_not_found' });
     if (task.status === 'COMPLETED') throw Object.assign(new Error('已完成的分发任务不能重试'), { code: 'distribution_task_completed' });
+    if (task.status === 'CANCELLED') throw Object.assign(new Error('已取消的分发任务不能重试'), { code: 'distribution_task_cancelled' });
     if (task.status === 'RUNNING') throw Object.assign(new Error('分发任务正在传输，不能重复重试'), { code: 'distribution_task_active' });
     const timestamp = now();
-    this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', retry_at = ?, updated_at = ? WHERE task_id = ?").run(timestamp, timestamp, taskId);
+    this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', control_state = 'RUN', retry_at = ?, updated_at = ? WHERE task_id = ?").run(timestamp, timestamp, taskId);
+    return this.getDistributionTask(taskId);
+  }
+  controlDistributionTask(taskId, action) {
+    const task = this.getDistributionTask(taskId);
+    if (!task) throw Object.assign(new Error('分发任务不存在'), { code: 'distribution_task_not_found' });
+    if (!['pause', 'resume', 'cancel'].includes(action)) throw Object.assign(new Error('任务控制操作无效'), { code: 'distribution_control_invalid' });
+    if (task.status === 'COMPLETED' || task.status === 'CANCELLED') throw Object.assign(new Error('当前任务已结束，不能控制'), { code: 'distribution_task_terminal' });
+    const timestamp = now();
+    if (action === 'resume') {
+      if (task.status !== 'PAUSED') throw Object.assign(new Error('只有已暂停任务可以继续'), { code: 'distribution_resume_invalid' });
+      this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', control_state = 'RUN', scheduled_at = ?, retry_at = ?, updated_at = ? WHERE task_id = ?").run(timestamp, timestamp, timestamp, taskId);
+    } else if (action === 'pause') {
+      if (task.status === 'PAUSED' || task.controlState === 'PAUSE_REQUESTED') return task;
+      if (task.status === 'RUNNING') this.db.prepare("UPDATE core_distribution_tasks SET control_state = 'PAUSE_REQUESTED', updated_at = ? WHERE task_id = ?").run(timestamp, taskId);
+      else this.db.prepare("UPDATE core_distribution_tasks SET status = 'PAUSED', control_state = 'PAUSED', updated_at = ? WHERE task_id = ?").run(timestamp, taskId);
+    } else if (task.status === 'RUNNING') {
+      this.db.prepare("UPDATE core_distribution_tasks SET control_state = 'CANCEL_REQUESTED', updated_at = ? WHERE task_id = ?").run(timestamp, taskId);
+    } else {
+      this.db.prepare("UPDATE core_distribution_tasks SET status = 'CANCELLED', control_state = 'CANCELLED', retry_at = ?, updated_at = ? WHERE task_id = ?").run(timestamp, timestamp, taskId);
+    }
     return this.getDistributionTask(taskId);
   }
   getAuthorizedDistributionFile(agentId, taskId, sha256) {

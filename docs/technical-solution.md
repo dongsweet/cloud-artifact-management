@@ -519,7 +519,10 @@ transfer-bundle/
 | `cam-core` | `POST /api/v1/agent/tasks/pull` | Agent 主动轮询，仅返回目标 Agent 的到期任务 |
 | `cam-core` | `GET /api/v1/agent/tasks/:id/manifest` | 返回绑定目标 Agent 的任务清单快照 |
 | `cam-core` | `GET /api/v1/agent/tasks/:id/files/:sha256/parts/:index` | 通过并行分块拉取已授权文件 |
-| `cam-core` | `POST /api/v1/agent/tasks/:id/progress` | 接收任务进度、完成校验或失败回执 |
+| `cam-core` | `POST /api/v1/agent/tasks/:id/progress` | 接收任务进度、完成校验或失败回执；返回 Core 对任务的控制状态 |
+| `cam-core` | `GET /api/v1/transfer-monitor` | 查看 Edge → Core 和 Core → Agent 两类传输任务及汇总进度 |
+| `cam-core` | `POST /api/v1/distribution-tasks/:taskId/start`、`/retry` | 在 Core 侧立即开始或重试指定 Agent 分发任务 |
+| `cam-core` | `POST /api/v1/distribution-tasks/:taskId/control` | 在 Core 侧暂停、继续或取消指定 Agent 分发任务 |
 | `cam-agent` | `POST /api/v1/auth/login` | 本地管理员密码登录；设备签名身份与人员会话隔离 |
 | `cam-agent` | `GET /api/v1/identity` | 登录后读取本机公钥、指纹和从 Core 回显并持久保存的 Agent 编号 |
 | `cam-agent` | `POST /api/v1/identity/test` | 使用本机签名验证 Core 配对，需要本地登录和 CSRF 校验 |
@@ -543,7 +546,7 @@ Core 与 Agent 使用双向应用层签名。每台 Agent 保留独立 Ed25519 �
 
 Agent 人员登录直接调用 AAA；Agent 只保存本地 CAM 角色映射和会话摘要，不保存 AAA 密码。Agent 使用 `agent.sqlite` 保存设备本地应急管理员、授权映射和会话，初始管理员通过仅限终端的初始化命令创建。密码至少 12 个字符、使用 scrypt 派生，登录失败限制和 CSRF 会话校验沿用 Core/Edge 的现有机制。人员密码绝不作为 Core 的服务认证凭据。Agent 首次启动在本地数据目录生成 Ed25519 身份密钥，管理员把公钥提交到 Core 完成配对；Agent 后续请求使用 Agent ID、时间戳、随机数和请求签名认证，Core 保存公钥指纹并拒绝重放。Core 为每个 Agent 保存自动轮换周期（默认 90 天）和旧、新身份过渡期（默认 24 小时），并可排队要求立即轮换。Agent 仅通过出站轮询取策略和请求，离线时 Core 保留请求。Agent 先以原子写入在本机持久化待用私钥，再使用当前身份提交新公钥，并用待用私钥对相同签名信封提供持有证明；Core 仅接受当前身份发起换钥，防止仍在宽限期内的旧身份覆盖新身份。重复提交相同公钥幂等且不会延长过渡期。Agent 使用新身份探测 Core 已切换后再替换当前身份，并明确确认；私钥始终留在 Agent。响应丢失和重启均复用持久化待用密钥，网络失败采用 5 秒起、最长 5 分钟的指数退避。Core 与 Agent 页面显示确认、下次轮换、失败原因和重试时间。
 
-Core 任务状态为 `QUEUED → RUNNING → COMPLETED`；传输失败会记录错误、重试次数和下次重试时间，并使用从 5 秒起、最多 5 分钟的指数退避。Agent 每轮只领取归属自己的任务，单个 Agent 同一时刻串行处理一个任务；同一 Agent 在同一时间段到期的任务按创建时间依次排队，不会把多个任务的分块线程数叠加。不同 Agent 使用各自的队列，可以并行传输。任务执行和分块进度落入本地 SQLite；服务重启后继续使用缓存临时分块。每个完整文件先落入临时文件，整文件 SHA-256、大小与 Core 清单一致后才原子改名到按摘要命名的缓存文件。不同版本引用相同 SHA-256 时复用已有缓存对象。
+Core 任务状态为 `SCHEDULED → QUEUED → RUNNING → COMPLETED`；传输失败会记录错误、重试次数和下次重试时间，并使用从 5 秒起、最多 5 分钟的指数退避。Core 监测页面按 Edge → Core、Core → Agent 分成两张表：Edge → Core 的人工重试统一由 Core 发起；Core → Agent 以单个 Agent 分发任务为控制粒度，支持暂停、继续和取消。运行中的任务收到暂停/取消请求后，在 Agent 完成当前分块并上报进度时生效，页面显示“等待暂停/等待取消”；排队任务可立即进入“已暂停/已取消”。文件级只展示逐文件、分块和错误进度，不提供单文件控制。Agent 每轮只领取归属自己的任务，单个 Agent 同一时刻串行处理一个任务；同一 Agent 在同一时间段到期的任务按创建时间依次排队，不会把多个任务的分块线程数叠加。不同 Agent 使用各自的队列，可以并行传输。任务执行和分块进度落入本地 SQLite；服务重启后继续使用缓存临时分块。每个完整文件先落入临时文件，整文件 SHA-256、大小与 Core 清单一致后才原子改名到按摘要命名的缓存文件。不同版本引用相同 SHA-256 时复用已有缓存对象。
 
 Edge → Core 的正式制品传输使用网闸配置中的 `retryLimit` 作为自动重试上限。每次失败都在 Edge 保存错误码、错误信息、尝试次数、下次重试时间和是否达到上限，并通过受双方身份签名保护的 `POST /api/v1/gate/transfer-failures` 回告 Core。Core 将失败状态合并到接收进度：暂未达到上限显示 `RETRY_WAIT`，达到上限显示 `FAILED`，页面同时显示最近错误和重试信息；达到上限后不再后台循环重试。人工重试统一由 Core 发起，Core 通过签名保护的 `POST /api/v1/gate/transfer-retry` 向 Edge 下发指令，Edge 清除本地失败状态并重新进入发送队列。Edge 页面只显示状态、错误和尝试次数，不提供重试控制。收到新的分块或最终回执后清除失败状态。
 
@@ -556,7 +559,7 @@ Edge → Core 的正式制品传输使用网闸配置中的 `retryLimit` 作为�
 Agent 页面按职责分为三个业务入口：
 
 - **正式制品**是 Agent 主工作台，展示 Core 全量正式版本、版本级缓存摘要和文件级缓存状态；运维人员在这里发起拉取、继续拉取或重试，并在全部文件校验完成后创建部署交付授权。相同 SHA-256 文件跨版本只保留一份缓存对象，并标记为“本机已缓存，可复用”。
-- **传输任务**是 Core→Agent 的任务中心，展示排队、传输中、重试等待和完成任务，以及逐文件、分块、字节进度、最近错误和下次重试时间。Agent 的“立即同步任务”只触发出站轮询；“立即重试”请求 Core 重新放行归属本 Agent 的任务，不提供当前模型无法可靠保证语义的取消操作。
+- **传输任务**是 Core→Agent 的任务中心，展示排队、传输中、重试等待、暂停、取消和完成任务，以及逐文件、分块、字节进度、最近错误和下次重试时间。Agent 的“立即同步任务”只触发出站轮询；“立即重试”请求 Core 重新放行归属本 Agent 的任务。暂停、继续和取消由 Core 监测页面统一操作，Agent 页面不提供单文件控制。
 - **部署交付**处理 Agent→人工部署人员的下载授权和审计，展示授权、下载会话、Range 续传进度和错误，可导出一次性下载清单并撤销授权。它与 Core→Agent 传输使用不同的授权边界和存储记录。
 
 缓存状态不再作为独立导航页面；缓存摘要、文件状态和异常对象在“正式制品”及“传输任务详情”中呈现。原有缓存查询接口继续保留以兼容旧客户端。

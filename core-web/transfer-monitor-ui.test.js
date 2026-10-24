@@ -13,6 +13,10 @@ test('Core transfer monitor has separate Edge/Core-Agent task tables and task-le
   assert.match(script, /\/api\/v1\/transfer-monitor/u);
   assert.match(script, /transfer\/retry/u);
   assert.match(script, /monitor-agent-retry/u);
+  assert.match(script, /distribution-tasks\/.+\/control/u);
+  assert.match(script, /data-action="pause"/u);
+  assert.match(script, /data-action="cancel"/u);
+  assert.match(script, /canCore\('businessWrite'\)/u);
   assert.match(html, /文件级只展示/u);
 });
 

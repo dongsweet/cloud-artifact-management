@@ -40,8 +40,22 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     assert.equal(started.statusCode, 200, started.body); assert.equal(started.json().item.status, 'QUEUED');
     const monitorAfterStart = await app.inject({ method: 'GET', url: '/api/v1/transfer-monitor' });
     assert.equal(monitorAfterStart.json().coreToAgent.find((item) => item.taskId === scheduledTask.taskId).displayStatus, 'QUEUED');
+    const paused = await app.inject({ method: 'POST', url: `/api/v1/distribution-tasks/${scheduledTask.taskId}/control`, payload: { action: 'pause' } });
+    assert.equal(paused.statusCode, 200, paused.body); assert.equal(paused.json().item.status, 'PAUSED');
+    const resumed = await app.inject({ method: 'POST', url: `/api/v1/distribution-tasks/${scheduledTask.taskId}/control`, payload: { action: 'resume' } });
+    assert.equal(resumed.statusCode, 200, resumed.body); assert.equal(resumed.json().item.status, 'QUEUED');
     db.prepare('UPDATE core_distribution_tasks SET scheduled_at = ? WHERE task_id = ?').run(new Date(Date.now() - 1_000).toISOString(), scheduledTask.taskId);
     assert.ok(app.coreStore.listAgentTasks(west.agentId).some((item) => item.taskId === scheduledTask.taskId), 'due tasks become available automatically');
+    const cancelled = await app.inject({ method: 'POST', url: `/api/v1/distribution-tasks/${scheduledTask.taskId}/control`, payload: { action: 'cancel' } });
+    assert.equal(cancelled.statusCode, 200, cancelled.body); assert.equal(cancelled.json().item.status, 'CANCELLED');
+    assert.ok(!app.coreStore.listAgentTasks(west.agentId).some((item) => item.taskId === scheduledTask.taskId), 'cancelled tasks stay out of the Agent queue');
+    const pendingControlTask = app.coreStore.createDistributionTask({ agentId: west.agentId, artifactId: 'BASELINE-REQ-AGENT' });
+    app.coreStore.listAgentTasks(west.agentId);
+    app.coreStore.updateDistributionTask(west.agentId, pendingControlTask.taskId, { status: 'RUNNING', progress: { state: 'downloading' } });
+    app.coreStore.controlDistributionTask(pendingControlTask.taskId, 'pause');
+    const failedWhilePausing = app.coreStore.updateDistributionTask(west.agentId, pendingControlTask.taskId, { status: 'FAILED', error: '模拟链路中断' });
+    assert.equal(failedWhilePausing.status, 'PAUSED');
+    assert.ok(!app.coreStore.listAgentTasks(west.agentId).some((item) => item.taskId === pendingControlTask.taskId), 'a pause request survives a concurrent failure');
 
     const auth = (agent, identity, method, path, body = '') => { const timestamp = new Date().toISOString(); const nonce = randomNonce(); return { 'x-cam-agent-id': agent.agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(identity.privateKeyPem, method, path, timestamp, nonce, body) }; };
     const availablePath = '/api/v1/agent/available-artifacts';
