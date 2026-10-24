@@ -130,7 +130,7 @@ function approvalResponseSummary(detail, approvalCode) {
   };
   visit(detail);
   const unique = [...new Set(values.map((value) => text(value).replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim())
-    .filter((value) => value && !/^确认通过[。.!！]*$/u.test(value)))];
+    .filter((value) => value && !/^确认通过[。.!！]*$/u.test(value) && value !== '审批未通过，Core 已自动关闭云管工单。'))];
   return maskApprovalCode(unique.join('；'), approvalCode).slice(0, 2000);
 }
 

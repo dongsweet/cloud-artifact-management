@@ -363,7 +363,7 @@ test('CloudAdapter requires the EOMS work order manifest to match the local requ
 
 test('CloudAdapter treats an approval response without the temporary code as rejected', async () => {
   const approvalCode = 'c'.repeat(64);
-  const detail = { workOrderNumber: '20261012D1234', currentStep: '工单确认', workOrderConfirm: '1', workOrderDetail: `<p>清单 SHA-256：${'a'.repeat(64)}</p>`, workflowInfos: [{ content: '流程处理中。', editorContent: '<p>确认通过</p>', taskRecords: [{ editorContent: '<p>挺好的</p>' }] }] };
+  const detail = { workOrderNumber: '20261012D1234', currentStep: '工单确认', workOrderConfirm: '1', workOrderDetail: `<p>清单 SHA-256：${'a'.repeat(64)}</p>`, workflowInfos: [{ content: '流程处理中。', editorContent: '<p>确认通过</p>', taskRecords: [{ editorContent: '<p>挺好的</p>' }, { editorContent: '<p>审批未通过，Core 已自动关闭云管工单。</p>' }] }] };
   const adapter = new CloudAdapter({
     baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env,
     fetchImpl: async () => response(detail)
