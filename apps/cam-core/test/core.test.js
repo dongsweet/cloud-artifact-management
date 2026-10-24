@@ -269,6 +269,22 @@ test('gate approval messages require the configured exchange identity', async ()
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Core accepts Edge transfer failure reports without a browser session', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-transfer-failure-auth-'));
+  const app = await buildCoreApp({ dataDir, cloudAdapter: { createApproval: async () => ({ approvalId: 'APR-1' }) } });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
+  const payload = {
+    requestId: 'FREEZE-MISSING', freezeId: 'FREEZE-MISSING', transferTaskId: 'TR-MISSING',
+    manifestSha256: manifestSha256, attempt: 1, code: 'ENOSPC', message: '磁盘空间不足', terminal: true
+  };
+  try {
+    const path = '/api/v1/gate/transfer-failures';
+    const response = await app.inject({ method: 'POST', url: path, headers: await signedTestHeaders(app.gateKeyring, 'POST', path, payload), payload });
+    assert.equal(response.statusCode, 404, response.body);
+    assert.equal(response.json().error.code, 'request_not_found');
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Core polls cloud approval status and reliably pushes only the decision to Edge', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-decision-callback-'));
   const callbacks = [];
