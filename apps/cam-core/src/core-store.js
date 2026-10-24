@@ -44,6 +44,9 @@ function response(row) {
     cloudSubmissionState: row.cloud_submission_state ?? 'IDLE', cloudSubmissionAttemptedAt: row.cloud_submission_attempted_at ?? null,
     cloudRetryAt: row.cloud_retry_at ?? null,
     transferTaskId: row.transfer_task_id, transferStatus: row.transfer_status ?? null,
+    transferEdgeStatus: row.transfer_edge_status ?? null, transferEdgeAttempts: row.transfer_edge_attempts ?? 0,
+    transferEdgeRetryAt: row.transfer_edge_retry_at ?? null, transferEdgeErrorCode: row.transfer_edge_error_code ?? null,
+    transferEdgeLastError: row.transfer_edge_last_error ?? null, transferEdgeFailureTerminal: Boolean(row.transfer_edge_failure_terminal),
     transferNotificationState: row.transfer_notification_state ?? 'IDLE', transferNotificationAttempts: row.transfer_notification_attempts ?? 0,
     transferNotificationLastError: row.transfer_notification_error ?? null, transferNotificationNextAttemptAt: row.transfer_notification_next_attempt_at ?? null
   };
@@ -71,7 +74,11 @@ export class CoreStore {
       );
       CREATE TABLE IF NOT EXISTS core_transfer_tasks (
         transfer_task_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE REFERENCES core_approval_requests(request_id),
-        status TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        status TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
+        edge_status TEXT NOT NULL DEFAULT 'IDLE', edge_attempts INTEGER NOT NULL DEFAULT 0,
+        edge_retry_at TEXT, edge_error_code TEXT, edge_last_error TEXT,
+        edge_failure_terminal INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS core_artifacts (
         sha256 TEXT PRIMARY KEY CHECK (length(sha256) = 64),
@@ -202,6 +209,10 @@ export class CoreStore {
     if (!distributionColumns.has('retry_at')) db.exec(`ALTER TABLE core_distribution_tasks ADD COLUMN retry_at TEXT NOT NULL DEFAULT '${now()}'`);
     if (!distributionColumns.has('scheduled_at')) db.exec("ALTER TABLE core_distribution_tasks ADD COLUMN scheduled_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
     if (!distributionColumns.has('chunk_concurrency')) db.exec('ALTER TABLE core_distribution_tasks ADD COLUMN chunk_concurrency INTEGER NOT NULL DEFAULT 4');
+    const transferTaskColumns = new Set(db.prepare('PRAGMA table_info(core_transfer_tasks)').all().map((column) => column.name));
+    for (const [name, definition] of Object.entries({ edge_status: "TEXT NOT NULL DEFAULT 'IDLE'", edge_attempts: 'INTEGER NOT NULL DEFAULT 0', edge_retry_at: 'TEXT', edge_error_code: 'TEXT', edge_last_error: 'TEXT', edge_failure_terminal: 'INTEGER NOT NULL DEFAULT 0' })) {
+      if (!transferTaskColumns.has(name)) db.exec(`ALTER TABLE core_transfer_tasks ADD COLUMN ${name} ${definition}`);
+    }
     if (!columns.has('cloud_mapping_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_mapping_json TEXT');
     if (!columns.has('cloud_request_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_request_json TEXT');
     if (!columns.has('cloud_workflow_step')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_workflow_step TEXT');
@@ -393,7 +404,7 @@ export class CoreStore {
   }
 
   get(requestId) {
-    const item = response(this.db.prepare('SELECT r.*, t.status AS transfer_status, o.last_error AS transfer_notification_error, o.next_attempt_at AS transfer_notification_next_attempt_at FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id LEFT JOIN core_transfer_outbox o ON o.request_id = r.request_id WHERE r.request_id = ?').get(requestId));
+    const item = response(this.db.prepare('SELECT r.*, t.status AS transfer_status, t.edge_status AS transfer_edge_status, t.edge_attempts AS transfer_edge_attempts, t.edge_retry_at AS transfer_edge_retry_at, t.edge_error_code AS transfer_edge_error_code, t.edge_last_error AS transfer_edge_last_error, t.edge_failure_terminal AS transfer_edge_failure_terminal, o.last_error AS transfer_notification_error, o.next_attempt_at AS transfer_notification_next_attempt_at FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id LEFT JOIN core_transfer_outbox o ON o.request_id = r.request_id WHERE r.request_id = ?').get(requestId));
     return item ? { ...item, artifacts: this.listReleaseArtifacts(requestId) } : null;
   }
 
@@ -421,7 +432,7 @@ export class CoreStore {
     this.db.prepare('UPDATE core_approval_requests SET envelope_json = ? WHERE request_id = ?').run(JSON.stringify(updated), requestId);
     return this.get(requestId);
   }
-  list() { return this.db.prepare('SELECT r.*, t.status AS transfer_status, o.last_error AS transfer_notification_error, o.next_attempt_at AS transfer_notification_next_attempt_at FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id LEFT JOIN core_transfer_outbox o ON o.request_id = r.request_id ORDER BY r.created_at DESC LIMIT 500').all().map(response); }
+  list() { return this.db.prepare('SELECT r.*, t.status AS transfer_status, t.edge_status AS transfer_edge_status, t.edge_attempts AS transfer_edge_attempts, t.edge_retry_at AS transfer_edge_retry_at, t.edge_error_code AS transfer_edge_error_code, t.edge_last_error AS transfer_edge_last_error, t.edge_failure_terminal AS transfer_edge_failure_terminal, o.last_error AS transfer_notification_error, o.next_attempt_at AS transfer_notification_next_attempt_at FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id LEFT JOIN core_transfer_outbox o ON o.request_id = r.request_id ORDER BY r.created_at DESC LIMIT 500').all().map(response); }
   listCloudApprovalPending() {
     return this.db.prepare(`SELECT r.request_id FROM core_approval_requests r
       WHERE (r.status IN ('CLOUD_SUBMITTED','CLOUD_STATUS_UNCONFIRMED') AND r.cloud_approval_id IS NOT NULL)
@@ -614,10 +625,16 @@ export class CoreStore {
     const receivingFiles = files.filter((file) => file.status === 'RECEIVING').length;
     const allStored = files.length > 0 && completedFiles === files.length;
     let status = 'WAITING_AUTHORIZATION';
-    if (taskId) status = task?.status === 'RECEIVED' ? 'COMPLETED' : allStored ? 'VERIFYING' : receivingFiles ? 'RECEIVING' : 'WAITING_EDGE';
+    if (taskId) {
+      if (task?.status === 'RECEIVED') status = 'COMPLETED';
+      else if (task?.edge_status === 'FAILED' && task.edge_failure_terminal) status = 'FAILED';
+      else if (task?.edge_status === 'RETRY_WAIT') status = 'RETRY_WAIT';
+      else status = allStored ? 'VERIFYING' : receivingFiles ? 'RECEIVING' : 'WAITING_EDGE';
+    }
     return {
       requestId, transferTaskId: taskId, status, updatedAt: task?.updated_at ?? current.updatedAt,
       notification: { state: current.transferNotificationState, attempts: current.transferNotificationAttempts, lastError: current.transferNotificationLastError, nextAttemptAt: current.transferNotificationNextAttemptAt },
+      edgeFailure: task?.edge_last_error ? { status: task.edge_status, attempts: task.edge_attempts ?? 0, retryAt: task.edge_retry_at ?? null, code: task.edge_error_code ?? null, message: task.edge_last_error, terminal: Boolean(task.edge_failure_terminal) } : null,
       report: { received: current.reportReceived, fileName: current.reportFileName, sizeBytes: current.reportSize },
       summary: { fileCount: files.length, completedFiles, receivingFiles, totalBytes, receivedBytes, percent: totalBytes ? Math.min(100, Math.round(receivedBytes * 100 / totalBytes)) : 0 },
       files
@@ -644,6 +661,7 @@ export class CoreStore {
       chunk_size = excluded.chunk_size, chunk_count = excluded.chunk_count, byte_offset = excluded.byte_offset,
       size_bytes = excluded.size_bytes, part_sha256 = excluded.part_sha256, file_path = excluded.file_path, updated_at = excluded.updated_at`)
       .run(transferTaskId, digestValue, part.index, part.chunkSize, part.chunkCount, part.offset, part.size, part.sha256, path, now());
+    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECEIVING', edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ? AND status <> 'RECEIVED'").run(now(), transferTaskId);
     const count = this.db.prepare('SELECT COUNT(*) AS count FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ?').get(transferTaskId, digestValue).count;
     return { path, receivedParts: count, chunkCount: part.chunkCount, complete: count === part.chunkCount };
   }
@@ -768,6 +786,7 @@ export class CoreStore {
       }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECEIVING', edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ? AND status <> 'RECEIVED'").run(now(), transferTaskId);
     return { sha256: digestValue, sizeBytes: actualSize, reused: Boolean(existing), packages: expected.map((item) => item.packageKey) };
   }
   assertTransferComplete(transferTaskId) {
@@ -967,6 +986,33 @@ export class CoreStore {
     return { transferTaskId, requestId, status: 'READY', manifestSha256: current.manifestSha256, idempotent: false };
   }
 
+  recordEdgeTransferFailure(input = {}) {
+    const requestId = required(input.requestId, 'requestId');
+    const freezeId = required(input.freezeId, 'freezeId');
+    const transferTaskId = required(input.transferTaskId, 'transferTaskId');
+    const manifestSha256 = required(input.manifestSha256, 'manifestSha256').toLowerCase();
+    const attempt = Number(input.attempt);
+    const code = typeof input.code === 'string' && input.code.trim() ? input.code.trim().slice(0, 128) : 'artifact_transfer_failed';
+    const message = required(input.message, 'message').slice(0, 1000);
+    const retryAt = input.retryAt == null || input.retryAt === '' ? null : String(input.retryAt);
+    const terminal = Boolean(input.terminal);
+    if (requestId !== freezeId || !/^[a-f0-9]{64}$/.test(manifestSha256) || !Number.isSafeInteger(attempt) || attempt < 1 || attempt > 100000 || (retryAt && !Number.isFinite(Date.parse(retryAt)))) {
+      throw Object.assign(new Error('Edge 传输失败报告格式无效'), { code: 'invalid_transfer_failure' });
+    }
+    const current = this.get(requestId);
+    if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
+    if (!['APPROVED', 'CLOSED'].includes(current.status) || current.freezeId !== freezeId || current.transferTaskId !== transferTaskId || current.manifestSha256.toLowerCase() !== manifestSha256) {
+      throw Object.assign(new Error('传输失败报告与当前审批任务不匹配'), { code: 'transfer_failure_conflict' });
+    }
+    const task = this.db.prepare('SELECT * FROM core_transfer_tasks WHERE request_id = ? AND transfer_task_id = ?').get(requestId, transferTaskId);
+    if (!task) throw Object.assign(new Error('传输任务不存在'), { code: 'transfer_task_not_found' });
+    if (task.status === 'RECEIVED' || attempt < Number(task.edge_attempts ?? 0)) return { item: this.get(requestId), idempotent: true };
+    const timestamp = now();
+    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = ?, edge_attempts = ?, edge_retry_at = ?, edge_error_code = ?, edge_last_error = ?, edge_failure_terminal = ?, updated_at = ? WHERE transfer_task_id = ?")
+      .run(terminal ? 'FAILED' : 'RETRY_WAIT', attempt, retryAt, code, message, terminal ? 1 : 0, timestamp, transferTaskId);
+    return { item: this.get(requestId), idempotent: false };
+  }
+
   receiveReceipt(input = {}) {
     const requestId = required(input.requestId, 'requestId');
     const transferTaskId = required(input.transferTaskId, 'transferTaskId');
@@ -981,7 +1027,7 @@ export class CoreStore {
     if (!existing) this.authorizeTransfer(requestId, { manifestSha256: current.manifestSha256, transferTaskId });
     const timestamp = now();
     if (JSON.parse(this.db.prepare('SELECT envelope_json FROM core_approval_requests WHERE request_id = ?').get(requestId).envelope_json ?? '{}').manifest?.items?.length) this.assertTransferComplete(transferTaskId);
-    this.db.prepare("UPDATE core_transfer_tasks SET status = 'RECEIVED', updated_at = ? WHERE request_id = ? AND transfer_task_id = ?").run(timestamp, requestId, transferTaskId);
+    this.db.prepare("UPDATE core_transfer_tasks SET status = 'RECEIVED', edge_status = 'RECEIVED', edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE request_id = ? AND transfer_task_id = ?").run(timestamp, requestId, transferTaskId);
     return { requestId, transferTaskId, status: 'RECEIVED', manifestSha256: current.manifestSha256, receivedAt: timestamp };
   }
 

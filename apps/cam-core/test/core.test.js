@@ -435,9 +435,17 @@ test('Core stores approved files by SHA-256 and lets multiple package entries sh
     assert.equal(registeredManifest.statusCode, 200, registeredManifest.body);
     assert.equal(registeredManifest.json().item.fileCount, 2);
     assert.equal(app.coreStore.get('FREEZE-FILES').artifacts.length, 2, 'legacy request gets release artifact references when Edge synchronizes its manifest');
+    const failurePayload = { requestId: 'FREEZE-FILES', freezeId: 'FREEZE-FILES', transferTaskId, manifestSha256, attempt: 1, code: 'ENOSPC', message: 'ENOSPC: no space left on device, write', retryAt: new Date(Date.now() + 60_000).toISOString(), terminal: false };
+    const failurePath = '/api/v1/gate/transfer-failures';
+    const failureReport = await app.inject({ method: 'POST', url: failurePath, headers: await headers('POST', failurePath, failurePayload), payload: failurePayload });
+    assert.equal(failureReport.statusCode, 200, failureReport.body);
+    const failedProgress = await app.inject({ method: 'GET', url: '/api/v1/approval-requests/FREEZE-FILES/transfer-progress' });
+    assert.equal(failedProgress.json().item.status, 'RETRY_WAIT');
+    assert.equal(failedProgress.json().item.edgeFailure.code, 'ENOSPC');
+    assert.match(failedProgress.json().item.edgeFailure.message, /no space left/u);
     const waitingProgress = await app.inject({ method: 'GET', url: '/api/v1/approval-requests/FREEZE-FILES/transfer-progress' });
     assert.equal(waitingProgress.statusCode, 200, waitingProgress.body);
-    assert.equal(waitingProgress.json().item.status, 'WAITING_EDGE');
+    assert.equal(waitingProgress.json().item.status, 'RETRY_WAIT');
     assert.equal(waitingProgress.json().item.summary.completedFiles, 0);
     const fetchedManifest = await app.inject({ method: 'GET', url: manifestPath, headers: await headers('GET', manifestPath) });
     assert.equal(fetchedManifest.statusCode, 200, fetchedManifest.body);

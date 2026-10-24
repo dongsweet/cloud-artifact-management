@@ -102,3 +102,38 @@ test('artifact dispatcher exposes a failed attempt for retry after a Core connec
     assert.match(state.transferLastError, /connection refused/);
   } finally { await dispatcher.close(); }
 });
+
+test('artifact dispatcher stops after retryLimit and reports the terminal error to Core', async () => {
+  const state = { freezeId: 'FREEZE-LIMIT', status: 'APPROVED', transferTaskId: 'TASK-LIMIT', manifestSha256: 'e'.repeat(64), transferStatus: 'READY', transferAttempts: 0 };
+  const reports = [];
+  const freezes = {
+    get: () => state,
+    listTransferPending: () => [state],
+    markTransferAttempt: () => { state.transferStatus = 'SENDING'; state.transferAttempts += 1; },
+    markTransferSuccess: () => { state.transferStatus = 'RECEIVED'; },
+    markTransferFailure: (_id, error, options = {}) => { state.transferStatus = 'FAILED'; state.transferLastError = error.message; state.transferErrorCode = error.code; state.transferRetryAt = options.retryAt; state.transferRetryExhausted = Boolean(options.exhausted); }
+  };
+  const dispatcher = createArtifactDispatcher({
+    freezes,
+    candidates: { get() { throw new Error('unexpected source lookup'); } },
+    gateConfig: { get: () => ({ coreControlUrl: 'http://core.example', coreTransferUrl: 'http://core.example', connectTimeoutMs: 1_000, transferTimeoutMs: 1_000, chunkSizeBytes: 1024 * 1024, retryLimit: 2 }) },
+    keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
+    fetchImpl: async (url, options = {}) => {
+      if (url.endsWith('/transfer-failures')) { reports.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ accepted: true }) }; }
+      throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+    }, logger: { warn() {} }
+  });
+  try {
+    await dispatcher.deliver(state.freezeId);
+    assert.equal(state.transferAttempts, 1);
+    assert.equal(state.transferRetryExhausted, false);
+    assert.equal(reports.at(-1).terminal, false);
+    await dispatcher.deliver(state.freezeId);
+    assert.equal(state.transferAttempts, 2);
+    assert.equal(state.transferRetryExhausted, true);
+    assert.equal(state.transferRetryAt, null);
+    assert.equal(reports.at(-1).terminal, true);
+    assert.equal(reports.at(-1).attempt, 2);
+    assert.equal(reports.at(-1).code, 'ENOSPC');
+  } finally { await dispatcher.close(); }
+});

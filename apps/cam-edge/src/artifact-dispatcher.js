@@ -24,6 +24,35 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
     });
   }
 
+  async function reportFailure(freeze, error, { attempt, retryAt, terminal, config }) {
+    const controlUrl = config?.coreControlUrl;
+    if (!controlUrl) return;
+    const path = '/api/v1/gate/transfer-failures';
+    const payload = {
+      requestId: freeze.freezeId,
+      freezeId: freeze.freezeId,
+      transferTaskId: freeze.transferTaskId,
+      manifestSha256: freeze.manifestSha256,
+      attempt,
+      code: error?.code ? String(error.code).slice(0, 128) : 'artifact_transfer_failed',
+      message: String(error?.message ?? error).slice(0, 1000),
+      retryAt: retryAt ?? null,
+      terminal: Boolean(terminal),
+      occurredAt: new Date().toISOString()
+    };
+    const body = JSON.stringify(payload);
+    const response = await fetchImpl(`${controlUrl.replace(/\/$/u, '')}${path}`, {
+      method: 'POST',
+      headers: await keyring.requestHeaders('POST', path, body, { 'content-type': 'application/json' }),
+      body,
+      signal: AbortSignal.timeout(config.connectTimeoutMs ?? 10_000)
+    });
+    if (!response.ok) {
+      const responseBody = await response.json().catch(() => ({}));
+      throw Object.assign(new Error(responseBody.error?.message ?? `Core 接收传输失败报告失败（HTTP ${response.status}）`), { code: responseBody.error?.code ?? 'transfer_failure_report_failed' });
+    }
+  }
+
   async function deliver(freezeId) {
     let freeze = freezes.get(freezeId);
     if (!freeze || freeze.status !== 'APPROVED' || !freeze.transferTaskId) return freeze;
@@ -111,9 +140,18 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
       nextAttemptAt.delete(freezeId);
       return freezes.get(freezeId);
     } catch (error) {
-      freezes.markTransferFailure(freezeId, error);
-      nextAttemptAt.set(freezeId, Date.now() + retryDelay(attempt));
-      logger.warn?.({ freezeId, attempt, code: error.code, message: error.message }, 'CAM 正式制品传输失败，将自动重试');
+      const config = (() => { try { return gateConfig.get(); } catch { return {}; } })();
+      const retryLimit = Number.isSafeInteger(config.retryLimit) && config.retryLimit > 0 ? config.retryLimit : 5;
+      const terminal = attempt >= retryLimit;
+      const retryAt = terminal ? null : new Date(Date.now() + retryDelay(attempt)).toISOString();
+      freezes.markTransferFailure(freezeId, error, { retryAt, exhausted: terminal });
+      nextAttemptAt.set(freezeId, terminal ? Number.POSITIVE_INFINITY : Date.parse(retryAt));
+      try {
+        await reportFailure(freeze, error, { attempt, retryAt, terminal, config });
+      } catch (reportError) {
+        logger.warn?.({ freezeId, attempt, code: reportError.code, message: reportError.message }, 'CAM 正式制品传输失败报告 Core 失败');
+      }
+      logger.warn?.({ freezeId, attempt, retryLimit, terminal, retryAt, code: error.code, message: error.message }, terminal ? 'CAM 正式制品传输失败，已停止自动重试' : 'CAM 正式制品传输失败，将自动重试');
       return freezes.get(freezeId);
     }
   }

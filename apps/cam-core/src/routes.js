@@ -220,7 +220,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   queueMicrotask(() => { void pumpWorkers(); });
   app.addHook('onClose', async () => clearInterval(cloudTimer));
   app.addHook('preHandler', async (request, reply) => {
-    const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/') || request.url.startsWith('/api/v1/gate/pairing-probe') || request.url.startsWith('/api/v1/gate/identity-rotation/') || ['/api/v1/gate/authenticate', '/api/v1/gate/users', '/api/v1/gate/change-password'].includes(request.url.split('?')[0]);
+    const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/') || request.url === '/api/v1/gate/transfer-failures' || request.url.startsWith('/api/v1/gate/pairing-probe') || request.url.startsWith('/api/v1/gate/identity-rotation/') || ['/api/v1/gate/authenticate', '/api/v1/gate/users', '/api/v1/gate/change-password'].includes(request.url.split('?')[0]);
     if (!exchangePath) return;
     const authorization = await gateAuthorized(request, keyring);
     if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Core 尚未完成 Edge 身份配对，暂不能接收跨区业务消息');
@@ -603,6 +603,16 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     const path = store.artifactPath(String(request.params.sha256 ?? '').toLowerCase());
     if (!path) return error(reply, 404, 'artifact_not_found', '正式制品文件不存在');
     return reply.type('application/octet-stream').header('Content-Disposition', `attachment; filename="${request.params.sha256}"`).send(createReadStream(path));
+  });
+
+  app.post('/api/v1/gate/transfer-failures', { bodyLimit: 16 * 1024 }, async (request, reply) => {
+    try {
+      const result = store.recordEdgeTransferFailure(request.body ?? {});
+      return reply.send({ accepted: true, requestId: request.body?.requestId, transferTaskId: request.body?.transferTaskId, idempotent: result.idempotent });
+    } catch (err) {
+      const status = err.code === 'request_not_found' || err.code === 'transfer_task_not_found' ? 404 : ['transfer_failure_conflict', 'invalid_transfer_failure'].includes(err.code) ? 409 : 400;
+      return error(reply, status, err.code ?? 'transfer_failure_rejected', err.message);
+    }
   });
 
   app.get('/api/v1/approval-requests/:requestId', async (request, reply) => {

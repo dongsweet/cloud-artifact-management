@@ -51,6 +51,9 @@ export class FreezeStore {
       transfer_status: "TEXT NOT NULL DEFAULT 'IDLE'",
       transfer_attempts: 'INTEGER NOT NULL DEFAULT 0',
       transfer_last_error: 'TEXT',
+      transfer_error_code: 'TEXT',
+      transfer_retry_at: 'TEXT',
+      transfer_retry_exhausted: 'INTEGER NOT NULL DEFAULT 0',
       transfer_at: 'TEXT',
       submitted_by_username: 'TEXT',
       submitted_by_display_name: 'TEXT'
@@ -162,7 +165,9 @@ export class FreezeStore {
       decisionReference: row.decision_reference, decisionComment: row.decision_comment,
       dispatchStatus: row.dispatch_status ?? 'PENDING', dispatchAt: row.dispatch_at,
       transferTaskId: row.transfer_task_id ?? null, transferStatus: row.transfer_status ?? 'IDLE',
-      transferAttempts: row.transfer_attempts ?? 0, transferLastError: row.transfer_last_error ?? null, transferAt: row.transfer_at ?? null,
+      transferAttempts: row.transfer_attempts ?? 0, transferLastError: row.transfer_last_error ?? null,
+      transferErrorCode: row.transfer_error_code ?? null, transferRetryAt: row.transfer_retry_at ?? null,
+      transferRetryExhausted: Boolean(row.transfer_retry_exhausted), transferAt: row.transfer_at ?? null,
       createdAt: row.created_at, updatedAt: row.updated_at
     };
   }
@@ -370,29 +375,32 @@ export class FreezeStore {
       }
       if (freeze.transferTaskId && freeze.transferTaskId !== taskId) throw Object.assign(new Error('固化申请已绑定其他传输任务'), { code: 'transfer_request_conflict' });
       this.db.prepare('INSERT INTO edge_core_transfer_events (event_id, freeze_id, payload_sha256, transfer_task_id, received_at) VALUES (?, ?, ?, ?, ?)').run(eventId, freezeId, payloadSha256, taskId, now());
-      this.db.prepare("UPDATE round_freezes SET transfer_task_id = ?, transfer_status = 'READY', transfer_attempts = 0, transfer_last_error = NULL, transfer_at = NULL, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED'").run(taskId, now(), freezeId);
+      this.db.prepare("UPDATE round_freezes SET transfer_task_id = ?, transfer_status = 'READY', transfer_attempts = 0, transfer_last_error = NULL, transfer_error_code = NULL, transfer_retry_at = NULL, transfer_retry_exhausted = 0, transfer_at = NULL, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED'").run(taskId, now(), freezeId);
       this.db.exec('COMMIT');
       return { item: this.get(freezeId), idempotent: false };
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   listTransferPending() {
-    return this.db.prepare("SELECT * FROM round_freezes WHERE status = 'APPROVED' AND transfer_task_id IS NOT NULL AND transfer_status IN ('READY','FAILED','RECEIVED') ORDER BY decided_at ASC").all().map((row) => this.parse(row));
+    return this.db.prepare("SELECT * FROM round_freezes WHERE status = 'APPROVED' AND transfer_task_id IS NOT NULL AND (transfer_status IN ('READY','RECEIVED') OR (transfer_status = 'FAILED' AND transfer_retry_exhausted = 0 AND (transfer_retry_at IS NULL OR transfer_retry_at <= ?))) ORDER BY decided_at ASC").all(now()).map((row) => this.parse(row));
   }
   markTransferAttempt(freezeId) {
-    this.db.prepare("UPDATE round_freezes SET transfer_status = 'SENDING', transfer_attempts = transfer_attempts + 1, transfer_last_error = NULL, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('READY','FAILED')").run(now(), freezeId);
+    this.db.prepare("UPDATE round_freezes SET transfer_status = 'SENDING', transfer_attempts = transfer_attempts + 1, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('READY','FAILED')").run(now(), freezeId);
     return this.get(freezeId);
   }
   markTransferSuccess(freezeId) {
-    this.db.prepare("UPDATE round_freezes SET transfer_status = 'RECEIVED', transfer_at = ?, transfer_last_error = NULL, updated_at = ? WHERE freeze_id = ?").run(now(), now(), freezeId);
+    const timestamp = now();
+    this.db.prepare("UPDATE round_freezes SET transfer_status = 'RECEIVED', transfer_at = ?, transfer_last_error = NULL, transfer_error_code = NULL, transfer_retry_at = NULL, transfer_retry_exhausted = 0, updated_at = ? WHERE freeze_id = ?").run(timestamp, timestamp, freezeId);
     return this.get(freezeId);
   }
   resetTransfer(freezeId) {
-    this.db.prepare("UPDATE round_freezes SET transfer_status = 'READY', transfer_last_error = NULL, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('FAILED','SENDING')").run(now(), freezeId);
+    this.db.prepare("UPDATE round_freezes SET transfer_status = 'READY', transfer_retry_at = ?, transfer_retry_exhausted = 0, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('FAILED','SENDING')").run(now(), now(), freezeId);
     return this.get(freezeId);
   }
-  markTransferFailure(freezeId, error) {
-    this.db.prepare("UPDATE round_freezes SET transfer_status = 'FAILED', transfer_last_error = ?, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED'").run(String(error?.message ?? error).slice(0, 1000), now(), freezeId);
+  markTransferFailure(freezeId, error, { retryAt = null, exhausted = false } = {}) {
+    const timestamp = now();
+    this.db.prepare("UPDATE round_freezes SET transfer_status = 'FAILED', transfer_last_error = ?, transfer_error_code = ?, transfer_retry_at = ?, transfer_retry_exhausted = ?, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED'")
+      .run(String(error?.message ?? error).slice(0, 1000), error?.code ? String(error.code).slice(0, 128) : null, retryAt, exhausted ? 1 : 0, timestamp, freezeId);
     return this.get(freezeId);
   }
 
