@@ -117,17 +117,27 @@ function html(value) {
 
 function approvalResponseSummary(detail, approvalCode) {
   const values = [];
-  const visit = (node, key = '') => {
+  const visit = (node, path = '') => {
     if (node === null || node === undefined) return;
     if (typeof node === 'string') {
-      if (/(editor|content|opinion|comment|remark|reply|message|处理意见|审批意见)/iu.test(key)) values.push(node);
+      const fieldName = path.split('.').at(-1)?.replace(/\[\d+\]$/u, '') ?? '';
+      if (/(editor|content|opinion|comment|remark|reply|message|处理意见|审批意见)/iu.test(fieldName)) values.push({ path, value: node });
       return;
     }
-    if (Array.isArray(node)) { for (const item of node) visit(item, key); return; }
-    if (typeof node === 'object') for (const [name, value] of Object.entries(node)) if (name !== 'workOrderDetail') visit(value, name);
+    if (Array.isArray(node)) { node.forEach((item, index) => visit(item, `${path}[${index}]`)); return; }
+    if (typeof node === 'object') for (const [name, value] of Object.entries(node)) if (name !== 'workOrderDetail') visit(value, path ? `${path}.${name}` : name);
   };
   visit(detail);
-  const unique = [...new Set(values.map((value) => text(value).replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim()).filter(Boolean))];
+  const unique = [];
+  const seen = new Set();
+  for (const { path, value } of values) {
+    const cleaned = text(value).replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim();
+    if (!cleaned) continue;
+    const key = `${path}\u0000${cleaned}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(`${path}：${cleaned}`);
+  }
   return maskApprovalCode(unique.join('；'), approvalCode).slice(0, 2000);
 }
 

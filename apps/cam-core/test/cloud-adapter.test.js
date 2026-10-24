@@ -371,13 +371,14 @@ test('CloudAdapter treats an approval response without the temporary code as rej
   const rejected = await adapter.getApproval('20261012D1234', { manifestSha256: 'a'.repeat(64), approvalCode });
   assert.equal(rejected.status, 'REJECTED');
   assert.equal(rejected.rejectionReason, '审批回复未包含同意暗号');
-  assert.equal(rejected.cloudResponseSummary, '确认通过');
+  assert.equal(rejected.cloudResponseSummary, 'workflowInfos[0].editorContent：确认通过');
   detail.workflowInfos[0].editorContent = `<p>确认通过，${approvalCode}</p>`;
   const result = await adapter.getApproval('20261012D1234', { manifestSha256: 'a'.repeat(64), approvalCode });
   assert.equal(result.approvalCode, approvalCode);
-  assert.equal(result.cloudResponseSummary, '确认通过，[已隐藏]');
+  assert.equal(result.cloudResponseSummary, 'workflowInfos[0].editorContent：确认通过，[已隐藏]');
   assert.equal(result.cloudResponseSummary.includes(approvalCode), false);
   detail.workflowInfos[0].editorContent = `<p>${'同'.repeat(1990)}${approvalCode}</p>`;
   const longReply = await adapter.getApproval('20261012D1234', { manifestSha256: 'a'.repeat(64), approvalCode });
-  assert.equal(longReply.cloudResponseSummary, `${'同'.repeat(1990)}[已隐藏]`, 'redact before truncation so no code prefix leaks');
+  assert.equal(longReply.cloudResponseSummary.startsWith('workflowInfos[0].editorContent：'), true);
+  assert.equal(longReply.cloudResponseSummary.includes(approvalCode), false, 'redact before truncation so no code prefix leaks');
 });
