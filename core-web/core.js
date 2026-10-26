@@ -414,14 +414,17 @@ function transferProgressMarkup(progress) {
   const fileStatus = { COMPLETED: '已入库', ASSEMBLY_PENDING: '已收齐，准备组装', ASSEMBLING: '组装中', VERIFYING: '校验中', VERIFY_FAILED: '校验不通过', RECEIVING: '接收中', WAITING: '待接收' };
   const fileColor = { COMPLETED: 'success', ASSEMBLY_PENDING: 'warning', ASSEMBLING: 'info', VERIFYING: 'info', VERIFY_FAILED: 'danger', RECEIVING: 'primary', WAITING: 'secondary' };
   const detailRows = files.length ? files.map((file) => {
-    const receivedChunks = file.chunkCount ? `${escapeHtml(file.receivedParts)} / ${escapeHtml(file.chunkCount)} 个分块` : (file.stored ? '完整文件' : '尚未开始');
+    const receivedChunks = file.status === 'COMPLETED'
+      ? ''
+      : file.status === 'ASSEMBLING'
+        ? `${escapeHtml(file.assemblyParts ?? 0)} / ${escapeHtml(file.chunkCount ?? 0)} 个分块`
+        : file.chunkCount ? `${escapeHtml(file.receivedParts)} / ${escapeHtml(file.chunkCount)} 个分块` : (file.stored ? '完整文件' : '尚未开始');
     const assemblyProgress = file.status === 'ASSEMBLY_PENDING'
       ? '<div class="small text-warning-emphasis mt-1">分块已齐，等待 Core 组装</div>'
-      : file.status === 'ASSEMBLING'
-        ? `<div class="small text-info-emphasis mt-1">组装进度：${escapeHtml(file.assemblyParts ?? 0)} / ${escapeHtml(file.chunkCount ?? 0)} 个分块 · ${escapeHtml(formatTransferBytes(file.assemblyBytes ?? 0))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div>`
-        : file.status === 'VERIFYING' ? '<div class="small text-info-emphasis mt-1">完整文件已组装，正在校验</div>' : '';
+      : file.status === 'VERIFYING' ? '<div class="small text-info-emphasis mt-1">完整文件已组装，正在校验</div>' : '';
     const error = file.lastError ? `<div class="small text-danger mt-1">${escapeHtml(file.lastError)}</div>` : '';
-    return `<tr><td><div class="fw-semibold">${escapeHtml(file.fileName)}</div><div class="small text-body-secondary">${escapeHtml(file.packageKey ?? '')}${file.reused ? ' · 本机已缓存，可复用' : ''}</div></td><td>${escapeHtml(formatTransferBytes(file.sizeBytes))}</td><td><span class="badge text-bg-${fileColor[file.status] ?? 'secondary'}">${escapeHtml(fileStatus[file.status] ?? file.status ?? '-')}</span><div class="small text-body-secondary mt-1">${receivedChunks}</div>${assemblyProgress}${error}</td><td><div>${escapeHtml(formatTransferBytes(file.receivedBytes))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div><code class="small cam-break-anywhere">${escapeHtml(file.sha256)}</code></td></tr>`;
+    const chunkMarkup = receivedChunks ? `<div class="small text-body-secondary mt-1">${receivedChunks}</div>` : '';
+    return `<tr><td><div class="fw-semibold">${escapeHtml(file.fileName)}</div><div class="small text-body-secondary">${escapeHtml(file.packageKey ?? '')}${file.reused ? ' · 本机已缓存，可复用' : ''}</div></td><td>${escapeHtml(formatTransferBytes(file.sizeBytes))}</td><td><span class="badge text-bg-${fileColor[file.status] ?? 'secondary'}">${escapeHtml(fileStatus[file.status] ?? file.status ?? '-')}</span>${chunkMarkup}${assemblyProgress}${error}</td><td><div>${escapeHtml(formatTransferBytes(file.receivedBytes))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div><code class="small cam-break-anywhere">${escapeHtml(file.sha256)}</code></td></tr>`;
   }).join('') : '<tr><td colspan="4" class="text-center text-body-secondary py-3">Edge 尚未同步正式制品清单</td></tr>';
   const notification = progress.notification ?? {};
   const notificationText = notification.state === 'DELIVERED' ? 'Edge 已确认接收传输任务' : notification.state === 'RETRY_WAIT' ? `Edge 通知等待重试${notification.lastError ? `：${notification.lastError}` : ''}` : notification.state === 'SENDING' ? '正在通知 Edge' : progress.transferTaskId ? '等待通知 Edge' : '尚未创建传输任务';

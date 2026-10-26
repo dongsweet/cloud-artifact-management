@@ -31,8 +31,9 @@ test('Core approval details keep the primary workflow visible and the file list 
   assert.match(script, /已入库文件/u);
   assert.match(script, /正式制品未全部入库/u);
   assert.match(script, /分块已齐，等待 Core 组装/u);
-  assert.match(script, /组装进度/u);
-  assert.doesNotMatch(script, /恢复组装中|恢复进度/u);
+  assert.doesNotMatch(script, /恢复组装中|恢复进度|组装进度/u);
+  assert.match(script, /file\.status === 'ASSEMBLING'[\s\S]*?个分块/u);
+  assert.match(script, /file\.status === 'COMPLETED'[\s\S]*?\? ''/u);
   assert.match(script, /startDetailPolling/u);
   assert.match(script, /detailPollTimer/u);
   assert.match(script, /detail.*addEventListener\('close', stopDetailPolling/u);
