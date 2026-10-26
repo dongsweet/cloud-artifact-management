@@ -115,16 +115,6 @@
 .cam-detail-title-wrap { min-width: 0; }
 .cam-detail-title-wrap .card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cam-detail-modal .card-body { padding: 1.25rem; }
-#distribution-detail .card-body > .table-responsive > table { table-layout: fixed; width: 100%; }
-#distribution-detail .card-body > .table-responsive > table th:nth-child(1),
-#distribution-detail .card-body > .table-responsive > table td:nth-child(1) { width: 36%; }
-#distribution-detail .card-body > .table-responsive > table th:nth-child(2),
-#distribution-detail .card-body > .table-responsive > table td:nth-child(2) { width: 16%; }
-#distribution-detail .card-body > .table-responsive > table th:nth-child(3),
-#distribution-detail .card-body > .table-responsive > table td:nth-child(3) { width: 18%; }
-#distribution-detail .card-body > .table-responsive > table th:nth-child(4),
-#distribution-detail .card-body > .table-responsive > table td:nth-child(4) { width: 30%; }
-#distribution-detail .card-body > .table-responsive > table td:nth-child(4) { overflow-wrap: anywhere; word-break: break-all; }
 .cam-detail-section + .cam-detail-section { margin-top: 1.25rem; }
 .cam-detail-section h4 { color: var(--bs-secondary-color); font-size: .9rem; font-weight: 600; margin: 0 0 .65rem; padding-bottom: .5rem; border-bottom: 1px solid var(--bs-border-color); }
 .cam-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }

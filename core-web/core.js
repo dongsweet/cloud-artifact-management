@@ -5,6 +5,7 @@ import { auditEventsMarkup, mountAuditEvents } from './audit-events.js?v=2026102
 import { CORE_PAGE_PERMISSIONS, canCorePage, hasCorePermission } from './role-permissions.js?v=20261025-transfer-monitor';
 import { renderRoleGroups } from './role-display.js?v=20261022-role-display';
 import { mountAaaConfig } from './aaa-config.js?v=20261023-shared-aaa-ui';
+import { renderTransferFileTable } from './transfer-file-table.js?v=20261026-transfer-file-table';
 let csrf = null;
 document.querySelector('#gate-pairing-mount').innerHTML = renderGatePairing('core');
 let forcedPasswordChange = false;
@@ -365,16 +366,13 @@ async function showDistributionDetail(taskId) {
     const displayStatus = distributionDisplayStatus(task);
     $('#distribution-detail-title').textContent = artifact ? `${artifact.productName ?? '历史产品'} · ${artifact.displayVersion ?? artifact.version ?? '未知版本'}` : task.artifactId;
     const progress = task.progress ?? {};
-    const detailRows = (task.files ?? []).map((file) => {
+    const detailFiles = (task.files ?? []).map((file) => {
       const current = progress.sha256 === file.sha256;
       const completed = displayStatus === 'COMPLETED' || progress.state === 'ready';
-      const fileStatus = completed ? '已完成' : current ? '传输中' : '待传输';
-      const fileColor = completed ? 'success' : current ? 'primary' : 'secondary';
-      const parts = completed ? '-' : current ? `${progress.completedParts ?? 0} / ${progress.totalParts ?? 0}` : '-';
-      const bytes = completed ? Number(file.sizeBytes ?? 0) : current ? Number(progress.bytesDownloaded ?? 0) : 0;
-      return `<tr><td><div class="fw-semibold">${escapeHtml(file.fileName)}</div><div class="small text-body-secondary">${escapeHtml(file.packageKey ?? '')}</div></td><td>${escapeHtml(formatTransferBytes(file.sizeBytes))}</td><td><span class="badge text-bg-${fileColor}">${fileStatus}</span><div class="small text-body-secondary mt-1">分块：${escapeHtml(parts)}</div><div class="small text-body-secondary">${escapeHtml(formatTransferBytes(bytes))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div></td><td><code class="small cam-break-anywhere">${escapeHtml(file.sha256)}</code></td></tr>`;
-    }).join('');
-    $('#distribution-detail-content').innerHTML = `<div class="row g-2 mb-3"><div class="col-md-4"><div class="small text-body-secondary">传输任务编号</div><code>${escapeHtml(task.taskId)}</code></div><div class="col-md-4"><div class="small text-body-secondary">目标 Agent</div><span>${escapeHtml(agent?.name ?? task.agentId)}</span></div><div class="col-md-4"><div class="small text-body-secondary">状态</div><span class="badge text-bg-${displayStatus === 'COMPLETED' ? 'success' : displayStatus === 'RUNNING' ? 'primary' : displayStatus === 'SCHEDULED' ? 'info' : displayStatus === 'RETRY_WAIT' ? 'danger' : 'warning'}">${escapeHtml(labels[displayStatus] ?? displayStatus)}</span></div><div class="col-md-4"><div class="small text-body-secondary">计划开始</div><span>${escapeHtml(displayTime(task.scheduledAt))}</span></div><div class="col-md-4"><div class="small text-body-secondary">单文件并发</div><span>${escapeHtml(task.chunkConcurrency ?? '-')} 线程</span></div><div class="col-md-4"><div class="small text-body-secondary">尝试次数</div><span>${escapeHtml(task.attempts ?? 0)}</span></div></div>${task.lastError ? `<div class="alert alert-danger">${escapeHtml(task.lastError)}</div>` : ''}<div class="small text-body-secondary mb-2">${escapeHtml(distributionProgress(task))}</div><div class="table-responsive"><table class="table table-sm table-hover align-middle"><thead><tr><th>文件</th><th>大小</th><th>状态 / 分块进度</th><th>SHA-256</th></tr></thead><tbody>${detailRows || '<tr><td colspan="4" class="text-center text-body-secondary py-3">暂无文件清单</td></tr>'}</tbody></table></div>`;
+      return { ...file, status: completed ? 'COMPLETED' : current ? 'RUNNING' : 'WAITING', completedParts: completed ? file.totalParts : current ? progress.completedParts : 0, totalParts: completed ? file.totalParts : current ? progress.totalParts : 0, bytesDownloaded: completed ? Number(file.sizeBytes ?? 0) : current ? Number(progress.bytesDownloaded ?? 0) : 0 };
+    });
+    const fileTable = renderTransferFileTable(detailFiles, { escapeHtml, formatBytes: formatTransferBytes, statusFor: (file) => file.status === 'COMPLETED' ? { label: file.reused ? '已完成（复用）' : '已完成', color: 'success' } : file.status === 'RUNNING' ? { label: '传输中', color: 'primary' } : { label: '待传输', color: 'secondary' }, progressFor: (file) => `${escapeHtml(file.completedParts ?? 0)} / ${escapeHtml(file.totalParts ?? 0)} 个分块<div>${escapeHtml(formatTransferBytes(file.bytesDownloaded))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div>` });
+    $('#distribution-detail-content').innerHTML = `<div class="row g-2 mb-3"><div class="col-md-4"><div class="small text-body-secondary">传输任务编号</div><code>${escapeHtml(task.taskId)}</code></div><div class="col-md-4"><div class="small text-body-secondary">目标 Agent</div><span>${escapeHtml(agent?.name ?? task.agentId)}</span></div><div class="col-md-4"><div class="small text-body-secondary">状态</div><span class="badge text-bg-${displayStatus === 'COMPLETED' ? 'success' : displayStatus === 'RUNNING' ? 'primary' : displayStatus === 'SCHEDULED' ? 'info' : displayStatus === 'RETRY_WAIT' ? 'danger' : 'warning'}">${escapeHtml(labels[displayStatus] ?? displayStatus)}</span></div><div class="col-md-4"><div class="small text-body-secondary">计划开始</div><span>${escapeHtml(displayTime(task.scheduledAt))}</span></div><div class="col-md-4"><div class="small text-body-secondary">单文件并发</div><span>${escapeHtml(task.chunkConcurrency ?? '-')} 线程</span></div><div class="col-md-4"><div class="small text-body-secondary">尝试次数</div><span>${escapeHtml(task.attempts ?? 0)}</span></div></div>${task.lastError ? `<div class="alert alert-danger">${escapeHtml(task.lastError)}</div>` : ''}<div class="small text-body-secondary mb-2">${escapeHtml(distributionProgress(task))}</div>${fileTable}`;
     $('#distribution-detail').showModal();
   } catch (error) { message(error.message, 'danger'); }
 }
@@ -406,33 +404,33 @@ function transferProgressColor(status) {
 function transferFailureCodeLabel(code) {
   return ({ '23': '请求超时', ETIMEDOUT: '请求超时', TimeoutError: '请求超时', ECONNABORTED: '请求被中止', artifacts_incomplete: '正式制品未全部入库' })[String(code)] ?? String(code);
 }
+const coreTransferFileStatus = {
+  COMPLETED: { label: '已入库', color: 'success' }, ASSEMBLY_PENDING: { label: '已收齐，准备组装', color: 'warning' },
+  ASSEMBLING: { label: '组装中', color: 'info' }, VERIFYING: { label: '校验中', color: 'info' },
+  VERIFY_FAILED: { label: '校验不通过', color: 'danger' }, RECEIVING: { label: '接收中', color: 'primary' }, WAITING: { label: '待接收', color: 'secondary' }
+};
+function coreTransferFileProgress(file) {
+  const bytes = `${escapeHtml(formatTransferBytes(file.receivedBytes))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}`;
+  if (file.status === 'COMPLETED') return bytes;
+  const chunks = file.status === 'ASSEMBLING'
+    ? `${escapeHtml(file.assemblyParts ?? 0)} / ${escapeHtml(file.chunkCount ?? 0)} 个分块`
+    : file.chunkCount ? `${escapeHtml(file.receivedParts)} / ${escapeHtml(file.chunkCount)} 个分块` : (file.stored ? '完整文件' : '尚未开始');
+  const note = file.status === 'ASSEMBLY_PENDING' ? '分块已齐，等待 Core 组装' : file.status === 'VERIFYING' ? '完整文件已组装，正在校验' : '';
+  return `${chunks}<div>${bytes}</div>${note ? `<div class="text-warning-emphasis">${escapeHtml(note)}</div>` : ''}`;
+}
 function transferProgressMarkup(progress) {
   if (!progress) return '<div class="text-body-secondary">暂无传输进度数据</div>';
   const summary = progress.summary ?? {};
   const percent = Number(summary.percent ?? 0);
   const files = progress.files ?? [];
-  const fileStatus = { COMPLETED: '已入库', ASSEMBLY_PENDING: '已收齐，准备组装', ASSEMBLING: '组装中', VERIFYING: '校验中', VERIFY_FAILED: '校验不通过', RECEIVING: '接收中', WAITING: '待接收' };
-  const fileColor = { COMPLETED: 'success', ASSEMBLY_PENDING: 'warning', ASSEMBLING: 'info', VERIFYING: 'info', VERIFY_FAILED: 'danger', RECEIVING: 'primary', WAITING: 'secondary' };
-  const detailRows = files.length ? files.map((file) => {
-    const receivedChunks = file.status === 'COMPLETED'
-      ? ''
-      : file.status === 'ASSEMBLING'
-        ? `${escapeHtml(file.assemblyParts ?? 0)} / ${escapeHtml(file.chunkCount ?? 0)} 个分块`
-        : file.chunkCount ? `${escapeHtml(file.receivedParts)} / ${escapeHtml(file.chunkCount)} 个分块` : (file.stored ? '完整文件' : '尚未开始');
-    const assemblyProgress = file.status === 'ASSEMBLY_PENDING'
-      ? '<div class="small text-warning-emphasis mt-1">分块已齐，等待 Core 组装</div>'
-      : file.status === 'VERIFYING' ? '<div class="small text-info-emphasis mt-1">完整文件已组装，正在校验</div>' : '';
-    const error = file.lastError ? `<div class="small text-danger mt-1">${escapeHtml(file.lastError)}</div>` : '';
-    const chunkMarkup = receivedChunks ? `<div class="small text-body-secondary mt-1">${receivedChunks}</div>` : '';
-    return `<tr><td><div class="fw-semibold">${escapeHtml(file.fileName)}</div><div class="small text-body-secondary">${escapeHtml(file.packageKey ?? '')}${file.reused ? ' · 本机已缓存，可复用' : ''}</div></td><td>${escapeHtml(formatTransferBytes(file.sizeBytes))}</td><td><span class="badge text-bg-${fileColor[file.status] ?? 'secondary'}">${escapeHtml(fileStatus[file.status] ?? file.status ?? '-')}</span>${chunkMarkup}${assemblyProgress}${error}</td><td><div>${escapeHtml(formatTransferBytes(file.receivedBytes))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div><code class="small cam-break-anywhere">${escapeHtml(file.sha256)}</code></td></tr>`;
-  }).join('') : '<tr><td colspan="4" class="text-center text-body-secondary py-3">Edge 尚未同步正式制品清单</td></tr>';
   const notification = progress.notification ?? {};
   const notificationText = notification.state === 'DELIVERED' ? 'Edge 已确认接收传输任务' : notification.state === 'RETRY_WAIT' ? `Edge 通知等待重试${notification.lastError ? `：${notification.lastError}` : ''}` : notification.state === 'SENDING' ? '正在通知 Edge' : progress.transferTaskId ? '等待通知 Edge' : '尚未创建传输任务';
   const edgeFailure = progress.edgeFailure;
   const failurePanel = edgeFailure ? `<div class="alert alert-danger py-2 mt-2 mb-0"><div><strong>Edge 传输失败${edgeFailure.code ? `（${escapeHtml(transferFailureCodeLabel(edgeFailure.code))}）` : ''}</strong>${edgeFailure.status === 'RECEIVING' ? '，已重新发起传输' : edgeFailure.status === 'RETRY_WAIT' && !edgeFailure.retryAt ? '，已请求 Core 重试' : edgeFailure.terminal ? '，已停止自动重试' : '，等待自动重试'}</div><div class="text-break mt-1">${escapeHtml(edgeFailure.message)}</div><div class="small mt-1">已尝试 ${escapeHtml(edgeFailure.attempts ?? 0)} 次${edgeFailure.retryAt ? `；下次重试：${escapeHtml(displayTime(edgeFailure.retryAt))}` : ''}</div></div>` : '';
   const storedGap = Number(summary.receivedBytes ?? 0) > Number(summary.storedBytes ?? 0);
   const storageHint = storedGap ? `<div class="small text-body-secondary mt-2"><i class="bi bi-info-circle me-1"></i>分块已接收 ${escapeHtml(formatTransferBytes(summary.receivedBytes))}，其中 ${escapeHtml(formatTransferBytes(summary.storedBytes))} 已完成组装、校验并入库；其余文件正在组装或等待校验。</div>` : '';
-  return `<div class="cam-transfer-progress-summary"><div class="cam-transfer-progress-stat"><span>已入库文件</span><strong>${escapeHtml(summary.completedFiles ?? 0)} / ${escapeHtml(summary.fileCount ?? 0)}</strong></div><div class="cam-transfer-progress-stat"><span>已接收字节</span><strong>${escapeHtml(formatTransferBytes(summary.receivedBytes))} / ${escapeHtml(formatTransferBytes(summary.totalBytes))}</strong></div><div class="cam-transfer-progress-stat"><span>验证报告</span><strong>${progress.report?.received ? '已接收' : '待接收'}</strong></div><div class="cam-transfer-progress-stat"><span>任务通知</span><strong>${escapeHtml(notificationText)}</strong></div></div><div class="progress cam-transfer-progress-bar" role="progressbar" aria-label="Edge 到 Core 制品入库进度" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar progress-bar-striped ${['RECEIVING', 'ASSEMBLY_PENDING', 'ASSEMBLING', 'VERIFYING'].includes(progress.status) ? 'progress-bar-animated' : ''}" style="width:${percent}%">${percent}%</div></div>${storageHint}<div class="d-flex justify-content-between align-items-center small text-body-secondary mt-2"><span><span class="badge text-bg-${transferProgressColor(progress.status)}">${escapeHtml(transferProgressLabel(progress.status))}</span>${progress.transferTaskId ? ` <code>${escapeHtml(progress.transferTaskId)}</code>` : ''}</span><span>${escapeHtml(progress.updatedAt ? displayTime(progress.updatedAt) : '-')}</span></div>${failurePanel}<details class="cam-transfer-files" data-detail-key="transfer-files"><summary><i class="bi bi-chevron-right me-2"></i>文件与分块明细</summary><div class="table-responsive mt-2"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>文件</th><th>大小</th><th>状态 / 分块</th><th>已接收 / SHA-256</th></tr></thead><tbody>${detailRows}</tbody></table></div></details>`;
+  const fileTable = renderTransferFileTable(files, { escapeHtml, formatBytes: formatTransferBytes, statusFor: (file) => coreTransferFileStatus[file.status] ?? { label: file.status ?? '-', color: 'secondary' }, progressFor: coreTransferFileProgress, emptyLabel: 'Edge 尚未同步正式制品清单' });
+  return `<div class="cam-transfer-progress-summary"><div class="cam-transfer-progress-stat"><span>已入库文件</span><strong>${escapeHtml(summary.completedFiles ?? 0)} / ${escapeHtml(summary.fileCount ?? 0)}</strong></div><div class="cam-transfer-progress-stat"><span>已接收字节</span><strong>${escapeHtml(formatTransferBytes(summary.receivedBytes))} / ${escapeHtml(formatTransferBytes(summary.totalBytes))}</strong></div><div class="cam-transfer-progress-stat"><span>验证报告</span><strong>${progress.report?.received ? '已接收' : '待接收'}</strong></div><div class="cam-transfer-progress-stat"><span>任务通知</span><strong>${escapeHtml(notificationText)}</strong></div></div><div class="progress cam-transfer-progress-bar" role="progressbar" aria-label="Edge 到 Core 制品入库进度" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar progress-bar-striped ${['RECEIVING', 'ASSEMBLY_PENDING', 'ASSEMBLING', 'VERIFYING'].includes(progress.status) ? 'progress-bar-animated' : ''}" style="width:${percent}%">${percent}%</div></div>${storageHint}<div class="d-flex justify-content-between align-items-center small text-body-secondary mt-2"><span><span class="badge text-bg-${transferProgressColor(progress.status)}">${escapeHtml(transferProgressLabel(progress.status))}</span>${progress.transferTaskId ? ` <code>${escapeHtml(progress.transferTaskId)}</code>` : ''}</span><span>${escapeHtml(progress.updatedAt ? displayTime(progress.updatedAt) : '-')}</span></div>${failurePanel}<details class="cam-transfer-files" data-detail-key="transfer-files"><summary><i class="bi bi-chevron-right me-2"></i>文件与分块明细</summary>${fileTable}</details>`;
 }
 async function showDetail(id) {
   const encodedId = encodeURIComponent(id);

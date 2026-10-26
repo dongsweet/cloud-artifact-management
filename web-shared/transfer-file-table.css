@@ -1,0 +1,15 @@
+.cam-transfer-file-table { table-layout: fixed; width: 100%; }
+.cam-transfer-file-table th,
+.cam-transfer-file-table td { vertical-align: middle; }
+.cam-transfer-file-table th:nth-child(1),
+.cam-transfer-file-table td:nth-child(1) { width: 44%; }
+.cam-transfer-file-table th:nth-child(2),
+.cam-transfer-file-table td:nth-child(2) { width: 10%; white-space: nowrap; }
+.cam-transfer-file-table th:nth-child(3),
+.cam-transfer-file-table td:nth-child(3) { width: 18%; }
+.cam-transfer-file-table th:nth-child(4),
+.cam-transfer-file-table td:nth-child(4) { width: 28%; }
+.cam-transfer-file-table td:nth-child(1),
+.cam-transfer-file-table td:nth-child(3),
+.cam-transfer-file-table td:nth-child(4) { overflow-wrap: anywhere; word-break: break-word; }
+.cam-transfer-file-table .cam-transfer-file-name { overflow-wrap: anywhere; word-break: break-word; }

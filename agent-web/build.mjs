@@ -20,8 +20,9 @@ for (const file of ['bootstrap-icons.woff', 'bootstrap-icons.woff2']) {
   }
 }
 for (const file of [
-  'layout.css', 'role-display.css', 'role-display.js', 'table-pagination.js',
+  'layout.css', 'transfer-file-table.css', 'role-display.css', 'role-display.js', 'table-pagination.js',
   'artifact-catalog.js', 'task-table.js', 'audit-events.js', 'aaa-config.js'
 ]) {
   await copyFile(resolve(projectRoot, 'web-shared', file), resolve(outputAssets, file));
 }
+await copyFile(resolve(projectRoot, 'web-shared', 'transfer-file-table.js'), resolve(outputAssets, 'transfer-file-table.js'));

@@ -25,6 +25,8 @@ test('Core approval details keep the primary workflow visible and the file list 
   assert.match(script, /transfer-progress/u);
   assert.match(script, /Edge → Core 接收进度/u);
   assert.match(script, /文件与分块明细/u);
+  assert.match(script, /renderTransferFileTable/u);
+  assert.doesNotMatch(script, /已接收 \/ SHA-256/u);
   assert.match(script, /ASSEMBLY_PENDING: '已收齐，准备组装'/u);
   assert.match(script, /ASSEMBLING: '组装中'/u);
   assert.match(script, /VERIFY_FAILED: '校验不通过'/u);
