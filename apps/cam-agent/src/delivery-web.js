@@ -3,9 +3,8 @@ export function agentDeliverySection() {
 }
 
 export function agentDeliveryScript() {
-  const section = JSON.stringify(agentDeliverySection());
   return String.raw`
-if (!document.querySelector('#page-delivery')) { const businessHeader=document.querySelector('.sidebar-menu [data-agent-menu-group="business"]'); businessHeader?.insertAdjacentHTML('afterend','<li class="nav-item" data-agent-menu-group-item="business" data-agent-permission="deliveryRead"><a href="#delivery" class="nav-link" data-page="delivery" data-agent-permission="deliveryRead"><span class="nav-icon bi bi-box-arrow-up-right"></span><p>部署交付</p></a></li>'); const mobileBusiness=document.querySelector('.agent-mobile-nav-group[data-agent-mobile-group="business"] .d-flex'); mobileBusiness?.insertAdjacentHTML('beforeend','<a href="#delivery" class="btn btn-sm btn-outline-primary" data-page="delivery" data-agent-permission="deliveryRead"><i class="bi bi-box-arrow-up-right me-1"></i>部署交付</a>'); document.querySelector('#page-tasks').insertAdjacentHTML('afterend',${section}); }
+if (!document.querySelector('#page-delivery')) throw Error('部署交付页面未加载');
 document.querySelectorAll('#page-delivery dialog').forEach((dialog) => document.body.append(dialog));
 let deliveryArtifact = null, deliveryExport = null, deliveryDetailId = null, deliveryDetailTimer = null, deliveryConfirmId = null;
 const deliveryBytes = (value) => { let amount = Number(value); if (!Number.isFinite(amount) || amount < 0) return '-'; if (amount < 1024) return amount + ' B'; const units = ['KB','MB','GB','TB']; let unit = -1; do { amount /= 1024; unit += 1; } while (amount >= 1024 && unit < units.length - 1); return amount.toFixed(amount >= 10 ? 1 : 2) + ' ' + units[unit]; };

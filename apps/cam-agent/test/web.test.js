@@ -123,11 +123,17 @@ test('Agent account page serves the shared Core role and account presentation as
   assert.match(sharedLayout, /\.cam-password-modal::backdrop \{ background: rgb\(0 0 0 \/ 55%\); \}/);
 });
 
-test('Agent delivery navigation is inserted under the business menu group', async () => {
+test('Agent delivery navigation is declared in the business menu template', async () => {
   const { readFile } = await import('node:fs/promises');
-  const deliverySource = await readFile(new URL('../src/delivery-web.js', import.meta.url), 'utf8');
-  assert.match(deliverySource, /data-agent-menu-group-item="business" data-agent-permission="deliveryRead"/);
-  assert.match(deliverySource, /\.agent-mobile-nav-group\[data-agent-mobile-group="business"\] \.d-flex/);
-  assert.match(deliverySource, /href="#delivery"[\s\S]{0,240}部署交付/);
+  const [webSource, deliverySource] = await Promise.all([
+    readFile(new URL('../src/web.js', import.meta.url), 'utf8'),
+    readFile(new URL('../src/delivery-web.js', import.meta.url), 'utf8')
+  ]);
+  assert.match(webSource, /data-agent-menu-group-item="business" data-agent-permission="deliveryRead"><a href="#delivery"/);
+  assert.match(webSource, /data-agent-mobile-group="business"[\s\S]*?href="#delivery"[\s\S]{0,160}部署交付/);
+  assert.match(webSource, /\$\{agentDeliverySection\(\)\}/);
+  assert.doesNotMatch(deliverySource, /businessHeader\?\.insertAdjacentHTML/);
+  assert.doesNotMatch(deliverySource, /mobileBusiness\?\.insertAdjacentHTML/);
+  assert.doesNotMatch(deliverySource, /document\.querySelector\('#page-tasks'\)\.insertAdjacentHTML/);
   assert.match(deliverySource, /document\.querySelectorAll\('#page-delivery dialog'\)\.forEach\(\(dialog\) => document\.body\.append\(dialog\)\)/);
 });

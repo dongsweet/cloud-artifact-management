@@ -5,7 +5,7 @@ import test from 'node:test';
 test('Core Agent registration and service identity share one responsive card', async () => {
   const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
   const start = html.indexOf('<section id="page-agents"');
-  const end = html.indexOf('<section id="page-users"', start);
+  const end = html.indexOf('<section id="page-audit"', start);
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
   const section = html.slice(start, end);

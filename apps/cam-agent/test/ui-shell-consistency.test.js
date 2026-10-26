@@ -45,7 +45,9 @@ test('Edge, Core and Agent shell branding and navigation labels are aligned', as
   assert.match(agent, /statusItem\('过渡公钥指纹'/);
   assert.match(agent, /<p>Agent 接入<\/p>/);
   assert.match(agent, /<h3 class="card-title">正式制品<\/h3>/);
-  assert.match(agent, /if\(deliveryPage\)\$\('#page-tasks'\)\.after\(deliveryPage\)/);
+  assert.match(agent, /<section id="page-delivery"/);
+  assert.match(agent, /data-agent-menu-group-item="business" data-agent-permission="deliveryRead"><a href="#delivery"/);
+  assert.doesNotMatch(agent, /if\(deliveryPage\)\$\('#page-tasks'\)\.after\(deliveryPage\)/);
   assert.doesNotMatch(agent, /data-page="cache"|id="page-cache"/);
   assert.match(agent, /id="artifact-cache-summary"/);
   assert.match(agent, /正式版本总数/);

@@ -50,25 +50,17 @@ function firstAllowedPage() {
 }
 let aaaConfigComponent;
 function mountAaaConfigPage() {
-  const cloudLink = document.querySelector('[data-page=\"cloud-config\"]');
-  if (!cloudLink || document.querySelector('[data-page=\"aaa-config\"]')) return;
-  cloudLink.parentElement.insertAdjacentHTML('beforebegin', '<li class=\"nav-item\" data-menu-group-item=\"management\"><a href=\"#aaa-config\" class=\"nav-link\" data-page=\"aaa-config\"><span class=\"nav-icon bi bi-person-badge\"></span><p>AAA 对接配置</p></a></li>');
-  $('#page-cloud-config').insertAdjacentHTML('beforebegin', '<section id=\"page-aaa-config\" class=\"d-none\"><div id=\"aaa-config-mount\"></div></section>');
-  aaaConfigComponent = mountAaaConfig($('#aaa-config-mount'), { request: (path, options) => api(path, options), csrf: () => csrf, csrfHeader: 'x-cam-core-csrf', onMessage: message });
+  const mount = $('#aaa-config-mount');
+  if (!mount) return;
+  aaaConfigComponent = mountAaaConfig(mount, { request: (path, options) => api(path, options), csrf: () => csrf, csrfHeader: 'x-cam-core-csrf', onMessage: message });
 }
 mountAaaConfigPage();
 function mountAuditPage() {
-  if (document.querySelector('#page-audit')) return;
-  document.querySelector('.app-content .container-fluid').insertAdjacentHTML('beforeend', `<section id="page-audit" class="d-none"><div class="card"><div class="card-header"><h3 class="card-title">审计日志</h3></div><div class="card-body">${auditEventsMarkup()}</div></div></section>`);
-  const usersItem = document.querySelector('[data-page="users"]')?.parentElement;
-  if (usersItem) {
-    usersItem.dataset.menuGroupItem = 'security';
-    usersItem.insertAdjacentHTML('beforebegin', '<li class="nav-header" data-menu-group="security">账号安全</li>');
-    usersItem.insertAdjacentHTML('afterend', '<li class="nav-header" data-menu-group="audit">审计</li><li class="nav-item" data-menu-group-item="audit"><a href="#audit" class="nav-link" data-page="audit"><span class="nav-icon bi bi-journal-text"></span><p>审计日志</p></a></li>');
-  }
+  const mount = $('#audit-events-mount');
+  if (mount) mount.innerHTML = auditEventsMarkup();
 }
 mountAuditPage();
-const loadAuditEvents = mountAuditEvents($('#page-audit'), api, (error) => message(error.message, 'danger'));
+const loadAuditEvents = mountAuditEvents($('#audit-events-mount'), api, (error) => message(error.message, 'danger'));
 $('#login .card-title').textContent = 'CAM Core · 内网发布审批';
 $('.sidebar-brand .brand-text').textContent = 'CAM Core';
 $('#page-artifacts .card-title').textContent = '正式制品';
