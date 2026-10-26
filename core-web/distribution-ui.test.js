@@ -15,6 +15,10 @@ test('Core Agent distribution keeps the information panel and aligns scheduling 
   assert.match(css, /\.cam-detail-modal #distribution-detail-close \{[^}]*right:\s*\.9rem/u);
   assert.match(html, /transfer-file-table\.css/u);
   assert.match(script, /renderTransferFileTable/u);
+  assert.match(script, /const distributionFileProgress = \(file\) =>/u);
+  assert.match(script, /if \(file\.status === 'COMPLETED'\) return bytes/u);
+  assert.match(script, /: '尚未开始'/u);
+  assert.doesNotMatch(script, /file\.completedParts \?\? 0\).*file\.totalParts \?\? 0/u);
   assert.match(sharedJs, /状态 \/ 分块进度/u);
   assert.match(sharedCss, /\.cam-transfer-file-table \{ table-layout: fixed; width: 100%; \}/u);
   assert.match(sharedCss, /nth-child\(1\)[\s\S]*?width: 44%;/u);

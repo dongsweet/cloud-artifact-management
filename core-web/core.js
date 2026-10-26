@@ -369,9 +369,19 @@ async function showDistributionDetail(taskId) {
     const detailFiles = (task.files ?? []).map((file) => {
       const current = progress.sha256 === file.sha256;
       const completed = displayStatus === 'COMPLETED' || progress.state === 'ready';
-      return { ...file, status: completed ? 'COMPLETED' : current ? 'RUNNING' : 'WAITING', completedParts: completed ? file.totalParts : current ? progress.completedParts : 0, totalParts: completed ? file.totalParts : current ? progress.totalParts : 0, bytesDownloaded: completed ? Number(file.sizeBytes ?? 0) : current ? Number(progress.bytesDownloaded ?? 0) : 0 };
+      return { ...file, status: completed ? 'COMPLETED' : current ? 'RUNNING' : 'WAITING', completedParts: current ? progress.completedParts : null, totalParts: current ? progress.totalParts : null, bytesDownloaded: completed ? Number(file.sizeBytes ?? 0) : current ? Number(progress.bytesDownloaded ?? 0) : 0 };
     });
-    const fileTable = renderTransferFileTable(detailFiles, { escapeHtml, formatBytes: formatTransferBytes, statusFor: (file) => file.status === 'COMPLETED' ? { label: file.reused ? '已完成（复用）' : '已完成', color: 'success' } : file.status === 'RUNNING' ? { label: '传输中', color: 'primary' } : { label: '待传输', color: 'secondary' }, progressFor: (file) => `${escapeHtml(file.completedParts ?? 0)} / ${escapeHtml(file.totalParts ?? 0)} 个分块<div>${escapeHtml(formatTransferBytes(file.bytesDownloaded))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div>` });
+    const distributionFileProgress = (file) => {
+      const bytes = `${escapeHtml(formatTransferBytes(file.bytesDownloaded))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}`;
+      if (file.status === 'COMPLETED') return bytes;
+      const totalParts = Number(file.totalParts);
+      const completedParts = Number(file.completedParts);
+      const chunks = Number.isInteger(totalParts) && totalParts > 0
+        ? `${escapeHtml(Number.isInteger(completedParts) && completedParts >= 0 ? completedParts : 0)} / ${escapeHtml(totalParts)} 个分块`
+        : '尚未开始';
+      return `${chunks}<div>${bytes}</div>`;
+    };
+    const fileTable = renderTransferFileTable(detailFiles, { escapeHtml, formatBytes: formatTransferBytes, statusFor: (file) => file.status === 'COMPLETED' ? { label: file.reused ? '已完成（复用）' : '已完成', color: 'success' } : file.status === 'RUNNING' ? { label: '传输中', color: 'primary' } : { label: '待传输', color: 'secondary' }, progressFor: distributionFileProgress });
     $('#distribution-detail-content').innerHTML = `<div class="row g-2 mb-3"><div class="col-md-4"><div class="small text-body-secondary">传输任务编号</div><code>${escapeHtml(task.taskId)}</code></div><div class="col-md-4"><div class="small text-body-secondary">目标 Agent</div><span>${escapeHtml(agent?.name ?? task.agentId)}</span></div><div class="col-md-4"><div class="small text-body-secondary">状态</div><span class="badge text-bg-${displayStatus === 'COMPLETED' ? 'success' : displayStatus === 'RUNNING' ? 'primary' : displayStatus === 'SCHEDULED' ? 'info' : displayStatus === 'RETRY_WAIT' ? 'danger' : 'warning'}">${escapeHtml(labels[displayStatus] ?? displayStatus)}</span></div><div class="col-md-4"><div class="small text-body-secondary">计划开始</div><span>${escapeHtml(displayTime(task.scheduledAt))}</span></div><div class="col-md-4"><div class="small text-body-secondary">单文件并发</div><span>${escapeHtml(task.chunkConcurrency ?? '-')} 线程</span></div><div class="col-md-4"><div class="small text-body-secondary">尝试次数</div><span>${escapeHtml(task.attempts ?? 0)}</span></div></div>${task.lastError ? `<div class="alert alert-danger">${escapeHtml(task.lastError)}</div>` : ''}<div class="small text-body-secondary mb-2">${escapeHtml(distributionProgress(task))}</div>${fileTable}`;
     $('#distribution-detail').showModal();
   } catch (error) { message(error.message, 'danger'); }
