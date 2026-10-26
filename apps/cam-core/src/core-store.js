@@ -200,7 +200,7 @@ export class CoreStore {
     }
     for (const [name, definition] of Object.entries({ public_key: 'TEXT', key_id: 'TEXT', previous_public_key: 'TEXT', previous_key_expires_at: 'TEXT', token_sha256: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
     for (const [name, definition] of Object.entries({ rotation_days: 'INTEGER NOT NULL DEFAULT 90', grace_hours: 'INTEGER NOT NULL DEFAULT 24', key_rotated_at: 'TEXT', key_confirmed_at: 'TEXT', rotation_requested_at: 'TEXT', rotation_error: 'TEXT', rotation_attempts: 'INTEGER NOT NULL DEFAULT 0', rotation_retry_at: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
-    for (const [name, definition] of Object.entries({ core_identity_rotation_id: 'TEXT', core_identity_confirmed_at: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
+    for (const [name, definition] of Object.entries({ core_identity_rotation_id: 'TEXT', core_identity_confirmed_at: 'TEXT', core_identity_error: 'TEXT', core_identity_attempts: 'INTEGER NOT NULL DEFAULT 0', core_identity_retry_at: 'TEXT' })) if (!agentColumns.has(name)) db.exec(`ALTER TABLE core_agents ADD COLUMN ${name} ${definition}`);
     db.exec('UPDATE core_agents SET key_rotated_at = created_at WHERE key_rotated_at IS NULL');
     db.exec(`
       CREATE TABLE IF NOT EXISTS core_agent_rotation_policy (
@@ -348,7 +348,7 @@ export class CoreStore {
   }
   confirmCoreIdentity(agentId, { rotationId, fingerprint }) {
     if (typeof rotationId !== 'string' || !rotationId || typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/u.test(fingerprint)) throw Object.assign(new Error('Core 身份轮换确认信息无效'), { code: 'core_identity_confirmation_invalid' });
-    const result = this.db.prepare("UPDATE core_agents SET core_identity_rotation_id = ?, core_identity_confirmed_at = ? WHERE agent_id = ? AND status IN ('ACTIVE', 'PENDING')").run(rotationId, now(), agentId);
+    const result = this.db.prepare("UPDATE core_agents SET core_identity_rotation_id = ?, core_identity_confirmed_at = ?, core_identity_error = NULL, core_identity_attempts = 0, core_identity_retry_at = NULL WHERE agent_id = ? AND status IN ('ACTIVE', 'PENDING')").run(rotationId, now(), agentId);
     if (!result.changes) throw Object.assign(new Error('Agent 不存在或未启用'), { code: 'agent_disabled' });
     return this.getCoreIdentityRotationStatus(rotationId);
   }
@@ -365,8 +365,16 @@ export class CoreStore {
     const rotationDue = Boolean(row.rotation_requested_at) || Date.parse(nextRotationAt) <= Date.now();
     return { agentId: row.agent_id, centerId: row.center_id, name: row.name, keyId: row.key_id, fingerprint: row.key_id, status: row.status, createdAt: row.created_at, lastSeenAt: row.last_seen_at,
       previousKeyExpiresAt: row.previous_key_expires_at, rotationDays: policy.rotationDays, graceHours: policy.graceHours, rotatedAt, confirmedAt: row.key_confirmed_at, nextRotationAt, rotationRequestedAt: row.rotation_requested_at, rotationDue,
-      coreIdentityRotationId: row.core_identity_rotation_id, coreIdentityConfirmedAt: row.core_identity_confirmed_at,
+      coreIdentityRotationId: row.core_identity_rotation_id, coreIdentityConfirmedAt: row.core_identity_confirmed_at, coreIdentityError: row.core_identity_error, coreIdentityAttempts: row.core_identity_attempts ?? 0, coreIdentityRetryAt: row.core_identity_retry_at,
       rotationState: row.rotation_error ? 'RETRY_WAIT' : !row.key_confirmed_at ? 'AWAITING_CONFIRMATION' : rotationDue ? 'REQUESTED' : 'CURRENT', rotationError: row.rotation_error, rotationAttempts: row.rotation_attempts, rotationRetryAt: row.rotation_retry_at };
+  }
+  reportCoreIdentityFailure(agentId, { rotationId, message, attempts, retryAt }) {
+    if (typeof rotationId !== 'string' || !rotationId || typeof message !== 'string' || !message || !Number.isSafeInteger(attempts) || attempts < 1 || !Number.isFinite(Date.parse(retryAt))) throw Object.assign(new Error('Core 身份轮换失败状态无效'), { code: 'core_identity_failure_invalid' });
+    this.db.prepare("UPDATE core_agents SET core_identity_error = ?, core_identity_attempts = ?, core_identity_retry_at = ? WHERE agent_id = ? AND status IN ('ACTIVE', 'PENDING')").run(message.slice(0, 1000), attempts, new Date(retryAt).toISOString(), agentId);
+    return this.getAgentIdentity(agentId);
+  }
+  beginCoreIdentityRotation() {
+    this.db.prepare("UPDATE core_agents SET core_identity_error = NULL, core_identity_attempts = 0, core_identity_retry_at = NULL WHERE status IN ('ACTIVE', 'PENDING')").run();
   }
   setAgentRotationPolicy({ rotationDays, graceHours }) {
     if (!Number.isInteger(rotationDays) || rotationDays < 1 || rotationDays > 365 || !Number.isInteger(graceHours) || graceHours < 1 || graceHours > 168) throw Object.assign(new Error('轮换周期应为 1–365 天，过渡期应为 1–168 小时'), { code: 'agent_policy_invalid' });

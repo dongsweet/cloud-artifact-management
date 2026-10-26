@@ -329,6 +329,10 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
       return { ok: true, item: { rotationId, fingerprint, confirmed: true } };
     } catch (err) { return error(reply, 409, err.code ?? 'core_identity_confirmation_failed', err.message); }
   });
+  app.post('/api/v1/agent/core-identity/failure', { bodyLimit: 4096 }, async (request, reply) => {
+    try { return { item: store.reportCoreIdentityFailure(request.agentPrincipal.agentId, request.body ?? {}) }; }
+    catch (err) { return error(reply, 400, err.code ?? 'core_identity_failure_invalid', err.message); }
+  });
   app.post('/api/v1/agent/identity/failure', { bodyLimit: 4096 }, async (request, reply) => {
     try { return { item: store.reportAgentRotationFailure(request.agentPrincipal.agentId, request.body ?? {}) }; }
     catch (err) { return error(reply, 400, err.code ?? 'agent_rotation_report_invalid', err.message); }

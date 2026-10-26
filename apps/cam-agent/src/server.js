@@ -72,7 +72,22 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
   if (!taskColumns.has('scheduled_at')) db.exec("ALTER TABLE agent_tasks ADD COLUMN scheduled_at TEXT");
   if (!taskColumns.has('chunk_concurrency')) db.exec('ALTER TABLE agent_tasks ADD COLUMN chunk_concurrency INTEGER NOT NULL DEFAULT 4');
   const app = await buildServer({ service: 'cam-agent', configure: async (server) => { registerAuth(server, auth); server.addHook('onClose', async () => db.close()); } });
-  const core = async (path, options = {}, signer = identity) => {
+  // Core identity rotation is an automatic background handshake.  A failed
+  // confirmation is recorded locally and reported through the same signed
+  // control channel; the next poll/request retries it after a short backoff.
+  let core;
+  const reportCoreIdentityFailure = async ({ rotationId, error, signer }) => {
+    const local = coreConnection.markCoreIdentityFailure(rotationId, error?.message ?? error?.code ?? 'Core 身份自动确认失败');
+    try {
+      await core('/api/v1/agent/core-identity/failure', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ rotationId: rotationId ?? local.coreIdentityRotationId, message: local.lastError, attempts: local.coreIdentityAttempts, retryAt: local.coreIdentityRetryAt })
+      }, signer);
+    } catch { /* The normal request will retry the report on the next poll. */ }
+    return local;
+  };
+  core = async (path, options = {}, signer = identity) => {
     const config = coreConnection.get();
     if (!config.corePublicKey) throw Object.assign(new Error('请先在 Core 身份配对页面配置 Core 公钥'), { code: 'core_public_key_missing', status: 503 });
     const trustedCoreKeys = [{ publicKeyPem: config.corePublicKey, keyId: config.fingerprint }, ...(config.previousPublicKey && Date.parse(config.previousPublicKeyExpiresAt) > Date.now() ? [{ publicKeyPem: config.previousPublicKey, keyId: config.previousFingerprint }] : [])];
@@ -93,25 +108,33 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
     if (response.headers.get('content-type')?.includes('application/json')) {
       let envelope;
       try { envelope = JSON.parse(responseBody.toString('utf8') || '{}'); } catch { envelope = null; }
+      const currentPath = path.split('?')[0];
       const proposal = envelope?.coreIdentityRotation;
-      if (proposal) {
-        const accepted = coreConnection.acceptIdentityRotation(proposal);
-        if (path.split('?')[0] !== '/api/v1/agent/core-identity/confirm') {
-          try {
-            const confirmation = JSON.stringify({ rotationId: proposal.rotationId, fingerprint: accepted.fingerprint });
-            await core('/api/v1/agent/core-identity/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: confirmation }, signer);
-            coreConnection.clearIdentityRotation(proposal.rotationId);
-          } catch (error) {
-            if (error.code !== 'agent_identity_pending') throw error;
-          }
+      const tryConfirmation = async (rotationId, publicKeyFingerprint) => {
+        const current = coreConnection.get();
+        if (current.coreIdentityRetryAt && Date.parse(current.coreIdentityRetryAt) > Date.now()) return;
+        const confirmation = JSON.stringify({ rotationId, fingerprint: publicKeyFingerprint });
+        try {
+          await core('/api/v1/agent/core-identity/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: confirmation }, signer);
+          coreConnection.clearIdentityRotation(rotationId);
+          coreConnection.markTest('PASSED');
+        } catch (error) {
+          if (error.code === 'agent_identity_pending') return;
+          await reportCoreIdentityFailure({ rotationId, error, signer });
         }
+      };
+      const canConfirm = !['/api/v1/agent/core-identity/confirm', '/api/v1/agent/core-identity/failure'].includes(currentPath);
+      if (proposal && canConfirm) {
+        let accepted;
+        try { accepted = coreConnection.acceptIdentityRotation(proposal); }
+        catch (error) {
+          await reportCoreIdentityFailure({ rotationId: proposal.rotationId, error, signer });
+          throw error;
+        }
+        await tryConfirmation(proposal.rotationId, accepted.fingerprint);
       } else {
-        const trustedRotationId = coreConnection.get().coreIdentityRotationId;
-        if (trustedRotationId && path.split('?')[0] !== '/api/v1/agent/core-identity/confirm') {
-          const confirmation = JSON.stringify({ rotationId: trustedRotationId, fingerprint: coreConnection.get().fingerprint });
-          try { await core('/api/v1/agent/core-identity/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: confirmation }, signer); coreConnection.clearIdentityRotation(trustedRotationId); }
-          catch (error) { if (error.code !== 'agent_identity_pending') throw error; }
-        }
+        const trusted = coreConnection.get();
+        if (trusted.coreIdentityRotationId && canConfirm) await tryConfirmation(trusted.coreIdentityRotationId, trusted.fingerprint);
       }
     }
     if (!response.ok) { const body = JSON.parse(responseBody.toString('utf8') || '{}'); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;

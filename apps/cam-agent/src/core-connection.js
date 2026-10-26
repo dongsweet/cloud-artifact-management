@@ -25,6 +25,7 @@ export class CoreConnectionStore {
       previousPublicKey: defaults.previousPublicKey ? normalizeKey(defaults.previousPublicKey, 'Core 过渡公钥') : '',
       previousPublicKeyExpiresAt: defaults.previousPublicKeyExpiresAt ?? '',
       coreIdentityRotationId: null,
+      coreIdentityAttempts: 0, coreIdentityRetryAt: null,
       lastTestAt: null, lastTestState: 'NOT_TESTED', lastError: null
     };
   }
@@ -53,7 +54,7 @@ export class CoreConnectionStore {
     if (!previousPublicKey) previousPublicKeyExpiresAt = '';
     if (previousPublicKey && !previousPublicKeyExpiresAt) throw Object.assign(new Error('配置旧 Core 公钥时必须设置过期时间'), { code: 'core_previous_key_expiry_required' });
     if (previousPublicKeyExpiresAt && !Number.isFinite(Date.parse(previousPublicKeyExpiresAt))) throw Object.assign(new Error('Core 旧公钥过期时间无效'), { code: 'core_previous_key_expiry_invalid' });
-    const next = { coreUrl, corePublicKey, previousPublicKey, previousPublicKeyExpiresAt, coreIdentityRotationId: null, lastTestAt: null, lastTestState: 'NOT_TESTED', lastError: null };
+    const next = { coreUrl, corePublicKey, previousPublicKey, previousPublicKeyExpiresAt, coreIdentityRotationId: null, coreIdentityAttempts: 0, coreIdentityRetryAt: null, lastTestAt: null, lastTestState: 'NOT_TESTED', lastError: null };
     const timestamp = new Date().toISOString();
     const upsert = this.db.prepare('INSERT INTO agent_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at');
     this.db.exec('BEGIN IMMEDIATE');
@@ -76,6 +77,8 @@ export class CoreConnectionStore {
       previousPublicKey: before.corePublicKey,
       previousPublicKeyExpiresAt: new Date(Date.now() + graceHours * 3600_000).toISOString(),
       coreIdentityRotationId: rotationId,
+      coreIdentityAttempts: 0,
+      coreIdentityRetryAt: null,
       lastTestAt: null,
       lastTestState: 'NOT_TESTED',
       lastError: null
@@ -92,7 +95,18 @@ export class CoreConnectionStore {
   clearIdentityRotation(rotationId) {
     if (this.get().coreIdentityRotationId !== rotationId) return this.get();
     const timestamp = new Date().toISOString();
-    this.db.prepare('INSERT INTO agent_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at').run('coreIdentityRotationId', JSON.stringify(null), timestamp);
+    const upsert = this.db.prepare('INSERT INTO agent_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at');
+    for (const [key, value] of Object.entries({ coreIdentityRotationId: null, coreIdentityAttempts: 0, coreIdentityRetryAt: null })) upsert.run(key, JSON.stringify(value), timestamp);
+    return this.get();
+  }
+  markCoreIdentityFailure(rotationId, error) {
+    const before = this.get();
+    if (rotationId && before.coreIdentityRotationId && before.coreIdentityRotationId !== rotationId) return before;
+    const attempts = Number.isSafeInteger(before.coreIdentityAttempts) ? before.coreIdentityAttempts + 1 : 1;
+    const retryAt = new Date(Date.now() + Math.min(300_000, 5_000 * 2 ** Math.min(attempts - 1, 6))).toISOString();
+    const timestamp = new Date().toISOString();
+    const upsert = this.db.prepare('INSERT INTO agent_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at');
+    for (const [key, value] of Object.entries({ coreIdentityAttempts: attempts, coreIdentityRetryAt: retryAt, lastTestAt: timestamp, lastTestState: 'FAILED', lastError: String(error ?? 'Core 身份自动确认失败').slice(0, 1000) })) upsert.run(key, JSON.stringify(value), timestamp);
     return this.get();
   }
   markTest(state, error = null) {

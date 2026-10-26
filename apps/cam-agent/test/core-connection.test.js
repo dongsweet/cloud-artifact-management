@@ -128,6 +128,8 @@ test('Core identity rotation is proposed under the old key and activated after e
     await stageAgentServiceIdentityRotation(join(coreDir, 'core-agent-identity.json'), core.agentServiceIdentity);
     assert.equal(core.agentServiceIdentity.fingerprint, oldFingerprint, 'Core keeps signing with the old identity until all registered Agents confirm');
     await app.agentPoll();
+    assert.equal(JSON.parse(app.agentAuthStore.db.prepare('SELECT setting_value FROM agent_settings WHERE setting_key = ?').get('lastTestState').setting_value), 'PASSED', 'Agent confirms the staged Core identity automatically');
+    assert.equal(core.coreStore.getAgentIdentity(registered.agentId).coreIdentityError, null, 'Core has no automatic confirmation error after Agent confirmation');
     assert.equal(core.coreStore.getCoreIdentityRotationStatus(core.agentServiceIdentity.pendingIdentity.rotationId).pending, 2, 'the offline and not-yet-enabled Agents keep the Core rotation staged');
     assert.equal(core.agentServiceIdentity.fingerprint, oldFingerprint, 'Core does not switch globally while one Agent is still offline');
     await secondApp.agentPoll();
