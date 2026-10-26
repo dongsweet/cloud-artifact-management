@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream, statSync } from 'node:fs';
 import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { dirname, join } from 'node:path';
@@ -820,15 +820,17 @@ export class CoreStore {
   listReleaseArtifacts(requestId) {
     return this.db.prepare(`SELECT ra.package_key AS packageKey, ra.candidate_id AS candidateId,
       ra.file_name AS fileName, ra.size_bytes AS sizeBytes, ra.sha256,
-      ra.source, ra.inherited_from_round_id AS inheritedFromRoundId,
-      (a.sha256 IS NOT NULL) AS stored
-      FROM core_release_artifacts ra LEFT JOIN core_artifacts a ON a.sha256 = ra.sha256
-      WHERE ra.request_id = ? ORDER BY ra.package_key`).all(requestId).map((item) => ({ ...item, stored: Boolean(item.stored) }));
+      ra.source, ra.inherited_from_round_id AS inheritedFromRoundId
+      FROM core_release_artifacts ra
+      WHERE ra.request_id = ? ORDER BY ra.package_key`).all(requestId).map((item) => ({ ...item, stored: Boolean(this.artifactPath(item.sha256)) }));
   }
   artifactPath(sha256) {
     if (!/^[a-f0-9]{64}$/i.test(String(sha256))) return null;
     const normalized = sha256.toLowerCase();
-    return this.db.prepare('SELECT file_path FROM core_artifacts WHERE sha256 = ?').get(normalized)?.file_path ?? null;
+    const filePath = this.db.prepare('SELECT file_path FROM core_artifacts WHERE sha256 = ?').get(normalized)?.file_path;
+    if (!filePath) return null;
+    try { return statSync(filePath).isFile() ? filePath : null; }
+    catch { return null; }
   }
   listTransferParts(transferTaskId, sha256) {
     return this.db.prepare('SELECT part_index AS partIndex, chunk_size AS chunkSize, chunk_count AS chunkCount, byte_offset AS offset, size_bytes AS size, part_sha256 AS sha256 FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ? ORDER BY part_index')
@@ -856,36 +858,27 @@ export class CoreStore {
     this.db.prepare('DELETE FROM core_transfer_file_states WHERE transfer_task_id = ? AND sha256 = ?').run(transferTaskId, String(sha256).toLowerCase());
   }
   async reconcileTransferParts(transferTaskId) {
-    const existing = this.transferAssemblyLocks.get(transferTaskId);
-    if (existing) return existing;
-    const operation = (async () => {
-      const transfer = this.expectedTransferArtifacts(transferTaskId);
-      const errors = [];
-      const assembled = [];
-      for (const sha256 of new Set(transfer.items.map((item) => String(item.actualSha256 ?? '').toLowerCase()))) {
-        if (!/^[a-f0-9]{64}$/.test(sha256) || this.artifactPath(sha256)) continue;
-        const parts = this.listTransferParts(transferTaskId, sha256);
-        const chunkCount = parts[0]?.chunkCount;
-        if (!Number.isInteger(chunkCount) || chunkCount <= 0 || parts.length !== chunkCount) continue;
-        const state = this.getTransferFileState(transferTaskId, sha256);
-        if (state?.status === 'VERIFY_FAILED') {
-          errors.push({ sha256, code: state.errorCode ?? 'artifact_assembly_failed', message: state.lastError ?? '制品校验不通过' });
-          continue;
-        }
-        try {
-          const result = await this.assembleTransferParts(transferTaskId, sha256);
-          if (result.complete) assembled.push(sha256);
-        } catch (error) {
-          errors.push({ sha256, code: error.code ?? 'artifact_assembly_failed', message: error.message });
-        }
+    const transfer = this.expectedTransferArtifacts(transferTaskId);
+    const errors = [];
+    const assembled = [];
+    for (const sha256 of new Set(transfer.items.map((item) => String(item.actualSha256 ?? '').toLowerCase()))) {
+      if (!/^[a-f0-9]{64}$/.test(sha256) || this.artifactPath(sha256)) continue;
+      const parts = this.listTransferParts(transferTaskId, sha256);
+      const chunkCount = parts[0]?.chunkCount;
+      if (!Number.isInteger(chunkCount) || chunkCount <= 0 || parts.length !== chunkCount) continue;
+      const state = this.getTransferFileState(transferTaskId, sha256);
+      if (state?.status === 'VERIFY_FAILED') {
+        errors.push({ sha256, code: state.errorCode ?? 'artifact_assembly_failed', message: state.lastError ?? '制品校验不通过' });
+        continue;
       }
-      return { assembled, errors };
-    })();
-    this.transferAssemblyLocks.set(transferTaskId, operation);
-    try { return await operation; }
-    finally {
-      if (this.transferAssemblyLocks.get(transferTaskId) === operation) this.transferAssemblyLocks.delete(transferTaskId);
+      try {
+        const result = await this.assembleTransferParts(transferTaskId, sha256);
+        if (result.complete) assembled.push(sha256);
+      } catch (error) {
+        errors.push({ sha256, code: error.code ?? 'artifact_assembly_failed', message: error.message });
+      }
     }
+    return { assembled, errors };
   }
   async reconcilePendingTransfers(limit = 20) {
     // Assembly is local recovery work. It must not depend on a browser
@@ -937,18 +930,22 @@ export class CoreStore {
       // distinct from RECEIVING so the UI does not suggest file concurrency.
       const chunksComplete = !stored && Number.isInteger(chunkCount) && chunkCount > 0 && receivedParts === chunkCount;
       const fileState = taskId ? this.getTransferFileState(taskId, sha256) : null;
-      const status = stored ? 'COMPLETED' : fileState?.status ?? (chunksComplete ? 'ASSEMBLY_PENDING' : parts.length ? 'RECEIVING' : 'WAITING');
+      // A valid content-addressed object is authoritative. A stale assembly
+      // error can remain after a concurrent assembly finished successfully;
+      // never show that old error next to a verified stored file.
+      const effectiveFileState = stored ? null : fileState;
+      const status = stored ? 'COMPLETED' : effectiveFileState?.status ?? (chunksComplete ? 'ASSEMBLY_PENDING' : parts.length ? 'RECEIVING' : 'WAITING');
       const reused = stored && (seenDigests.has(sha256) || Boolean(this.db.prepare('SELECT 1 FROM core_artifacts WHERE sha256 = ? AND received_at < ?').get(sha256, task?.created_at ?? now())));
       seenDigests.add(sha256);
       return {
         packageKey: item.packageKey ?? null, candidateId: item.candidateId ?? null, fileName: item.fileName ?? item.packageKey ?? sha256,
         sizeBytes: Number(item.sizeBytes ?? 0), sha256, source: item.source ?? null,
         inheritedFromRoundId: item.inheritedFromRoundId ?? null, stored, reused,
-        status, errorCode: fileState?.errorCode ?? null, lastError: fileState?.lastError ?? null,
+        status, errorCode: effectiveFileState?.errorCode ?? null, lastError: effectiveFileState?.lastError ?? null,
         receivedParts, chunkCount, receivedBytes,
-        assemblyBytes: Math.min(Number(item.sizeBytes ?? 0), Number(fileState?.assemblyBytes ?? 0)),
-        assemblyParts: Math.min(chunkCount ?? 0, Number(fileState?.assemblyParts ?? 0)),
-        updatedAt: fileState?.updatedAt ?? task?.updated_at ?? current.updatedAt
+        assemblyBytes: Math.min(Number(item.sizeBytes ?? 0), Number(effectiveFileState?.assemblyBytes ?? 0)),
+        assemblyParts: Math.min(chunkCount ?? 0, Number(effectiveFileState?.assemblyParts ?? 0)),
+        updatedAt: effectiveFileState?.updatedAt ?? task?.updated_at ?? current.updatedAt
       };
     });
     const totalBytes = files.reduce((total, file) => total + file.sizeBytes, 0);
@@ -1027,6 +1024,18 @@ export class CoreStore {
     return { path, receivedParts: count, chunkCount: part.chunkCount, complete: count === part.chunkCount };
   }
   async assembleTransferParts(transferTaskId, sha256) {
+    const digestValue = String(sha256).toLowerCase();
+    const lockKey = `${transferTaskId}:${digestValue}`;
+    const existing = this.transferAssemblyLocks.get(lockKey);
+    if (existing) return existing;
+    const operation = this._assembleTransferParts(transferTaskId, digestValue);
+    this.transferAssemblyLocks.set(lockKey, operation);
+    try { return await operation; }
+    finally {
+      if (this.transferAssemblyLocks.get(lockKey) === operation) this.transferAssemblyLocks.delete(lockKey);
+    }
+  }
+  async _assembleTransferParts(transferTaskId, sha256) {
     const digestValue = String(sha256).toLowerCase();
     const transfer = this.expectedTransferArtifacts(transferTaskId);
     const expected = transfer.items.find((item) => String(item.actualSha256 ?? '').toLowerCase() === digestValue);

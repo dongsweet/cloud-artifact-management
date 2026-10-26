@@ -559,6 +559,60 @@ test('Core distinguishes complete chunks waiting for assembly from an active rec
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Core serializes direct and recovery assembly for the same file', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-transfer-assembly-lock-'));
+  const bytes = Buffer.from('assembly-lock-12');
+  const first = bytes.subarray(0, 8);
+  const second = bytes.subarray(8);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const manifest = { schemaVersion: 1, items: [{ packageKey: 'locked', candidateId: 'CAND-LOCKED', fileName: 'locked.bin', sizeBytes: bytes.length, actualSha256: sha256, source: 'OWNED' }] };
+  const lockedManifestSha256 = createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
+  const app = await buildCoreApp({ dataDir, enableAuth: false });
+  const requestId = 'FREEZE-ASSEMBLY-LOCK';
+  try {
+    app.coreStore.receiveApproval({ ...envelope, requestId, freezeId: requestId, manifestSha256: lockedManifestSha256, manifest });
+    app.coreStore.applyCloudStatus(requestId, { approvalId: 'APR-ASSEMBLY-LOCK', status: 'APPROVED', transferTaskId: 'TR-ASSEMBLY-LOCK', manifestSha256: lockedManifestSha256 });
+    app.coreStore.authorizeTransfer(requestId, { manifestSha256: lockedManifestSha256, transferTaskId: 'TR-ASSEMBLY-LOCK' });
+    await writeFile(join(dataDir, 'lock-part-0'), first);
+    await writeFile(join(dataDir, 'lock-part-1'), second);
+    await app.coreStore.saveTransferPart('TR-ASSEMBLY-LOCK', sha256, { index: 0, chunkSize: 8, chunkCount: 2, offset: 0, size: first.length, sha256: createHash('sha256').update(first).digest('hex'), temporaryPath: join(dataDir, 'lock-part-0') });
+    await app.coreStore.saveTransferPart('TR-ASSEMBLY-LOCK', sha256, { index: 1, chunkSize: 8, chunkCount: 2, offset: 8, size: second.length, sha256: createHash('sha256').update(second).digest('hex'), temporaryPath: join(dataDir, 'lock-part-1') });
+    const [direct, recovery] = await Promise.all([
+      app.coreStore.assembleTransferParts('TR-ASSEMBLY-LOCK', sha256),
+      app.coreStore.reconcileTransferParts('TR-ASSEMBLY-LOCK')
+    ]);
+    assert.equal(direct.complete, true);
+    assert.deepEqual(recovery.errors, []);
+    assert.equal(app.coreStore.getTransferProgress(requestId).files[0].status, 'COMPLETED');
+    assert.equal(app.coreStore.getTransferProgress(requestId).files[0].lastError, null);
+    app.coreStore.setTransferFileState('TR-ASSEMBLY-LOCK', sha256, 'VERIFY_FAILED', Object.assign(new Error('stale assembly error'), { code: 'ENOENT' }));
+    const staleStateProgress = app.coreStore.getTransferProgress(requestId).files[0];
+    assert.equal(staleStateProgress.status, 'COMPLETED');
+    assert.equal(staleStateProgress.lastError, null);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Core does not report a missing content-addressed file as stored', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-stale-artifact-'));
+  const bytes = Buffer.from('stale artifact row');
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const manifest = { schemaVersion: 1, items: [{ packageKey: 'stale', candidateId: 'CAND-STALE', fileName: 'stale.bin', sizeBytes: bytes.length, actualSha256: sha256, source: 'OWNED' }] };
+  const staleManifestSha256 = createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
+  const app = await buildCoreApp({ dataDir, enableAuth: false });
+  const requestId = 'FREEZE-STALE-ARTIFACT';
+  try {
+    app.coreStore.receiveApproval({ ...envelope, requestId, freezeId: requestId, manifestSha256: staleManifestSha256, manifest });
+    app.coreStore.applyCloudStatus(requestId, { approvalId: 'APR-STALE-ARTIFACT', status: 'APPROVED', transferTaskId: 'TR-STALE-ARTIFACT', manifestSha256: staleManifestSha256 });
+    app.coreStore.authorizeTransfer(requestId, { manifestSha256: staleManifestSha256, transferTaskId: 'TR-STALE-ARTIFACT' });
+    app.coreStore.db.prepare('INSERT INTO core_artifacts (sha256, size_bytes, file_path, received_at) VALUES (?, ?, ?, ?)')
+      .run(sha256, bytes.length, join(dataDir, 'missing-artifact'), new Date().toISOString());
+    const progress = app.coreStore.getTransferProgress(requestId);
+    assert.equal(progress.files[0].stored, false);
+    assert.equal(progress.files[0].status, 'WAITING');
+    assert.equal(progress.summary.completedFiles, 0);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Core watches Edge start and idle deadlines, coordinates recovery, and stops at its retry limit', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-edge-watchdog-'));
   const app = await buildCoreApp({ dataDir, enableAuth: false });
