@@ -49,12 +49,6 @@ services:
         max-size: "50m"
         max-file: "5"
 
-networks:
-  default:
-    ipam:
-      config:
-        - subnet: ${CAM_DOCKER_SUBNET:-192.168.241.0/24}
-
   cam-edge-web:
     image: ${CAM_EDGE_WEB_IMAGE:-cam-edge-web:1.0.0}
     container_name: cam-edge-web
@@ -78,4 +72,10 @@ networks:
       options:
         max-size: "20m"
         max-file: "5"
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${CAM_DOCKER_SUBNET:-192.168.241.0/24}
 
