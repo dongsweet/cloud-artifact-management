@@ -10,6 +10,11 @@ import { maskApprovalCode } from './approval-code.js';
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}-${Date.now()}-${randomUUID()}`;
 const digest = (value) => createHash('sha256').update(value).digest('hex');
+const transferRecoveryDelay = (attempt) => Math.min(300_000, 5_000 * (2 ** Math.min(Math.max(attempt - 1, 0), 6)));
+
+function deadlineAfter(milliseconds) {
+  return new Date(Date.now() + milliseconds).toISOString();
+}
 
 function required(value, name) {
   if (typeof value !== 'string' || value.trim() === '') throw Object.assign(new Error(`${name} is required`), { code: 'invalid_message' });
@@ -47,6 +52,11 @@ function response(row) {
     transferEdgeStatus: row.transfer_edge_status ?? null, transferEdgeAttempts: row.transfer_edge_attempts ?? 0,
     transferEdgeRetryAt: row.transfer_edge_retry_at ?? null, transferEdgeErrorCode: row.transfer_edge_error_code ?? null,
     transferEdgeLastError: row.transfer_edge_last_error ?? null, transferEdgeFailureTerminal: Boolean(row.transfer_edge_failure_terminal),
+    transferEdgeAttemptStartedAt: row.transfer_edge_attempt_started_at ?? null,
+    transferEdgeLastActivityAt: row.transfer_edge_last_activity_at ?? null,
+    transferEdgeStartDeadlineAt: row.transfer_edge_start_deadline_at ?? null,
+    transferEdgeIdleDeadlineAt: row.transfer_edge_idle_deadline_at ?? null,
+    transferEdgeRecoveryAttempts: row.transfer_edge_recovery_attempts ?? 0,
     transferNotificationState: row.transfer_notification_state ?? 'IDLE', transferNotificationAttempts: row.transfer_notification_attempts ?? 0,
     transferNotificationLastError: row.transfer_notification_error ?? null, transferNotificationNextAttemptAt: row.transfer_notification_next_attempt_at ?? null
   };
@@ -79,6 +89,9 @@ export class CoreStore {
         edge_status TEXT NOT NULL DEFAULT 'IDLE', edge_attempts INTEGER NOT NULL DEFAULT 0,
         edge_retry_at TEXT, edge_error_code TEXT, edge_last_error TEXT,
         edge_failure_terminal INTEGER NOT NULL DEFAULT 0,
+        edge_attempt_started_at TEXT, edge_last_activity_at TEXT,
+        edge_start_deadline_at TEXT, edge_idle_deadline_at TEXT,
+        edge_recovery_attempts INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS core_artifacts (
@@ -232,7 +245,7 @@ export class CoreStore {
     if (!distributionColumns.has('scheduled_at')) db.exec("ALTER TABLE core_distribution_tasks ADD COLUMN scheduled_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
     if (!distributionColumns.has('chunk_concurrency')) db.exec('ALTER TABLE core_distribution_tasks ADD COLUMN chunk_concurrency INTEGER NOT NULL DEFAULT 4');
     const transferTaskColumns = new Set(db.prepare('PRAGMA table_info(core_transfer_tasks)').all().map((column) => column.name));
-    for (const [name, definition] of Object.entries({ edge_status: "TEXT NOT NULL DEFAULT 'IDLE'", edge_attempts: 'INTEGER NOT NULL DEFAULT 0', edge_retry_at: 'TEXT', edge_error_code: 'TEXT', edge_last_error: 'TEXT', edge_failure_terminal: 'INTEGER NOT NULL DEFAULT 0' })) {
+    for (const [name, definition] of Object.entries({ edge_status: "TEXT NOT NULL DEFAULT 'IDLE'", edge_attempts: 'INTEGER NOT NULL DEFAULT 0', edge_retry_at: 'TEXT', edge_error_code: 'TEXT', edge_last_error: 'TEXT', edge_failure_terminal: 'INTEGER NOT NULL DEFAULT 0', edge_attempt_started_at: 'TEXT', edge_last_activity_at: 'TEXT', edge_start_deadline_at: 'TEXT', edge_idle_deadline_at: 'TEXT', edge_recovery_attempts: 'INTEGER NOT NULL DEFAULT 0' })) {
       if (!transferTaskColumns.has(name)) db.exec(`ALTER TABLE core_transfer_tasks ADD COLUMN ${name} ${definition}`);
     }
     const transferFileStateColumns = new Set(db.prepare('PRAGMA table_info(core_transfer_file_states)').all().map((column) => column.name));
@@ -456,9 +469,9 @@ export class CoreStore {
     return latest;
   }
   listDistributionTasks() { return this.db.prepare('SELECT task_id FROM core_distribution_tasks ORDER BY created_at DESC LIMIT 500').all().map(({ task_id }) => this.getDistributionTask(task_id)); }
-  listTransferMonitor() {
+  listTransferMonitor({ recoveryLimit = null } = {}) {
     const edgeToCore = this.list().filter((item) => item.status === 'APPROVED' || item.status === 'CLOSED' || item.transferTaskId).map((item) => {
-      const progress = this.getTransferProgress(item.requestId);
+      const progress = this.getTransferProgress(item.requestId, { recoveryLimit });
       const failure = progress?.edgeFailure ?? null;
       return {
         requestId: item.requestId,
@@ -471,10 +484,24 @@ export class CoreStore {
         displayVersion: item.displayVersion,
         transferTaskId: progress?.transferTaskId ?? item.transferTaskId ?? null,
         status: progress?.status ?? 'WAITING_AUTHORIZATION',
-        attempts: failure?.attempts ?? 0,
-        retryAt: failure?.retryAt ?? null,
-        lastError: failure?.message ?? null,
-        errorCode: failure?.code ?? null,
+        notification: progress?.notification ?? {
+          state: item.transferNotificationState,
+          attempts: item.transferNotificationAttempts,
+          lastError: item.transferNotificationLastError,
+          nextAttemptAt: item.transferNotificationNextAttemptAt
+        },
+        edgeStatus: progress?.edge?.status ?? item.transferEdgeStatus ?? null,
+        terminal: Boolean(failure?.terminal ?? item.transferEdgeFailureTerminal),
+        recoveryAttempts: progress?.edge?.recoveryAttempts ?? item.transferEdgeRecoveryAttempts ?? 0,
+        attempts: progress?.edge?.attempts ?? failure?.attempts ?? item.transferEdgeAttempts ?? 0,
+        retryAt: failure?.retryAt ?? item.transferEdgeRetryAt ?? null,
+        lastError: failure?.message ?? item.transferEdgeLastError ?? item.transferNotificationLastError ?? null,
+        errorCode: failure?.code ?? item.transferEdgeErrorCode ?? (item.transferNotificationState === 'FAILED' ? 'transfer_ready_delivery_failed' : null),
+        attemptStartedAt: progress?.edge?.attemptStartedAt ?? item.transferEdgeAttemptStartedAt ?? null,
+        lastActivityAt: progress?.edge?.lastActivityAt ?? item.transferEdgeLastActivityAt ?? null,
+        startDeadlineAt: progress?.edge?.startDeadlineAt ?? item.transferEdgeStartDeadlineAt ?? null,
+        idleDeadlineAt: progress?.edge?.idleDeadlineAt ?? item.transferEdgeIdleDeadlineAt ?? null,
+        recoveryLimit: progress?.edge?.recoveryLimit ?? recoveryLimit,
         updatedAt: progress?.updatedAt ?? item.updatedAt,
         summary: progress?.summary ?? null,
         progress
@@ -518,7 +545,7 @@ export class CoreStore {
       edgeToCore,
       coreToAgent,
       summary: {
-        edgeToCore: { waiting: count(edgeToCore, 'WAITING_EDGE') + count(edgeToCore, 'WAITING_AUTHORIZATION'), transferring: count(edgeToCore, 'RECEIVING') + count(edgeToCore, 'VERIFYING'), retry: count(edgeToCore, 'RETRY_WAIT'), failed: count(edgeToCore, 'FAILED'), completed: count(edgeToCore, 'COMPLETED') },
+        edgeToCore: { waiting: count(edgeToCore, 'WAITING_EDGE') + count(edgeToCore, 'WAITING_AUTHORIZATION'), transferring: count(edgeToCore, 'RECEIVING') + count(edgeToCore, 'VERIFYING'), recovering: count(edgeToCore, 'RECOVERY_SENDING'), retry: count(edgeToCore, 'RETRY_WAIT'), failed: count(edgeToCore, 'FAILED') + count(edgeToCore, 'NOTIFICATION_FAILED'), completed: count(edgeToCore, 'COMPLETED') },
         coreToAgent: { scheduled: count(coreToAgent, 'SCHEDULED'), queued: count(coreToAgent, 'QUEUED'), transferring: count(coreToAgent, 'RUNNING'), retry: count(coreToAgent, 'RETRY_WAIT'), paused: count(coreToAgent, 'PAUSED') + count(coreToAgent, 'PAUSE_REQUESTED'), cancelled: count(coreToAgent, 'CANCELLED') + count(coreToAgent, 'CANCEL_REQUESTED'), completed: count(coreToAgent, 'COMPLETED') }
       }
     };
@@ -607,7 +634,7 @@ export class CoreStore {
   }
 
   get(requestId) {
-    const item = response(this.db.prepare('SELECT r.*, t.status AS transfer_status, t.edge_status AS transfer_edge_status, t.edge_attempts AS transfer_edge_attempts, t.edge_retry_at AS transfer_edge_retry_at, t.edge_error_code AS transfer_edge_error_code, t.edge_last_error AS transfer_edge_last_error, t.edge_failure_terminal AS transfer_edge_failure_terminal, o.last_error AS transfer_notification_error, o.next_attempt_at AS transfer_notification_next_attempt_at FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id LEFT JOIN core_transfer_outbox o ON o.request_id = r.request_id WHERE r.request_id = ?').get(requestId));
+    const item = response(this.db.prepare('SELECT r.*, t.status AS transfer_status, t.edge_status AS transfer_edge_status, t.edge_attempts AS transfer_edge_attempts, t.edge_retry_at AS transfer_edge_retry_at, t.edge_error_code AS transfer_edge_error_code, t.edge_last_error AS transfer_edge_last_error, t.edge_failure_terminal AS transfer_edge_failure_terminal, t.edge_attempt_started_at AS transfer_edge_attempt_started_at, t.edge_last_activity_at AS transfer_edge_last_activity_at, t.edge_start_deadline_at AS transfer_edge_start_deadline_at, t.edge_idle_deadline_at AS transfer_edge_idle_deadline_at, t.edge_recovery_attempts AS transfer_edge_recovery_attempts, o.last_error AS transfer_notification_error, o.next_attempt_at AS transfer_notification_next_attempt_at FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id LEFT JOIN core_transfer_outbox o ON o.request_id = r.request_id WHERE r.request_id = ?').get(requestId));
     return item ? { ...item, artifacts: this.listReleaseArtifacts(requestId) } : null;
   }
 
@@ -635,7 +662,7 @@ export class CoreStore {
     this.db.prepare('UPDATE core_approval_requests SET envelope_json = ? WHERE request_id = ?').run(JSON.stringify(updated), requestId);
     return this.get(requestId);
   }
-  list() { return this.db.prepare('SELECT r.*, t.status AS transfer_status, t.edge_status AS transfer_edge_status, t.edge_attempts AS transfer_edge_attempts, t.edge_retry_at AS transfer_edge_retry_at, t.edge_error_code AS transfer_edge_error_code, t.edge_last_error AS transfer_edge_last_error, t.edge_failure_terminal AS transfer_edge_failure_terminal, o.last_error AS transfer_notification_error, o.next_attempt_at AS transfer_notification_next_attempt_at FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id LEFT JOIN core_transfer_outbox o ON o.request_id = r.request_id ORDER BY r.created_at DESC LIMIT 500').all().map(response); }
+  list() { return this.db.prepare('SELECT r.*, t.status AS transfer_status, t.edge_status AS transfer_edge_status, t.edge_attempts AS transfer_edge_attempts, t.edge_retry_at AS transfer_edge_retry_at, t.edge_error_code AS transfer_edge_error_code, t.edge_last_error AS transfer_edge_last_error, t.edge_failure_terminal AS transfer_edge_failure_terminal, t.edge_attempt_started_at AS transfer_edge_attempt_started_at, t.edge_last_activity_at AS transfer_edge_last_activity_at, t.edge_start_deadline_at AS transfer_edge_start_deadline_at, t.edge_idle_deadline_at AS transfer_edge_idle_deadline_at, t.edge_recovery_attempts AS transfer_edge_recovery_attempts, o.last_error AS transfer_notification_error, o.next_attempt_at AS transfer_notification_next_attempt_at FROM core_approval_requests r LEFT JOIN core_transfer_tasks t ON t.request_id = r.request_id LEFT JOIN core_transfer_outbox o ON o.request_id = r.request_id ORDER BY r.created_at DESC LIMIT 500').all().map(response); }
   listCloudApprovalPending() {
     return this.db.prepare(`SELECT r.request_id FROM core_approval_requests r
       WHERE (r.status IN ('CLOUD_SUBMITTED','CLOUD_STATUS_UNCONFIRMED') AND r.cloud_approval_id IS NOT NULL)
@@ -686,15 +713,39 @@ export class CoreStore {
     this.db.prepare("UPDATE core_approval_requests SET transfer_notification_state = 'SENDING', transfer_notification_attempts = transfer_notification_attempts + 1, updated_at = ? WHERE request_id = (SELECT request_id FROM core_transfer_outbox WHERE event_id = ?)").run(now(), eventId);
     return this.db.prepare('SELECT * FROM core_transfer_outbox WHERE event_id = ?').get(eventId);
   }
-  markTransferDelivered(eventId) {
+  markTransferDelivered(eventId, { transferStartTimeoutMs = 300_000 } = {}) {
     const timestamp = now();
     this.db.prepare('UPDATE core_transfer_outbox SET delivered_at = ?, last_error = NULL, updated_at = ? WHERE event_id = ?').run(timestamp, timestamp, eventId);
     this.db.prepare("UPDATE core_approval_requests SET transfer_notification_state = 'DELIVERED', updated_at = ? WHERE request_id = (SELECT request_id FROM core_transfer_outbox WHERE event_id = ?)").run(timestamp, eventId);
+    // Edge starts its data-plane work asynchronously after acknowledging the
+    // request. A STARTED/PROGRESS report can therefore arrive before this
+    // HTTP acknowledgement is processed. Do not move that newer state back
+    // to ACCEPTED, otherwise Core would apply the wrong timeout watchdog.
+    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'ACCEPTED', edge_last_activity_at = ?, edge_start_deadline_at = ?, edge_idle_deadline_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE request_id = (SELECT request_id FROM core_transfer_outbox WHERE event_id = ?) AND status <> 'RECEIVED' AND edge_status IN ('IDLE', 'ACCEPTED')")
+      .run(timestamp, deadlineAfter(transferStartTimeoutMs), timestamp, eventId);
   }
-  markTransferFailure(eventId, error, retryAt) {
+  markTransferFailure(eventId, error, retryAt, { retryLimit = 5 } = {}) {
+    const entry = this.db.prepare('SELECT request_id, attempts FROM core_transfer_outbox WHERE event_id = ? AND delivered_at IS NULL').get(eventId);
+    if (!entry) return null;
+    const terminal = Number(entry.attempts ?? 0) >= Math.max(1, Number(retryLimit) || 5);
+    const timestamp = now();
+    const lastError = String(error?.message ?? error).slice(0, 1000);
     this.db.prepare('UPDATE core_transfer_outbox SET last_error = ?, next_attempt_at = ?, updated_at = ? WHERE event_id = ? AND delivered_at IS NULL')
-      .run(String(error?.message ?? error).slice(0, 1000), retryAt, now(), eventId);
-    this.db.prepare("UPDATE core_approval_requests SET transfer_notification_state = 'RETRY_WAIT', updated_at = ? WHERE request_id = (SELECT request_id FROM core_transfer_outbox WHERE event_id = ?)").run(now(), eventId);
+      .run(lastError, terminal ? null : retryAt, timestamp, eventId);
+    this.db.prepare('UPDATE core_approval_requests SET transfer_notification_state = ?, updated_at = ? WHERE request_id = ?')
+      .run(terminal ? 'FAILED' : 'RETRY_WAIT', timestamp, entry.request_id);
+    return { terminal, attempts: Number(entry.attempts ?? 0), lastError };
+  }
+  retryTransferReady(requestId) {
+    const item = this.get(requestId);
+    if (!item || item.status !== 'APPROVED' || !item.transferTaskId) throw Object.assign(new Error('当前申请没有可重新通知的 Edge 传输任务'), { code: 'transfer_notification_retry_unavailable' });
+    if (item.transferNotificationState !== 'FAILED') throw Object.assign(new Error('只有 Edge 传输任务通知终止失败后才能手动重试'), { code: 'transfer_notification_retry_unavailable' });
+    const timestamp = now();
+    const result = this.db.prepare("UPDATE core_transfer_outbox SET attempts = 0, next_attempt_at = ?, updated_at = ? WHERE request_id = ? AND delivered_at IS NULL")
+      .run(timestamp, timestamp, requestId);
+    if (!result.changes) throw Object.assign(new Error('Edge 已确认接收该传输任务，不能重新通知'), { code: 'transfer_notification_retry_unavailable' });
+    this.db.prepare("UPDATE core_approval_requests SET transfer_notification_state = 'RETRY_WAIT', updated_at = ? WHERE request_id = ?").run(timestamp, requestId);
+    return { item: this.get(requestId), idempotent: false };
   }
   listPendingApprovalResults(limit = 100) {
     return this.db.prepare('SELECT * FROM core_approval_result_outbox WHERE delivered_at IS NULL AND next_attempt_at <= ? ORDER BY created_at ASC LIMIT ?').all(now(), limit)
@@ -836,7 +887,23 @@ export class CoreStore {
       if (this.transferAssemblyLocks.get(transferTaskId) === operation) this.transferAssemblyLocks.delete(transferTaskId);
     }
   }
-  getTransferProgress(requestId) {
+  async reconcilePendingTransfers(limit = 20) {
+    // Assembly is local recovery work. It must not depend on a browser
+    // opening the transfer detail after a process interruption.
+    const rows = this.db.prepare(`SELECT transfer_task_id FROM core_transfer_tasks
+      WHERE status <> 'RECEIVED' ORDER BY updated_at ASC LIMIT ?`)
+      .all(Math.max(1, Math.min(Number(limit) || 20, 100)));
+    const results = [];
+    for (const { transfer_task_id: transferTaskId } of rows) {
+      try {
+        results.push({ transferTaskId, ...(await this.reconcileTransferParts(transferTaskId)) });
+      } catch (error) {
+        results.push({ transferTaskId, error: { code: error.code ?? 'artifact_reconcile_failed', message: error.message } });
+      }
+    }
+    return results;
+  }
+  getTransferProgress(requestId, { recoveryLimit = null } = {}) {
     const current = this.get(requestId);
     if (!current) return null;
     const task = this.db.prepare('SELECT * FROM core_transfer_tasks WHERE request_id = ?').get(requestId);
@@ -903,7 +970,12 @@ export class CoreStore {
       // Keep that visible even if Edge has already reported the previous retry
       // window; otherwise the page falsely suggests that Core is idle.
       else if (activeAssemblyFiles || assemblyPendingFiles || verifyingFiles || allStored) status = 'VERIFYING';
+      else if (task?.edge_status === 'RECOVERY_SENDING') status = 'RECOVERY_SENDING';
       else if (task?.edge_status === 'RETRY_WAIT') status = 'RETRY_WAIT';
+      else if (task?.edge_status === 'STARTED') status = 'EDGE_STARTED';
+      else if (task?.edge_status === 'WAITING_RECEIPT') status = 'WAITING_RECEIPT';
+      else if (task?.edge_status === 'IDLE' && current.transferNotificationState === 'FAILED') status = 'NOTIFICATION_FAILED';
+      else if (task?.edge_status === 'IDLE' && current.transferNotificationState === 'RETRY_WAIT') status = 'NOTIFICATION_RETRY_WAIT';
       else status = failedFiles ? 'FAILED' : receivingFiles ? 'RECEIVING' : 'WAITING_EDGE';
     }
     // receivedBytes tracks chunks on disk, while storedBytes tracks files
@@ -914,13 +986,19 @@ export class CoreStore {
     return {
       requestId, transferTaskId: taskId, status, updatedAt: task?.updated_at ?? current.updatedAt,
       notification: { state: current.transferNotificationState, attempts: current.transferNotificationAttempts, lastError: current.transferNotificationLastError, nextAttemptAt: current.transferNotificationNextAttemptAt },
-      edgeFailure: task?.edge_last_error ? { status: task.edge_status, attempts: task.edge_attempts ?? 0, retryAt: task.edge_retry_at ?? null, code: task.edge_error_code ?? null, message: task.edge_last_error, terminal: Boolean(task.edge_failure_terminal) } : null,
+      edge: task ? {
+        status: task.edge_status, attempts: task.edge_attempts ?? 0,
+        attemptStartedAt: task.edge_attempt_started_at ?? null, lastActivityAt: task.edge_last_activity_at ?? null,
+        startDeadlineAt: task.edge_start_deadline_at ?? null, idleDeadlineAt: task.edge_idle_deadline_at ?? null,
+        recoveryAttempts: task.edge_recovery_attempts ?? 0, recoveryLimit
+      } : null,
+      edgeFailure: task?.edge_last_error ? { status: task.edge_status, attempts: task.edge_attempts ?? 0, retryAt: task.edge_retry_at ?? null, code: task.edge_error_code ?? null, message: task.edge_last_error, terminal: Boolean(task.edge_failure_terminal), recoveryAttempts: task.edge_recovery_attempts ?? 0, recoveryLimit } : null,
       report: { received: current.reportReceived, fileName: current.reportFileName, sizeBytes: current.reportSize },
       summary: { fileCount: files.length, completedFiles, assemblingFiles, assemblyPendingFiles, activeAssemblyFiles, verifyingFiles, failedFiles, receivingFiles, totalBytes, receivedBytes, storedBytes, percent },
       files
     };
   }
-  async saveTransferPart(transferTaskId, sha256, part) {
+  async saveTransferPart(transferTaskId, sha256, part, { transferIdleTimeoutMs = 300_000 } = {}) {
     const transfer = this.expectedTransferArtifacts(transferTaskId);
     const digestValue = String(sha256).toLowerCase();
     const expected = transfer.items.find((item) => String(item.actualSha256 ?? '').toLowerCase() === digestValue);
@@ -942,7 +1020,9 @@ export class CoreStore {
       size_bytes = excluded.size_bytes, part_sha256 = excluded.part_sha256, file_path = excluded.file_path, updated_at = excluded.updated_at`)
       .run(transferTaskId, digestValue, part.index, part.chunkSize, part.chunkCount, part.offset, part.size, part.sha256, path, now());
     this.clearTransferFileState(transferTaskId, digestValue);
-    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECEIVING', edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ? AND status <> 'RECEIVED'").run(now(), transferTaskId);
+    const timestamp = now();
+    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECEIVING', edge_attempt_started_at = COALESCE(edge_attempt_started_at, ?), edge_last_activity_at = ?, edge_start_deadline_at = NULL, edge_idle_deadline_at = ?, edge_recovery_attempts = 0, edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ? AND status <> 'RECEIVED'")
+      .run(timestamp, timestamp, deadlineAfter(transferIdleTimeoutMs), timestamp, transferTaskId);
     const count = this.db.prepare('SELECT COUNT(*) AS count FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ?').get(transferTaskId, digestValue).count;
     return { path, receivedParts: count, chunkCount: part.chunkCount, complete: count === part.chunkCount };
   }
@@ -1035,7 +1115,7 @@ export class CoreStore {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return { requestId: task.request_id, transferTaskId, manifestSha256: task.manifest_sha256, fileCount: manifest.items.length };
   }
-  async receiveArtifact(transferTaskId, sha256, temporaryPath, actualSize, actualSha256) {
+  async receiveArtifact(transferTaskId, sha256, temporaryPath, actualSize, actualSha256, { transferIdleTimeoutMs = 300_000 } = {}) {
     const transfer = this.expectedTransferArtifacts(transferTaskId);
     const digestValue = String(sha256).toLowerCase();
     const expected = transfer.items.filter((item) => String(item.actualSha256 ?? '').toLowerCase() === digestValue);
@@ -1072,7 +1152,8 @@ export class CoreStore {
       }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECEIVING', edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ? AND status <> 'RECEIVED'").run(now(), transferTaskId);
+    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECEIVING', edge_attempt_started_at = COALESCE(edge_attempt_started_at, ?), edge_last_activity_at = ?, edge_start_deadline_at = NULL, edge_idle_deadline_at = ?, edge_recovery_attempts = 0, edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ? AND status <> 'RECEIVED'")
+      .run(timestamp, timestamp, deadlineAfter(transferIdleTimeoutMs), timestamp, transferTaskId);
     return { sha256: digestValue, sizeBytes: actualSize, reused: Boolean(existing), packages: expected.map((item) => item.packageKey) };
   }
   assertTransferComplete(transferTaskId) {
@@ -1272,51 +1353,172 @@ export class CoreStore {
     return { transferTaskId, requestId, status: 'READY', manifestSha256: current.manifestSha256, idempotent: false };
   }
 
-  recordEdgeTransferFailure(input = {}) {
+  recordEdgeTransferStatus(input = {}, { transferStartTimeoutMs = 300_000, transferIdleTimeoutMs = 300_000, retryLimit = 5 } = {}) {
     const requestId = required(input.requestId, 'requestId');
     const freezeId = required(input.freezeId, 'freezeId');
     const transferTaskId = required(input.transferTaskId, 'transferTaskId');
     const manifestSha256 = required(input.manifestSha256, 'manifestSha256').toLowerCase();
+    const state = required(input.state, 'state').toUpperCase();
     const attempt = Number(input.attempt);
-    const code = typeof input.code === 'string' && input.code.trim() ? input.code.trim().slice(0, 128) : 'artifact_transfer_failed';
-    const message = required(input.message, 'message').slice(0, 1000);
-    const retryAt = input.retryAt == null || input.retryAt === '' ? null : String(input.retryAt);
-    const terminal = Boolean(input.terminal);
-    if (requestId !== freezeId || !/^[a-f0-9]{64}$/.test(manifestSha256) || !Number.isSafeInteger(attempt) || attempt < 1 || attempt > 100000 || (retryAt && !Number.isFinite(Date.parse(retryAt)))) {
-      throw Object.assign(new Error('Edge 传输失败报告格式无效'), { code: 'invalid_transfer_failure' });
+    const code = typeof input.code === 'string' && input.code.trim() ? input.code.trim().slice(0, 128) : null;
+    const message = typeof input.message === 'string' && input.message.trim() ? input.message.trim().slice(0, 1000) : null;
+    const states = new Set(['ACCEPTED', 'STARTED', 'PROGRESS', 'RETRY_WAIT', 'FAILED', 'COMPLETED']);
+    const failedState = ['RETRY_WAIT', 'FAILED'].includes(state);
+    if (requestId !== freezeId || !/^[a-f0-9]{64}$/.test(manifestSha256) || !states.has(state) || !Number.isSafeInteger(attempt) || attempt < 0 || attempt > 100000 || (failedState && (!code || !message))) {
+      throw Object.assign(new Error('Edge 传输状态报告格式无效'), { code: 'invalid_transfer_status' });
     }
     const current = this.get(requestId);
     if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
     if (!['APPROVED', 'CLOSED'].includes(current.status) || current.freezeId !== freezeId || current.transferTaskId !== transferTaskId || current.manifestSha256.toLowerCase() !== manifestSha256) {
-      throw Object.assign(new Error('传输失败报告与当前审批任务不匹配'), { code: 'transfer_failure_conflict' });
+      throw Object.assign(new Error('传输状态报告与当前审批任务不匹配'), { code: 'transfer_status_conflict' });
     }
     const task = this.db.prepare('SELECT * FROM core_transfer_tasks WHERE request_id = ? AND transfer_task_id = ?').get(requestId, transferTaskId);
     if (!task) throw Object.assign(new Error('传输任务不存在'), { code: 'transfer_task_not_found' });
-    if (task.status === 'RECEIVED' || attempt < Number(task.edge_attempts ?? 0)) return { item: this.get(requestId), idempotent: true };
+    // A terminal Core decision is authoritative. A delayed Edge control
+    // report must not restart a task after its bounded recovery budget is
+    // exhausted; an operator-initiated fallback recovery clears this flag.
+    if (task.status === 'RECEIVED' || task.edge_failure_terminal || attempt < Number(task.edge_attempts ?? 0)) return { item: this.get(requestId), idempotent: true };
+    // Edge replays persisted failures after restart.  Counting the same
+    // report repeatedly would exhaust Core's recovery budget without a new
+    // transmission attempt, so make the report idempotent in storage too.
+    if (failedState && ['RETRY_WAIT', 'RECOVERY_SENDING'].includes(task.edge_status)
+      && attempt === Number(task.edge_attempts ?? 0)
+      && code === task.edge_error_code && message === task.edge_last_error) return { item: this.get(requestId), idempotent: true };
+    // Control messages are delivered independently from data chunks. Never let
+    // an older ACCEPTED/STARTED message overwrite a later progress/completion
+    // fact from the same Edge attempt.
+    const stateRank = { ACCEPTED: 0, STARTED: 1, PROGRESS: 2, COMPLETED: 3, RETRY_WAIT: 4, FAILED: 5 };
+    const currentRank = { ACCEPTED: 0, STARTED: 1, RECEIVING: 2, WAITING_RECEIPT: 3, RETRY_WAIT: 4, FAILED: 5, RECEIVED: 6 }[task.edge_status];
+    if (attempt === Number(task.edge_attempts ?? 0) && currentRank !== undefined && stateRank[state] !== undefined && stateRank[state] < currentRank) {
+      return { item: this.get(requestId), idempotent: true };
+    }
     const timestamp = now();
-    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = ?, edge_attempts = ?, edge_retry_at = ?, edge_error_code = ?, edge_last_error = ?, edge_failure_terminal = ?, updated_at = ? WHERE transfer_task_id = ?")
-      .run(terminal ? 'FAILED' : 'RETRY_WAIT', attempt, retryAt, code, message, terminal ? 1 : 0, timestamp, transferTaskId);
+    if (state === 'ACCEPTED') {
+      this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'ACCEPTED', edge_attempts = ?, edge_attempt_started_at = NULL, edge_last_activity_at = ?, edge_start_deadline_at = ?, edge_idle_deadline_at = NULL, edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ?")
+        .run(attempt, timestamp, deadlineAfter(transferStartTimeoutMs), timestamp, transferTaskId);
+    } else if (state === 'STARTED') {
+      this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'STARTED', edge_attempts = ?, edge_attempt_started_at = COALESCE(edge_attempt_started_at, ?), edge_last_activity_at = ?, edge_start_deadline_at = NULL, edge_idle_deadline_at = ?, edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ?")
+        .run(attempt, timestamp, timestamp, deadlineAfter(transferIdleTimeoutMs), timestamp, transferTaskId);
+    } else if (state === 'PROGRESS') {
+      // Data-plane progress proves that a coordinated recovery genuinely
+      // resumed. Until then, keep the recovery counter so an Edge that only
+      // accepts control commands cannot reset its retry limit indefinitely.
+      this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECEIVING', edge_attempts = ?, edge_attempt_started_at = COALESCE(edge_attempt_started_at, ?), edge_last_activity_at = ?, edge_start_deadline_at = NULL, edge_idle_deadline_at = ?, edge_recovery_attempts = 0, edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ?")
+        .run(attempt, timestamp, timestamp, deadlineAfter(transferIdleTimeoutMs), timestamp, transferTaskId);
+    } else if (state === 'COMPLETED') {
+      this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'WAITING_RECEIPT', edge_attempts = ?, edge_attempt_started_at = COALESCE(edge_attempt_started_at, ?), edge_last_activity_at = ?, edge_start_deadline_at = NULL, edge_idle_deadline_at = ?, edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ?")
+        .run(attempt, timestamp, timestamp, deadlineAfter(transferIdleTimeoutMs), timestamp, transferTaskId);
+    } else {
+      // Edge only reports why an attempt stopped.  Retry timing and the
+      // bounded recovery budget are Core policy and must not be influenced by
+      // an Edge retryAt/terminal flag.
+      const recoveryAttempts = Number(task.edge_recovery_attempts ?? 0) + 1;
+      const terminal = recoveryAttempts >= Math.max(1, Number(retryLimit) || 5);
+      const retryAt = terminal ? null : new Date(Date.now() + transferRecoveryDelay(recoveryAttempts)).toISOString();
+      this.db.prepare("UPDATE core_transfer_tasks SET edge_status = ?, edge_attempts = ?, edge_attempt_started_at = NULL, edge_last_activity_at = ?, edge_start_deadline_at = NULL, edge_idle_deadline_at = NULL, edge_retry_at = ?, edge_error_code = ?, edge_last_error = ?, edge_failure_terminal = ?, edge_recovery_attempts = ?, updated_at = ? WHERE transfer_task_id = ?")
+        .run(terminal ? 'FAILED' : 'RETRY_WAIT', attempt, timestamp, retryAt, code, message, terminal ? 1 : 0, recoveryAttempts, timestamp, transferTaskId);
+    }
     return { item: this.get(requestId), idempotent: false };
   }
 
-  markEdgeTransferRetryRequested(requestId) {
+  // Compatibility endpoint used by older Edge instances during rolling upgrades.
+  recordEdgeTransferFailure(input = {}, config = {}) {
+    return this.recordEdgeTransferStatus({ ...input, state: input.terminal ? 'FAILED' : 'RETRY_WAIT' }, config);
+  }
+
+  beginEdgeRecovery(requestId, { resetRecoveryBudget = false } = {}) {
     const current = this.get(requestId);
     if (!current) throw Object.assign(new Error('approval request not found'), { code: 'request_not_found' });
-    if (current.status !== 'APPROVED' || !current.transferTaskId) throw Object.assign(new Error('当前申请没有可重试的 Edge → Core 传输任务'), { code: 'transfer_retry_unavailable' });
-    const task = this.db.prepare('SELECT edge_status FROM core_transfer_tasks WHERE request_id = ? AND transfer_task_id = ?').get(requestId, current.transferTaskId);
+    if (current.status !== 'APPROVED' || !current.transferTaskId) throw Object.assign(new Error('当前申请没有可恢复的 Edge → Core 传输任务'), { code: 'transfer_recovery_unavailable' });
+    const task = this.db.prepare('SELECT * FROM core_transfer_tasks WHERE request_id = ? AND transfer_task_id = ?').get(requestId, current.transferTaskId);
     if (!task) throw Object.assign(new Error('传输任务不存在'), { code: 'transfer_task_not_found' });
-    if (task.edge_status === 'RECEIVED') return { item: current, idempotent: true };
+    if (task.status === 'RECEIVED' || task.edge_status === 'RECEIVED') return { item: current, idempotent: true };
+    if (task.edge_status === 'RECOVERY_SENDING') return { item: current, idempotent: true };
+    const terminal = Boolean(task.edge_failure_terminal);
+    if (terminal && !resetRecoveryBudget) throw Object.assign(new Error('自动恢复已停止，请使用兜底恢复'), { code: 'transfer_fallback_required' });
+    if (!terminal && resetRecoveryBudget) throw Object.assign(new Error('当前传输仍可由普通恢复处理，无需兜底恢复'), { code: 'transfer_fallback_not_required' });
+    if (!terminal && task.edge_status !== 'RETRY_WAIT') throw Object.assign(new Error('当前传输不在可恢复状态'), { code: 'transfer_recovery_unavailable' });
     const timestamp = now();
-    // Edge has accepted the manual retry and starts the dispatcher
-    // asynchronously. Mark the task as receiving immediately so Core does not
-    // keep presenting the old failure as "waiting for retry" while Edge is
-    // already working. Clear the old failure because it belongs to the
-    // previous retry window; a new failure report will create a new panel.
-    // The Edge starts a fresh retry window as well.  Reset Core's monotonic
-    // attempt guard so the next failure report (attempt 1) is not mistaken
-    // for a stale report from the exhausted previous window.
-    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECEIVING', edge_attempts = 0, edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE request_id = ? AND transfer_task_id = ?").run(timestamp, requestId, current.transferTaskId);
-    return { item: this.get(requestId), idempotent: false };
+    // A fallback recovery only resets Core's coordination budget. The Edge
+    // attempt counter, its partial chunks, and already received artifacts are
+    // deliberately retained so the next command resumes rather than restarts.
+    this.db.prepare(`UPDATE core_transfer_tasks SET edge_status = ?,
+      edge_retry_at = NULL, edge_start_deadline_at = NULL, edge_idle_deadline_at = NULL,
+      edge_failure_terminal = CASE WHEN ? THEN 0 ELSE edge_failure_terminal END,
+      edge_recovery_attempts = CASE WHEN ? THEN 0 ELSE edge_recovery_attempts END,
+      updated_at = ? WHERE request_id = ? AND transfer_task_id = ? AND edge_status IN ('RETRY_WAIT', 'FAILED')`)
+      .run('RECOVERY_SENDING', resetRecoveryBudget ? 1 : 0, resetRecoveryBudget ? 1 : 0, timestamp, requestId, current.transferTaskId);
+    return { item: this.get(requestId), idempotent: false, task: { ...task, edge_status: 'RECOVERY_SENDING' } };
+  }
+
+  expireEdgeTransferTimeouts({ transferStartTimeoutMs = 300_000, retryLimit = 5 } = {}) {
+    const timestamp = now();
+    const recoveryDispatchCutoff = new Date(Date.now() - transferStartTimeoutMs).toISOString();
+    const due = this.db.prepare(`SELECT * FROM core_transfer_tasks
+      WHERE status <> 'RECEIVED' AND edge_failure_terminal = 0 AND (
+        (edge_status = 'ACCEPTED' AND edge_start_deadline_at IS NOT NULL AND edge_start_deadline_at <= ?) OR
+        (edge_status IN ('STARTED', 'RECEIVING', 'WAITING_RECEIPT') AND edge_idle_deadline_at IS NOT NULL AND edge_idle_deadline_at <= ?) OR
+        (edge_status = 'RECOVERY_SENDING' AND updated_at <= ?)
+      )`).all(timestamp, timestamp, recoveryDispatchCutoff);
+    for (const task of due) {
+      const startTimeout = task.edge_status === 'ACCEPTED';
+      const dispatchTimeout = task.edge_status === 'RECOVERY_SENDING';
+      const attempts = Number(task.edge_recovery_attempts ?? 0) + 1;
+      const terminal = attempts >= retryLimit;
+      const retryAt = terminal ? null : new Date(Date.now() + transferRecoveryDelay(attempts)).toISOString();
+      const code = dispatchTimeout ? 'edge_recovery_dispatch_timeout' : startTimeout ? 'edge_start_timeout' : 'edge_idle_timeout';
+      const message = dispatchTimeout
+        ? 'Core 发出的 Edge 恢复指令长时间未得到确认，已转入下一次协调恢复'
+        : startTimeout
+        ? '等待 Edge 开始传输超时，未收到开始或首个分块信号'
+        : 'Edge → Core 传输空闲超时，未收到控制进度或新的分块数据';
+      this.db.prepare("UPDATE core_transfer_tasks SET edge_status = ?, edge_retry_at = ?, edge_error_code = ?, edge_last_error = ?, edge_failure_terminal = ?, edge_recovery_attempts = ?, edge_start_deadline_at = NULL, edge_idle_deadline_at = NULL, updated_at = ? WHERE transfer_task_id = ?")
+        .run(terminal ? 'FAILED' : 'RETRY_WAIT', retryAt, code, message, terminal ? 1 : 0, attempts, timestamp, task.transfer_task_id);
+    }
+    return due.length;
+  }
+
+  claimDueEdgeRecoveries(limit = 20) {
+    const timestamp = now();
+    const rows = this.db.prepare(`SELECT * FROM core_transfer_tasks
+      WHERE status <> 'RECEIVED' AND edge_status = 'RETRY_WAIT' AND edge_failure_terminal = 0
+        AND edge_retry_at IS NOT NULL AND edge_retry_at <= ?
+      ORDER BY edge_retry_at ASC LIMIT ?`).all(timestamp, Math.max(1, Math.min(Number(limit) || 20, 100)));
+    const claim = this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECOVERY_SENDING', updated_at = ? WHERE transfer_task_id = ? AND edge_status = 'RETRY_WAIT'");
+    const claimed = [];
+    for (const task of rows) if (claim.run(timestamp, task.transfer_task_id).changes) claimed.push({ ...task, edge_status: 'RECOVERY_SENDING' });
+    return claimed;
+  }
+
+  markEdgeRecoveryDispatchResult(transferTaskId, { ok, error = null, edgeState = null, transferStartTimeoutMs = 300_000, transferIdleTimeoutMs = 300_000, retryLimit = 5 } = {}) {
+    const task = this.db.prepare('SELECT * FROM core_transfer_tasks WHERE transfer_task_id = ?').get(transferTaskId);
+    if (!task) throw Object.assign(new Error('传输任务不存在'), { code: 'transfer_task_not_found' });
+    if (task.status === 'RECEIVED') return { item: this.get(task.request_id), idempotent: true };
+    const timestamp = now();
+    if (ok) {
+      // This acknowledgement means that Edge accepted the control request,
+      // not that it is transferring. Keep the accumulated coordination count
+      // until a later PROGRESS report arrives.
+      const alreadySending = edgeState === 'SENDING' || edgeState === 'RECEIVED';
+      const nextStatus = edgeState === 'RECEIVED' ? 'WAITING_RECEIPT' : alreadySending ? 'STARTED' : 'ACCEPTED';
+      this.db.prepare(`UPDATE core_transfer_tasks SET edge_status = ?,
+        edge_attempt_started_at = CASE WHEN ? THEN COALESCE(edge_attempt_started_at, ?) ELSE NULL END,
+        edge_last_activity_at = ?, edge_start_deadline_at = CASE WHEN ? THEN NULL ELSE ? END,
+        edge_idle_deadline_at = CASE WHEN ? THEN ? ELSE NULL END,
+        edge_retry_at = NULL, edge_failure_terminal = 0, updated_at = ?
+        WHERE transfer_task_id = ? AND edge_status = 'RECOVERY_SENDING'`)
+        .run(nextStatus, alreadySending ? 1 : 0, timestamp, timestamp, alreadySending ? 1 : 0, deadlineAfter(transferStartTimeoutMs), alreadySending ? 1 : 0, deadlineAfter(transferIdleTimeoutMs), timestamp, transferTaskId);
+      return { item: this.get(task.request_id), idempotent: false };
+    }
+    // A command that could not be delivered is itself a failed coordination
+    // cycle. Count it so an unavailable Edge cannot leave Core retrying
+    // forever without surfacing a recoverable terminal state.
+    const attempts = Number(task.edge_recovery_attempts ?? 0) + 1;
+    const terminal = attempts >= retryLimit;
+    const retryAt = terminal ? null : new Date(Date.now() + transferRecoveryDelay(attempts)).toISOString();
+    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = ?, edge_retry_at = ?, edge_error_code = 'edge_recovery_dispatch_failed', edge_last_error = ?, edge_failure_terminal = ?, edge_recovery_attempts = ?, updated_at = ? WHERE transfer_task_id = ?")
+      .run(terminal ? 'FAILED' : 'RETRY_WAIT', retryAt, String(error?.message ?? error ?? 'Core 无法向 Edge 发送恢复指令').slice(0, 1000), terminal ? 1 : 0, attempts, timestamp, transferTaskId);
+    return { item: this.get(task.request_id), idempotent: false };
   }
 
   receiveReceipt(input = {}) {
@@ -1333,7 +1535,7 @@ export class CoreStore {
     if (!existing) this.authorizeTransfer(requestId, { manifestSha256: current.manifestSha256, transferTaskId });
     const timestamp = now();
     if (JSON.parse(this.db.prepare('SELECT envelope_json FROM core_approval_requests WHERE request_id = ?').get(requestId).envelope_json ?? '{}').manifest?.items?.length) this.assertTransferComplete(transferTaskId);
-    this.db.prepare("UPDATE core_transfer_tasks SET status = 'RECEIVED', edge_status = 'RECEIVED', edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE request_id = ? AND transfer_task_id = ?").run(timestamp, requestId, transferTaskId);
+    this.db.prepare("UPDATE core_transfer_tasks SET status = 'RECEIVED', edge_status = 'RECEIVED', edge_start_deadline_at = NULL, edge_idle_deadline_at = NULL, edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE request_id = ? AND transfer_task_id = ?").run(timestamp, requestId, transferTaskId);
     return { requestId, transferTaskId, status: 'RECEIVED', manifestSha256: current.manifestSha256, receivedAt: timestamp };
   }
 

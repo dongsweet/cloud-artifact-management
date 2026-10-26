@@ -285,7 +285,7 @@ test('Core accepts Edge transfer failure reports without a browser session', asy
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
-test('Core sends a signed Edge transfer retry instruction from the Core API', async () => {
+test('Core sends a signed Edge transfer recovery instruction and supports terminal fallback recovery', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-transfer-retry-'));
   const calls = [];
   const app = await buildCoreApp({
@@ -304,19 +304,20 @@ test('Core sends a signed Edge transfer retry instruction from the Core API', as
     app.coreStore.applyCloudStatus(requestId, { approvalId: 'APR-TRANSFER-RETRY', status: 'APPROVED', transferTaskId: 'TR-TRANSFER-RETRY', manifestSha256 });
     app.coreStore.authorizeTransfer(requestId, { manifestSha256, transferTaskId: 'TR-TRANSFER-RETRY' });
     app.coreStore.recordEdgeTransferFailure({ requestId, freezeId: requestId, transferTaskId: 'TR-TRANSFER-RETRY', manifestSha256, attempt: 5, code: 'ENOSPC', message: '磁盘空间不足', terminal: true });
-    const response = await app.inject({ method: 'POST', url: `/api/v1/approval-requests/${requestId}/transfer/retry`, payload: {} });
+    app.coreStore.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'FAILED', edge_failure_terminal = 1, edge_recovery_attempts = 5 WHERE transfer_task_id = ?").run('TR-TRANSFER-RETRY');
+    const response = await app.inject({ method: 'POST', url: `/api/v1/approval-requests/${requestId}/transfer/recover`, payload: { fallback: true } });
     assert.equal(response.statusCode, 202, response.body);
     assert.equal(response.json().edgeStatus, 'QUEUED');
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, 'http://edge-map:3101/api/v1/gate/transfer-retry');
     assert.equal(typeof calls[0].options.headers['x-cam-gate-signature'], 'string');
     assert.deepEqual(calls[0].payload, { requestId, freezeId: requestId, transferTaskId: 'TR-TRANSFER-RETRY', manifestSha256 });
-    assert.equal(app.coreStore.get(requestId).transferEdgeStatus, 'RECEIVING', 'an accepted manual retry is shown as active immediately');
-    assert.equal(app.coreStore.get(requestId).transferEdgeAttempts, 0, 'manual retry starts a fresh Core attempt window');
-    assert.equal(app.coreStore.get(requestId).transferEdgeLastError, null, 'a manual retry clears the previous Edge error');
-    app.coreStore.recordEdgeTransferFailure({ requestId, freezeId: requestId, transferTaskId: 'TR-TRANSFER-RETRY', manifestSha256, attempt: 1, code: 'ETIMEDOUT', message: '新的传输超时', retryAt: new Date(Date.now() + 60_000).toISOString(), terminal: false });
-    assert.equal(app.coreStore.get(requestId).transferEdgeStatus, 'RETRY_WAIT', 'the first failure of a manual retry window is accepted');
-    assert.equal(app.coreStore.get(requestId).transferEdgeAttempts, 1);
+    assert.equal(app.coreStore.get(requestId).transferEdgeStatus, 'ACCEPTED', 'an accepted manual retry waits for Edge to report that transfer started');
+    assert.equal(app.coreStore.get(requestId).transferEdgeAttempts, 5, 'fallback recovery preserves the Edge attempt history');
+    assert.equal(app.coreStore.get(requestId).transferEdgeLastError, '磁盘空间不足', 'fallback recovery preserves the historical Edge error');
+    app.coreStore.recordEdgeTransferFailure({ requestId, freezeId: requestId, transferTaskId: 'TR-TRANSFER-RETRY', manifestSha256, attempt: 6, code: 'ETIMEDOUT', message: '新的传输超时', retryAt: new Date(Date.now() + 60_000).toISOString(), terminal: false });
+    assert.equal(app.coreStore.get(requestId).transferEdgeStatus, 'RETRY_WAIT', 'the first failure of a fallback recovery window is accepted');
+    assert.equal(app.coreStore.get(requestId).transferEdgeAttempts, 6);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
@@ -555,5 +556,75 @@ test('Core distinguishes complete chunks waiting for assembly from an active rec
     assert.deepEqual(reconciled.errors, []);
     assert.deepEqual(reconciled.assembled, [sha256]);
     assert.equal(app.coreStore.getTransferProgress(requestId).files[0].status, 'COMPLETED');
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Core watches Edge start and idle deadlines, coordinates recovery, and stops at its retry limit', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-edge-watchdog-'));
+  const app = await buildCoreApp({ dataDir, enableAuth: false });
+  const requestId = 'FREEZE-EDGE-WATCHDOG';
+  const transferTaskId = 'TR-EDGE-WATCHDOG';
+  const status = (state, attempt, extra = {}) => app.coreStore.recordEdgeTransferStatus({
+    requestId, freezeId: requestId, transferTaskId, manifestSha256, state, attempt, ...extra
+  }, { transferStartTimeoutMs: 60_000, transferIdleTimeoutMs: 60_000 });
+  const expireAt = () => app.coreStore.db.prepare("UPDATE core_transfer_tasks SET edge_start_deadline_at = ?, edge_idle_deadline_at = ? WHERE transfer_task_id = ?")
+    .run('1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z', transferTaskId);
+  const makeRecoveryDue = () => app.coreStore.db.prepare("UPDATE core_transfer_tasks SET edge_retry_at = ? WHERE transfer_task_id = ?")
+    .run('1970-01-01T00:00:00.000Z', transferTaskId);
+  try {
+    app.coreStore.receiveApproval({ ...envelope, requestId, freezeId: requestId });
+    app.coreStore.applyCloudStatus(requestId, { approvalId: 'APR-EDGE-WATCHDOG', status: 'APPROVED', transferTaskId, manifestSha256 });
+    app.coreStore.authorizeTransfer(requestId, { manifestSha256, transferTaskId });
+    const delivery = app.coreStore.enqueueTransferReady(requestId);
+
+    status('ACCEPTED', 0);
+    assert.ok(app.coreStore.get(requestId).transferEdgeStartDeadlineAt, 'acceptance starts the Edge-start watchdog');
+    status('STARTED', 0);
+    const started = app.coreStore.get(requestId);
+    assert.equal(started.transferEdgeStatus, 'STARTED');
+    assert.equal(started.transferEdgeStartDeadlineAt, null);
+    assert.ok(started.transferEdgeIdleDeadlineAt, 'started transfer changes to the idle watchdog');
+
+    // The delayed HTTP acknowledgement must not regress an already-started
+    // transfer back into the start watchdog state.
+    app.coreStore.markTransferDelivered(delivery.event_id, { transferStartTimeoutMs: 60_000 });
+    assert.equal(app.coreStore.get(requestId).transferEdgeStatus, 'STARTED');
+
+    expireAt();
+    assert.equal(app.coreStore.expireEdgeTransferTimeouts({ retryLimit: 2 }), 1);
+    let current = app.coreStore.get(requestId);
+    assert.equal(current.transferEdgeStatus, 'RETRY_WAIT');
+    assert.equal(current.transferEdgeErrorCode, 'edge_idle_timeout');
+    assert.equal(current.transferEdgeRecoveryAttempts, 1);
+
+    makeRecoveryDue();
+    let recovery = app.coreStore.claimDueEdgeRecoveries();
+    assert.equal(recovery.length, 1);
+    app.coreStore.markEdgeRecoveryDispatchResult(transferTaskId, { ok: true, edgeState: 'QUEUED', transferStartTimeoutMs: 60_000, transferIdleTimeoutMs: 60_000, retryLimit: 2 });
+    current = app.coreStore.get(requestId);
+    assert.equal(current.transferEdgeStatus, 'ACCEPTED');
+    assert.equal(current.transferEdgeRecoveryAttempts, 1, 'control acknowledgement alone does not reset the recovery counter');
+
+    status('PROGRESS', 1);
+    current = app.coreStore.get(requestId);
+    assert.equal(current.transferEdgeStatus, 'RECEIVING');
+    assert.equal(current.transferEdgeRecoveryAttempts, 0, 'only data-plane progress resets recovery accounting');
+
+    expireAt();
+    assert.equal(app.coreStore.expireEdgeTransferTimeouts({ retryLimit: 2 }), 1);
+    makeRecoveryDue();
+    recovery = app.coreStore.claimDueEdgeRecoveries();
+    assert.equal(recovery.length, 1);
+    app.coreStore.markEdgeRecoveryDispatchResult(transferTaskId, { ok: true, edgeState: 'QUEUED', transferStartTimeoutMs: 60_000, transferIdleTimeoutMs: 60_000, retryLimit: 2 });
+
+    expireAt();
+    assert.equal(app.coreStore.expireEdgeTransferTimeouts({ retryLimit: 2 }), 1);
+    current = app.coreStore.get(requestId);
+    assert.equal(current.transferEdgeStatus, 'FAILED');
+    assert.equal(current.transferEdgeFailureTerminal, true);
+    assert.equal(current.transferEdgeRecoveryAttempts, 2);
+    assert.equal(current.transferEdgeErrorCode, 'edge_start_timeout');
+    status('PROGRESS', 2);
+    assert.equal(app.coreStore.get(requestId).transferEdgeStatus, 'FAILED', 'a late Edge progress report cannot revive a terminal failure');
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });

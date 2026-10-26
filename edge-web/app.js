@@ -133,8 +133,25 @@ function ensureIntegrationConfigFields() {
   status.parentNode.insertBefore(wrapper, status);
 }
 
+function ensureGateTransferTimeoutFields() {
+  const form = $('#gate-config-form');
+  if (form.querySelector('[name="transferStartTimeoutMs"]')) return;
+  const transferTimeout = form.querySelector('[name="transferTimeoutMs"]');
+  const anchor = transferTimeout?.closest('.col-md-4');
+  if (!anchor) return;
+  const start = document.createElement('div');
+  start.className = 'col-md-4';
+  start.innerHTML = '<label class="form-label">等待开始超时（毫秒）</label><input name="transferStartTimeoutMs" type="number" class="form-control" required>';
+  const idle = document.createElement('div');
+  idle.className = 'col-md-4';
+  idle.innerHTML = '<label class="form-label">传输空闲超时（毫秒）</label><input name="transferIdleTimeoutMs" type="number" class="form-control" required>';
+  anchor.insertAdjacentElement('afterend', start);
+  start.insertAdjacentElement('afterend', idle);
+}
+
 async function loadGateConfig() {
   ensureIntegrationConfigFields();
+  ensureGateTransferTimeoutFields();
   const form = $('#gate-config-form');
   try {
     const result = await api('/api/v1/gate/config'); const item = result.item ?? {};

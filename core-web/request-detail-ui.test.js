@@ -23,7 +23,8 @@ test('Core approval details keep the primary workflow visible and the file list 
   assert.doesNotMatch(script, /parentDialog\.close\('confirmation'\)/u);
   assert.match(script, /openDetailSections/u);
   assert.match(script, /transfer-progress/u);
-  assert.match(script, /Edge → Core 接收进度/u);
+  assert.match(script, /detailField\('正式制品文件清单', transferProgressPanel, \{ wide: true \}\)/u);
+  assert.doesNotMatch(script, /Edge → Core 接收进度/u);
   assert.match(script, /文件与分块明细/u);
   assert.match(script, /renderTransferFileTable/u);
   assert.doesNotMatch(script, /已接收 \/ SHA-256/u);
@@ -42,9 +43,9 @@ test('Core approval details keep the primary workflow visible and the file list 
   const transferPanel = script.match(/const transferPanel = ([\s\S]*?)const transferProgressPanel/u)?.[1] ?? '';
   assert.doesNotMatch(transferPanel, /Edge 最近错误|transferEdgeLastError|Edge 传输失败/u);
   assert.match(script, /edge-transfer-retry-button/u);
-  assert.match(script, /approval-requests\/\$\{encodeURIComponent\(id\)\}\/transfer\/retry/u);
+  assert.match(script, /approval-requests\/\$\{encodeURIComponent\(id\)\}\/transfer\/recover/u);
   assert.match(script, /await load\(\);\s*await showDetail\(id\);\s*message\(result\.idempotent/u);
-  assert.match(script, /await loadTransferMonitor\(\);\s*message\('已向 Edge 下发传输重试指令'/u);
-  assert.match(css, /\.cam-detail-advanced > summary \{[\s\S]*?cursor: pointer/u);
+  assert.match(script, /已向 Edge 下发恢复指令/u);
+  assert.match(css, /\.cam-transfer-files > summary \{[\s\S]*?cursor: pointer/u);
   assert.match(css, /\.cam-transfer-progress-summary/u);
 });

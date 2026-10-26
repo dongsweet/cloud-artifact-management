@@ -16,7 +16,7 @@ export function registerCoreAuth(app, { auth, keyring, aaaConfigStore = null, aa
     if (!path.startsWith('/api/')) return;
     if (path.startsWith('/api/v1/agent/')) return;
     reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer');
-    if (path.startsWith('/api/v1/gate/approval-requests') || path.startsWith('/api/v1/gate/receipts') || path.startsWith('/api/v1/gate/transfers/') || path.startsWith('/api/v1/gate/log-collections') || path === '/api/v1/gate/transfer-failures' || path === '/api/v1/gate/pairing-probe' || path === '/api/v1/gate/identity-rotation/proposals' || ['/api/v1/gate/authenticate', '/api/v1/gate/users', '/api/v1/gate/change-password'].includes(path)) return;
+    if (path.startsWith('/api/v1/gate/approval-requests') || path.startsWith('/api/v1/gate/receipts') || path.startsWith('/api/v1/gate/transfers/') || path.startsWith('/api/v1/gate/log-collections') || ['/api/v1/gate/transfer-failures', '/api/v1/gate/transfer-status', '/api/v1/gate/pairing-probe', '/api/v1/gate/identity-rotation/proposals'].includes(path) || ['/api/v1/gate/authenticate', '/api/v1/gate/users', '/api/v1/gate/change-password'].includes(path)) return;
     const jar = cookies(request);
     request.principal = auth.resolve(jar.cam_core_session);
     if (path === '/api/v1/auth/login' && request.method === 'POST') return;

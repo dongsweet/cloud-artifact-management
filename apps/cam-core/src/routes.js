@@ -193,12 +193,37 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw Object.assign(new Error(body.error?.message ?? `Edge 接收传输任务失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'transfer_ready_delivery_failed' });
       if (body.accepted !== true || body.requestId !== entry.payload.requestId || body.transferTaskId !== entry.payload.transferTaskId || body.eventId !== entry.event_id) throw Object.assign(new Error('Edge 未确认接收该传输任务'), { code: 'transfer_ready_ack_invalid' });
-      store.markTransferDelivered(entry.event_id);
+      store.markTransferDelivered(entry.event_id, config);
     } catch (err) {
       const attempts = entry.attempts + 1;
       const retryAt = new Date(Date.now() + Math.min(300_000, 5_000 * (2 ** Math.min(attempts - 1, 6)))).toISOString();
-      store.markTransferFailure(entry.event_id, err, retryAt);
+      store.markTransferFailure(entry.event_id, err, retryAt, { retryLimit: gateConfig.get().retryLimit });
       app.log.warn?.({ requestId: entry.request_id, eventId: entry.event_id, code: err.code, message: err.message }, 'CAM 传输任务通知 Edge 失败，将自动重试');
+    }
+  };
+  const sendEdgeRecovery = async (task) => {
+    const config = gateConfig.get();
+    const path = '/api/v1/gate/transfer-retry';
+    const payload = {
+      requestId: task.request_id, freezeId: task.request_id,
+      transferTaskId: task.transfer_task_id, manifestSha256: task.manifest_sha256
+    };
+    const body = JSON.stringify(payload);
+    try {
+      if (!config.edgeControlUrl) throw Object.assign(new Error('Edge 传输控制地址尚未配置'), { code: 'gate_address_missing' });
+      const response = await fetchImpl(`${config.edgeControlUrl.replace(/\/$/u, '')}${path}`, {
+        method: 'POST', headers: await keyring.requestHeaders('POST', path, body, { 'content-type': 'application/json' }), body,
+        signal: AbortSignal.timeout(config.connectTimeoutMs)
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.accepted !== true || result.requestId !== task.request_id || result.transferTaskId !== task.transfer_task_id) {
+        throw Object.assign(new Error(result.error?.message ?? `Edge 未确认接收恢复指令（HTTP ${response.status}）`), { code: result.error?.code ?? 'edge_recovery_ack_invalid' });
+      }
+      const updated = store.markEdgeRecoveryDispatchResult(task.transfer_task_id, { ok: true, edgeState: result.status, ...config });
+      return { ...updated, edgeStatus: result.status, idempotent: Boolean(result.idempotent || updated.idempotent) };
+    } catch (err) {
+      store.markEdgeRecoveryDispatchResult(task.transfer_task_id, { ok: false, error: err, ...config });
+      throw err;
     }
   };
   async function pumpWorkers() {
@@ -215,6 +240,17 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
       }
       for (const entry of store.listPendingApprovalResults()) await sendApprovalResult(entry);
       for (const entry of store.listPendingTransferReady()) await sendTransferReady(entry);
+      store.expireEdgeTransferTimeouts(gateConfig.get());
+      void store.reconcilePendingTransfers().catch((err) => {
+        app.log.warn?.({ code: err.code, message: err.message }, 'CAM 本地传输分块恢复失败');
+      });
+      for (const task of store.claimDueEdgeRecoveries()) {
+        try {
+          await sendEdgeRecovery(task);
+        } catch (err) {
+          app.log.warn?.({ requestId: task.request_id, transferTaskId: task.transfer_task_id, code: err.code, message: err.message }, 'CAM 未能向 Edge 发送传输恢复指令');
+        }
+      }
     } finally { workerBusy = false; }
   }
   const cloudTimer = setInterval(() => { void pumpWorkers(); }, workerIntervalMs);
@@ -222,7 +258,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   queueMicrotask(() => { void pumpWorkers(); });
   app.addHook('onClose', async () => clearInterval(cloudTimer));
   app.addHook('preHandler', async (request, reply) => {
-    const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/') || request.url.startsWith('/api/v1/gate/log-collections') || request.url === '/api/v1/gate/transfer-failures' || request.url.startsWith('/api/v1/gate/pairing-probe') || request.url.startsWith('/api/v1/gate/identity-rotation/') || ['/api/v1/gate/authenticate', '/api/v1/gate/users', '/api/v1/gate/change-password'].includes(request.url.split('?')[0]);
+    const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/') || request.url.startsWith('/api/v1/gate/log-collections') || ['/api/v1/gate/transfer-failures', '/api/v1/gate/transfer-status'].includes(request.url.split('?')[0]) || request.url.startsWith('/api/v1/gate/pairing-probe') || request.url.startsWith('/api/v1/gate/identity-rotation/') || ['/api/v1/gate/authenticate', '/api/v1/gate/users', '/api/v1/gate/change-password'].includes(request.url.split('?')[0]);
     if (!exchangePath) return;
     const authorization = await gateAuthorized(request, keyring);
     if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Core 尚未完成 Edge 身份配对，暂不能接收跨区业务消息');
@@ -373,7 +409,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
   app.get('/api/v1/transfer-monitor', async (request, reply) => {
     if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
-    return store.listTransferMonitor();
+    return store.listTransferMonitor({ recoveryLimit: gateConfig.get().retryLimit });
   });
   app.get('/api/v1/distribution-tasks/:taskId', async (request, reply) => {
     if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
@@ -620,7 +656,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
       output.end();
       await once(output, 'close');
       if (size !== expectedSize) throw Object.assign(new Error('制品内容大小与审批清单不一致'), { code: 'artifact_size_mismatch' });
-      const received = await store.receiveArtifact(request.params.transferTaskId, sha256, temporary, size, hash.digest('hex'));
+      const received = await store.receiveArtifact(request.params.transferTaskId, sha256, temporary, size, hash.digest('hex'), gateConfig.get());
       temporary = null;
       return reply.send({ transferTaskId: request.params.transferTaskId, ...received });
     } catch (err) {
@@ -662,7 +698,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
       if (bytes !== size) throw Object.assign(new Error('分块内容大小与声明不一致'), { code: 'artifact_chunk_invalid' });
       const saved = await store.saveTransferPart(request.params.transferTaskId, sha256, {
         index, chunkSize, chunkCount, offset, size, sha256: hash.digest('hex'), temporaryPath: temporary
-      });
+      }, gateConfig.get());
       temporary = null;
       const assembled = saved.complete ? await store.assembleTransferParts(request.params.transferTaskId, sha256) : null;
       return reply.send({ transferTaskId: request.params.transferTaskId, sha256, ...saved, assembled });
@@ -683,11 +719,21 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
 
   app.post('/api/v1/gate/transfer-failures', { bodyLimit: 16 * 1024 }, async (request, reply) => {
     try {
-      const result = store.recordEdgeTransferFailure(request.body ?? {});
+      const result = store.recordEdgeTransferFailure(request.body ?? {}, gateConfig.get());
       return reply.send({ accepted: true, requestId: request.body?.requestId, transferTaskId: request.body?.transferTaskId, idempotent: result.idempotent });
     } catch (err) {
       const status = err.code === 'request_not_found' || err.code === 'transfer_task_not_found' ? 404 : ['transfer_failure_conflict', 'invalid_transfer_failure'].includes(err.code) ? 409 : 400;
       return error(reply, status, err.code ?? 'transfer_failure_rejected', err.message);
+    }
+  });
+
+  app.post('/api/v1/gate/transfer-status', { bodyLimit: 16 * 1024 }, async (request, reply) => {
+    try {
+      const result = store.recordEdgeTransferStatus(request.body ?? {}, gateConfig.get());
+      return reply.send({ accepted: true, requestId: request.body?.requestId, transferTaskId: request.body?.transferTaskId, idempotent: result.idempotent });
+    } catch (err) {
+      const status = err.code === 'request_not_found' || err.code === 'transfer_task_not_found' ? 404 : ['transfer_status_conflict', 'invalid_transfer_status'].includes(err.code) ? 409 : 400;
+      return error(reply, status, err.code ?? 'transfer_status_rejected', err.message);
     }
   });
 
@@ -701,34 +747,44 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
     const current = store.get(request.params.requestId);
     if (current?.transferTaskId) void store.reconcileTransferParts(current.transferTaskId).catch(() => {});
-    const item = store.getTransferProgress(request.params.requestId);
+    const item = store.getTransferProgress(request.params.requestId, { recoveryLimit: gateConfig.get().retryLimit });
     return item ? reply.send({ item }) : error(reply, 404, 'request_not_found', 'approval request not found');
   });
 
-  app.post('/api/v1/approval-requests/:requestId/transfer/retry', { bodyLimit: 4096 }, async (request, reply) => {
+  const recoverEdgeTransfer = async (request, reply) => {
     if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
-    const item = store.get(request.params.requestId);
-    if (!item) return error(reply, 404, 'request_not_found', 'approval request not found');
-    if (item.status !== 'APPROVED' || !item.transferTaskId || !['FAILED', 'RETRY_WAIT'].includes(item.transferEdgeStatus)) return error(reply, 409, 'transfer_retry_unavailable', '当前 Edge → Core 传输状态不支持重试');
-    const config = gateConfig.get();
-    if (!config.edgeControlUrl) return error(reply, 503, 'gate_address_missing', 'Edge 传输控制地址尚未配置');
-    const path = '/api/v1/gate/transfer-retry';
-    const payload = { requestId: item.requestId, freezeId: item.freezeId, transferTaskId: item.transferTaskId, manifestSha256: item.manifestSha256 };
-    const body = JSON.stringify(payload);
+    const fallback = request.body?.fallback === true;
     try {
-      const response = await fetchImpl(`${config.edgeControlUrl.replace(/\/$/u, '')}${path}`, {
-        method: 'POST',
-        headers: await keyring.requestHeaders('POST', path, body, { 'content-type': 'application/json' }),
-        body,
-        signal: AbortSignal.timeout(config.connectTimeoutMs)
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) return error(reply, response.status >= 500 ? 502 : response.status, result.error?.code ?? 'transfer_retry_failed', result.error?.message ?? `Edge 接收重试指令失败（HTTP ${response.status}）`);
-      if (result.accepted !== true || result.requestId !== item.requestId || result.transferTaskId !== item.transferTaskId) return error(reply, 502, 'transfer_retry_ack_invalid', 'Edge 未确认接收传输重试指令');
-      const idempotentState = ['RECEIVED', 'SENDING'].includes(result.status);
-      const updated = idempotentState ? { item, idempotent: true } : store.markEdgeTransferRetryRequested(item.requestId);
-      return reply.code(idempotentState && result.status === 'RECEIVED' ? 200 : 202).send({ item: updated.item, idempotent: Boolean(result.idempotent || updated.idempotent), edgeStatus: result.status });
-    } catch (err) { return error(reply, 502, err.code ?? 'transfer_retry_failed', err.message); }
+      const recovery = store.beginEdgeRecovery(request.params.requestId, { resetRecoveryBudget: fallback });
+      if (recovery.idempotent) return reply.code(202).send({ item: recovery.item, idempotent: true, dispatching: true, fallback });
+      const dispatched = await sendEdgeRecovery(recovery.task);
+      return reply.code(202).send({ item: dispatched.item, idempotent: dispatched.idempotent, edgeStatus: dispatched.edgeStatus, fallback });
+    } catch (err) {
+      const status = err.code === 'request_not_found' || err.code === 'transfer_task_not_found'
+        ? 404
+        : err.code === 'gate_address_missing'
+          ? 503
+          : ['transfer_fallback_required', 'transfer_fallback_not_required', 'transfer_recovery_unavailable'].includes(err.code)
+            ? 409
+            : 502;
+      return error(reply, status, err.code ?? 'transfer_recovery_failed', err.message);
+    }
+  };
+  // `/retry` remains supported for existing browsers and automation.  Both
+  // paths use the same Core-owned recovery state machine.
+  app.post('/api/v1/approval-requests/:requestId/transfer/recover', { bodyLimit: 4096 }, recoverEdgeTransfer);
+  app.post('/api/v1/approval-requests/:requestId/transfer/retry', { bodyLimit: 4096 }, recoverEdgeTransfer);
+
+  app.post('/api/v1/approval-requests/:requestId/transfer/notification-retry', { bodyLimit: 4096 }, async (request, reply) => {
+    if (requireCorePermission(request, reply, 'businessWrite', '需要正式制品业务操作权限')) return;
+    try {
+      const result = store.retryTransferReady(request.params.requestId);
+      queueMicrotask(() => { void pumpWorkers(); });
+      return reply.code(202).send({ item: result.item, queued: true });
+    } catch (err) {
+      const status = err.code === 'request_not_found' ? 404 : err.code === 'transfer_notification_retry_unavailable' ? 409 : 400;
+      return error(reply, status, err.code ?? 'transfer_notification_retry_failed', err.message);
+    }
   });
 
   app.post('/api/v1/approval-requests/:requestId/retry', async (request, reply) => {

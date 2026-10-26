@@ -135,20 +135,8 @@
 .cam-transfer-files[open] > summary .bi { transform: rotate(90deg); }
 .cam-transfer-files .table { font-size: .82rem; }
 .cam-transfer-files .table th { white-space: nowrap; }
-.cam-detail-advanced { margin-top: .75rem; border: 1px solid var(--bs-border-color-translucent); border-radius: .4rem; background: var(--bs-tertiary-bg); }
-.cam-detail-advanced > summary { cursor: pointer; list-style: none; padding: .65rem .75rem; font-weight: 600; }
-.cam-detail-advanced > summary::-webkit-details-marker { display: none; }
-.cam-detail-advanced > summary .bi { transition: transform .15s ease; }
-.cam-detail-advanced[open] > summary .bi { transform: rotate(90deg); }
-.cam-detail-advanced-body { padding: 0 .75rem .75rem; }
-.cam-break-anywhere { overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
 .cam-retry-panel { padding: .1rem 0; }
 .cam-retry-panel-muted { color: var(--bs-secondary-color); }
-.cam-artifact-list { display: grid; gap: .55rem; }
-.cam-artifact-row { display: flex; align-items: flex-start; gap: .65rem; min-width: 0; padding: .7rem .8rem; border: 1px solid var(--bs-border-color-translucent); border-radius: .4rem; background: var(--bs-tertiary-bg); }
-.cam-artifact-row > i { margin-top: .2rem; }
-.cam-artifact-main { min-width: 0; flex: 1 1 auto; }
-.cam-artifact-row > .badge { flex: 0 0 auto; }
 .cam-artifact-product { min-width: 0 !important; }
 .cam-artifact-version { border: 1px solid var(--bs-border-color-translucent); border-radius: .45rem; overflow: hidden; }
 .cam-artifact-version > summary { display: flex; align-items: center; gap: .75rem; padding: .8rem 1rem; cursor: pointer; list-style: none; background: var(--bs-tertiary-bg); }

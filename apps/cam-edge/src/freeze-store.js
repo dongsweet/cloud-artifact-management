@@ -382,13 +382,19 @@ export class FreezeStore {
   }
 
   listTransferPending() {
-    return this.db.prepare("SELECT * FROM round_freezes WHERE status = 'APPROVED' AND transfer_task_id IS NOT NULL AND (transfer_status IN ('READY','RECEIVED') OR (transfer_status = 'FAILED' AND transfer_retry_exhausted = 0 AND (transfer_retry_at IS NULL OR transfer_retry_at <= ?))) ORDER BY decided_at ASC").all(now()).map((row) => this.parse(row));
+    // FAILED transfers wait for a signed recovery command from Core.  Edge
+    // must never independently restart them, otherwise the two ends can
+    // disagree about retry limits and recovery state.
+    return this.db.prepare("SELECT * FROM round_freezes WHERE status = 'APPROVED' AND transfer_task_id IS NOT NULL AND transfer_status IN ('READY','RECEIVED') ORDER BY decided_at ASC").all().map((row) => this.parse(row));
   }
   listTransferFailures() {
     return this.db.prepare("SELECT * FROM round_freezes WHERE status = 'APPROVED' AND transfer_task_id IS NOT NULL AND transfer_status = 'FAILED' AND transfer_attempts > 0 ORDER BY updated_at DESC").all().map((row) => this.parse(row));
   }
+  listTransferStates() {
+    return this.db.prepare("SELECT * FROM round_freezes WHERE status = 'APPROVED' AND transfer_task_id IS NOT NULL AND transfer_status IN ('READY', 'SENDING', 'FAILED', 'RECEIVED') ORDER BY updated_at DESC").all().map((row) => this.parse(row));
+  }
   markTransferAttempt(freezeId) {
-    this.db.prepare("UPDATE round_freezes SET transfer_status = 'SENDING', transfer_attempts = transfer_attempts + 1, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('READY','FAILED')").run(now(), freezeId);
+    this.db.prepare("UPDATE round_freezes SET transfer_status = 'SENDING', transfer_attempts = transfer_attempts + 1, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status = 'READY'").run(now(), freezeId);
     return this.get(freezeId);
   }
   markTransferSuccess(freezeId) {
@@ -397,11 +403,9 @@ export class FreezeStore {
     return this.get(freezeId);
   }
   resetTransfer(freezeId) {
-    // A manual retry starts a fresh retry window.  The previous failure is
-    // already reported to Core; reset the counter used by this Edge retry
-    // cycle, otherwise an exhausted task would fail terminally again on its
-    // very first manual retry.
-    this.db.prepare("UPDATE round_freezes SET transfer_status = 'READY', transfer_attempts = 0, transfer_last_error = NULL, transfer_error_code = NULL, transfer_retry_at = ?, transfer_retry_exhausted = 0, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('FAILED','SENDING')").run(now(), now(), freezeId);
+    // Preserve Edge's accumulated attempt number. Core uses it to reject
+    // stale control reports after a coordinated recovery.
+    this.db.prepare("UPDATE round_freezes SET transfer_status = 'READY', transfer_last_error = NULL, transfer_error_code = NULL, transfer_retry_at = NULL, transfer_retry_exhausted = 0, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('FAILED','SENDING')").run(now(), freezeId);
     return this.get(freezeId);
   }
   markTransferFailure(freezeId, error, { retryAt = null, exhausted = false } = {}) {

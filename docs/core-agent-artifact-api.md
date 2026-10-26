@@ -85,7 +85,7 @@ GET /api/v1/artifacts/:artifactId
 
 Core 分发页面使用业务只读接口 `GET /api/v1/distribution-agents` 获取 Agent 的基本信息，并在页面上只允许选择处于启用状态的 Agent。该接口只返回 Agent 编号、中心、名称和状态；身份公钥、轮换状态等配置详情仍由 `GET /api/v1/agents` 管理接口提供。
 
-Core 传输监测页使用 `GET /api/v1/transfer-monitor` 同时查看 Edge → Core 与 Core → Agent 任务。Edge → Core 按固化申请/传输任务展示进度、失败原因和重试时间，人工重试仍由 Core 调用 `POST /api/v1/approval-requests/:requestId/transfer/retry` 下发到 Edge。Core → Agent 按单个 Agent 分发任务展示文件/字节进度、并发线程、尝试次数和最近错误，并由 Core 调用下面的任务级接口控制：
+Core 传输监测页使用 `GET /api/v1/transfer-monitor` 同时查看 Edge → Core 与 Core → Agent 任务。Edge → Core 按固化申请/传输任务展示进度、最后活动、启动/空闲截止时间、失败原因、协调恢复次数和下次恢复时间。人工恢复由 Core 调用 `POST /api/v1/approval-requests/:requestId/transfer/recover` 下发到 Edge；旧的 `/transfer/retry` 路径仅作为兼容别名保留。Core 通知 Edge 接单本身也采用有限重试；达到上限后显示为通知失败，可调用 `POST /api/v1/approval-requests/:requestId/transfer/notification-retry` 从 Core 重新入队，不会在 Edge 侧自动启动。Core → Agent 按单个 Agent 分发任务展示文件/字节进度、并发线程、尝试次数和最近错误，并由 Core 调用下面的任务级接口控制：
 
 | 方法与路径 | 说明 |
 | --- | --- |
@@ -103,7 +103,7 @@ Core 传输监测页使用 `GET /api/v1/transfer-monitor` 同时查看 Edge → 
 GET /api/v1/approval-requests/:requestId/transfer-progress
 ```
 
-响应包含传输任务通知状态、总体状态、文件/字节汇总，以及每个文件的 SHA-256、已接收分块数、分块总数、已接收字节和本机是否已入库。总体状态包括 `WAITING_AUTHORIZATION`、`WAITING_EDGE`、`RETRY_WAIT`、`RECEIVING`、`VERIFYING`、`FAILED` 和 `COMPLETED`。Edge 每次传输失败都会通过受签名保护的 `POST /api/v1/gate/transfer-failures` 回告错误码、错误信息、尝试次数、下次重试时间和是否已达到自动重试上限；Core 在 `edgeFailure` 字段和页面上显示这些信息。自动重试使用网闸配置中的“最大重试次数”，达到上限后停止；具备 Core 业务操作权限的人员可在 Core 侧调用 `POST /api/v1/approval-requests/:requestId/transfer/retry`，由 Core 向 Edge 下发签名重试指令。Edge 只接受该网闸指令，不提供浏览器重试入口。相同 SHA-256 被多个包引用时，每个包仍单独展示清单进度，但已存在的内容寻址对象标记为可复用，不会重复占用存储空间。
+响应包含传输任务通知状态、总体状态、文件/字节汇总，以及每个文件的 SHA-256、已接收分块数、分块总数、已接收字节和本机是否已入库。总体状态包括 `WAITING_AUTHORIZATION`、`WAITING_EDGE`、`NOTIFICATION_RETRY_WAIT`、`NOTIFICATION_FAILED`、`RECOVERY_SENDING`、`RETRY_WAIT`、`RECEIVING`、`VERIFYING`、`FAILED` 和 `COMPLETED`。Core 对已接单未开始、传输/回执空闲、恢复命令未确认三种中间状态分别启用启动/空闲观察窗口；默认均为 5 分钟，可在网闸配置中调整。超时会记录明确错误，按“最大重试次数”自动协调恢复；上限耗尽后转为终态 `FAILED`，不再隐式重试。具备 Core 业务操作权限的人员可在 Core 侧调用 `POST /api/v1/approval-requests/:requestId/transfer/recover` 进行普通恢复；终态必须显式传递 `{ "fallback": true }` 执行兜底恢复。兜底恢复只重置 Core 的协调恢复预算，保留 Edge 尝试记录、已接收分块和已入库制品，建议先修复 Edge、网闸或存储故障再执行。Edge 只接受 Core 签名的恢复命令，不提供浏览器重试入口。相同 SHA-256 被多个包引用时，每个包仍单独展示清单进度，但已存在的内容寻址对象标记为可复用，不会重复占用存储空间。
 
 ### 下载正式制品
 

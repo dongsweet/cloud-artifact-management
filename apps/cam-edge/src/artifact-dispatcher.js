@@ -2,7 +2,6 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 
-const retryDelay = (attempt) => Math.min(300_000, 5_000 * (2 ** Math.min(Math.max(attempt - 1, 0), 6)));
 const errorCode = (error) => error?.name === 'TimeoutError' || error?.code === 23 || error?.code === '23'
   ? 'ETIMEDOUT'
   : error?.code ? String(error.code).slice(0, 128) : 'artifact_transfer_failed';
@@ -11,8 +10,8 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
   let timer = null;
   let busy = false;
   let closed = false;
-  const nextAttemptAt = new Map();
   const reconciled = new Set();
+  const reportedStates = new Map();
 
   async function request(url, config, options = {}) {
     const method = options.method ?? 'GET';
@@ -27,19 +26,24 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
     });
   }
 
-  async function reportFailure(freeze, error, { attempt, retryAt, terminal, config }) {
+  async function reportState(freeze, state, { attempt = freeze.transferAttempts ?? 0, code = null, message = null, retryAt = null, terminal = false, config } = {}) {
     const controlUrl = config?.coreControlUrl;
     if (!controlUrl) return;
-    const path = '/api/v1/gate/transfer-failures';
+    const path = '/api/v1/gate/transfer-status';
+    const stateKey = `${freeze.freezeId}:${freeze.transferTaskId}:${state}:${attempt}:${code ?? ''}:${retryAt ?? ''}:${terminal ? '1' : '0'}`;
+    // Progress is deliberately not deduplicated: every completed chunk is a
+    // liveness signal for Core's idle timeout watchdog.
+    if (state !== 'PROGRESS' && reportedStates.get(freeze.freezeId) === stateKey) return;
     const payload = {
       requestId: freeze.freezeId,
       freezeId: freeze.freezeId,
       transferTaskId: freeze.transferTaskId,
       manifestSha256: freeze.manifestSha256,
       attempt,
-      code: errorCode(error),
-      message: String(error?.message ?? error).slice(0, 1000),
-      retryAt: retryAt ?? null,
+      state,
+      code: code ?? undefined,
+      message: message ?? undefined,
+      retryAt,
       terminal: Boolean(terminal),
       occurredAt: new Date().toISOString()
     };
@@ -54,17 +58,35 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
       const responseBody = await response.json().catch(() => ({}));
       throw Object.assign(new Error(responseBody.error?.message ?? `Core 接收传输失败报告失败（HTTP ${response.status}）`), { code: responseBody.error?.code ?? 'transfer_failure_report_failed' });
     }
+    if (state !== 'PROGRESS') reportedStates.set(freeze.freezeId, stateKey);
+  }
+
+  async function reportFailure(freeze, error, { attempt, config }) {
+    return reportState(freeze, 'RETRY_WAIT', {
+      attempt, code: errorCode(error), message: String(error?.message ?? error).slice(0, 1000), config
+    });
+  }
+
+  function reportStateLater(freeze, state, options) {
+    void reportState(freeze, state, options).catch((error) => {
+      logger.warn?.({ freezeId: freeze.freezeId, state, code: error.code, message: error.message }, 'CAM Edge 传输状态回告 Core 失败');
+    });
   }
 
   async function deliver(freezeId) {
     let freeze = freezes.get(freezeId);
     if (!freeze || freeze.status !== 'APPROVED' || !freeze.transferTaskId) return freeze;
-    const attempt = (freeze.transferAttempts ?? 0) + 1;
     const repairingReceipt = freeze.transferStatus === 'RECEIVED';
-    if (!repairingReceipt) freezes.markTransferAttempt(freezeId);
+    if (!repairingReceipt) {
+      // Stores return the persisted row, but keep the dispatcher compatible
+      // with callers that only mutate their in-memory state.
+      freeze = freezes.markTransferAttempt(freezeId) ?? freezes.get(freezeId) ?? freeze;
+    }
+    const attempt = Number(freeze.transferAttempts ?? 0);
     try {
       const config = gateConfig.get();
       if (!config.coreTransferUrl) throw Object.assign(new Error('请先配置 Edge 外侧访问 Core 的制品传输地址'), { code: 'gate_address_missing' });
+      reportStateLater(freeze, 'STARTED', { attempt, config });
       const base = config.coreTransferUrl.replace(/\/$/u, '');
       const path = `/api/v1/gate/transfers/${encodeURIComponent(freeze.transferTaskId)}`;
       const readManifest = async () => {
@@ -84,14 +106,13 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
         if (!manifestResponse.ok || !Array.isArray(manifestBody.items) || manifestBody.items.length === 0) throw Object.assign(new Error('Core 同步后仍未返回正式制品清单'), { code: 'transfer_manifest_sync_failed' });
       }
       if (manifestBody.items.length === 0) throw Object.assign(new Error('Core 和 Edge 均未携带正式制品清单，不能完成传输'), { code: 'transfer_manifest_missing' });
-      if (freeze.transferStatus === 'RECEIVED' && manifestBody.items.length > 0 && manifestBody.items.every((item) => item.stored)) {
-        reconciled.add(freezeId);
-        nextAttemptAt.set(freezeId, Number.POSITIVE_INFINITY);
-        return freeze;
-      }
+      // A prior process may have uploaded every byte but died before the final
+      // receipt. Skip re-uploading in that case, but always replay the final
+      // control report and receipt so Core can finish the task.
+      const alreadyStored = freeze.transferStatus === 'RECEIVED' && manifestBody.items.every((item) => item.stored);
       const chunkSize = Math.min(config.chunkSizeBytes, 32 * 1024 * 1024);
       const sent = new Set();
-      for (const item of manifestBody.items) {
+      if (!alreadyStored) for (const item of manifestBody.items) {
         const sha256 = String(item.actualSha256 ?? '').toLowerCase();
         if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(item.sizeBytes) || item.sizeBytes < 0) throw Object.assign(new Error('获批清单包含无效的文件摘要或大小'), { code: 'transfer_manifest_invalid' });
         if (sent.has(sha256) || item.stored) { sent.add(sha256); continue; }
@@ -107,6 +128,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
           const url = `${base}${path}/artifacts/${sha256}`;
           const response = await request(url, config, { method: 'PUT', headers: { 'content-type': 'application/octet-stream', 'content-length': '0' }, body: Buffer.alloc(0) });
           if (!response.ok) throw await responseError(response, '空制品上传失败');
+          reportStateLater(freeze, 'PROGRESS', { attempt, config });
         } else {
           const count = Math.ceil(item.sizeBytes / chunkSize);
           const receivedParts = new Set(Array.isArray(item.receivedParts) ? item.receivedParts : []);
@@ -128,9 +150,17 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
               }
             });
             if (!response.ok) throw await responseError(response, `制品 ${item.fileName} 第 ${index + 1}/${count} 块上传失败`);
+            reportStateLater(freeze, 'PROGRESS', { attempt, config });
           }
         }
         sent.add(sha256);
+      }
+      // All bytes are on Core now, but Core has not yet accepted the final
+      // receipt. Report that boundary before requesting the receipt so both
+      // sides can distinguish "waiting for Core confirmation" from transfer.
+      try { await reportState(freeze, 'COMPLETED', { attempt, config }); }
+      catch (reportError) {
+        logger.warn?.({ freezeId, attempt, state: 'COMPLETED', code: reportError.code, message: reportError.message }, 'CAM Edge 完成状态回告 Core 失败，将继续提交回执');
       }
       const receiptResponse = await request(`${base}/api/v1/gate/receipts`, config, {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -139,22 +169,19 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
       if (!receiptResponse.ok) throw await responseError(receiptResponse, 'Core 拒绝接收正式制品回执');
       freezes.markTransferSuccess(freezeId);
       reconciled.add(freezeId);
-      nextAttemptAt.set(freezeId, Number.POSITIVE_INFINITY);
-      nextAttemptAt.delete(freezeId);
       return freezes.get(freezeId);
     } catch (error) {
       const config = (() => { try { return gateConfig.get(); } catch { return {}; } })();
-      const retryLimit = Number.isSafeInteger(config.retryLimit) && config.retryLimit > 0 ? config.retryLimit : 5;
-      const terminal = attempt >= retryLimit;
-      const retryAt = terminal ? null : new Date(Date.now() + retryDelay(attempt)).toISOString();
-      freezes.markTransferFailure(freezeId, error, { retryAt, exhausted: terminal });
-      nextAttemptAt.set(freezeId, terminal ? Number.POSITIVE_INFINITY : Date.parse(retryAt));
+      // Core owns retry budgets and retry timing for Edge -> Core transfers.
+      // Edge persists the failure so it survives a restart, reports it over the
+      // signed control link, and waits for an explicit Core recovery command.
+      freezes.markTransferFailure(freezeId, error);
       try {
-        await reportFailure(freeze, error, { attempt, retryAt, terminal, config });
+        await reportFailure(freeze, error, { attempt, config });
       } catch (reportError) {
         logger.warn?.({ freezeId, attempt, code: reportError.code, message: reportError.message }, 'CAM 正式制品传输失败报告 Core 失败');
       }
-      logger.warn?.({ freezeId, attempt, retryLimit, terminal, retryAt, code: error.code, message: error.message }, terminal ? 'CAM 正式制品传输失败，已停止自动重试' : 'CAM 正式制品传输失败，将自动重试');
+      logger.warn?.({ freezeId, attempt, code: error.code, message: error.message }, 'CAM 正式制品传输失败，已回告 Core，等待协调恢复');
       return freezes.get(freezeId);
     }
   }
@@ -164,25 +191,37 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
     return Object.assign(new Error(body.error?.message ?? `${fallback}（HTTP ${response.status}）`), { code: body.error?.code ?? 'artifact_transfer_failed', statusCode: response.status });
   }
 
-  async function reconcileFailures() {
-    if (typeof freezes.listTransferFailures !== 'function') return;
+  async function reconcileTransferStates() {
+    if (typeof freezes.listTransferStates !== 'function') return;
     let config;
     try { config = gateConfig.get(); } catch { return; }
     if (!config?.coreControlUrl) return;
-    for (const freeze of freezes.listTransferFailures()) {
-      if (!freeze.transferAttempts || !freeze.transferLastError) continue;
-      const error = Object.assign(new Error(freeze.transferLastError), { code: freeze.transferErrorCode ?? 'artifact_transfer_failed' });
+    for (const freeze of freezes.listTransferStates()) {
+      const attempt = Number(freeze.transferAttempts ?? 0);
+      const state = freeze.transferStatus === 'READY' ? 'ACCEPTED'
+        : freeze.transferStatus === 'SENDING' ? 'STARTED'
+          : freeze.transferStatus === 'RECEIVED' ? 'COMPLETED'
+            : 'RETRY_WAIT';
+      const error = freeze.transferLastError ? Object.assign(new Error(freeze.transferLastError), { code: freeze.transferErrorCode ?? 'artifact_transfer_failed' }) : null;
       try {
-        await reportFailure(freeze, error, {
-          attempt: freeze.transferAttempts,
-          retryAt: freeze.transferRetryAt,
-          terminal: Boolean(freeze.transferRetryExhausted),
-          config
+        await reportState(freeze, state, {
+          attempt, config,
+          code: error ? errorCode(error) : null, message: error?.message ?? null,
+          terminal: false
         });
       } catch (reportError) {
-        logger.warn?.({ freezeId: freeze.freezeId, attempt: freeze.transferAttempts, code: reportError.code, message: reportError.message }, 'CAM Edge 启动时回告传输失败状态失败');
+        logger.warn?.({ freezeId: freeze.freezeId, state, code: reportError.code, message: reportError.message }, 'CAM Edge 启动时回告传输状态失败');
       }
     }
+  }
+
+  async function accepted(freezeId) {
+    const freeze = freezes.get(freezeId);
+    if (!freeze?.transferTaskId) return;
+    let config;
+    try { config = gateConfig.get(); } catch { return; }
+    try { await reportState(freeze, 'ACCEPTED', { attempt: Number(freeze.transferAttempts ?? 0), config }); }
+    catch (error) { logger.warn?.({ freezeId, state: 'ACCEPTED', code: error.code, message: error.message }, 'CAM Edge 接单状态回告 Core 失败'); }
   }
 
   async function pump() {
@@ -192,7 +231,6 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
       for (const freeze of freezes.listTransferPending()) {
         if (closed) break;
         if (reconciled.has(freeze.freezeId)) continue;
-        if ((nextAttemptAt.get(freeze.freezeId) ?? 0) > Date.now()) continue;
         await deliver(freeze.freezeId);
       }
     } finally { busy = false; }
@@ -202,7 +240,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
     if (timer || closed) return;
     timer = setInterval(() => { void pump(); }, intervalMs);
     timer.unref?.();
-    void reconcileFailures();
+    void reconcileTransferStates();
     void pump();
   }
 
@@ -213,5 +251,5 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
     while (busy) await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
-  return { deliver, pump, start, close };
+  return { accepted, deliver, pump, start, close };
 }
