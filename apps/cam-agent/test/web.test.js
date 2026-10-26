@@ -141,10 +141,12 @@ test('Agent delivery navigation is declared in the business menu template', asyn
   assert.match(deliverySource, /document\.querySelectorAll\('#page-delivery dialog'\)\.forEach\(\(dialog\) => document\.body\.append\(dialog\)\)/);
   assert.match(deliverySource, /id="new-delivery-grant"/);
   assert.match(deliverySource, /id="delivery-owner"[^>]*readonly/);
-  assert.match(deliverySource, /id="delivery-total"[^>]*readonly/);
+  assert.match(webSource, /id="delivery-total"[^>]*min="1" max="10000"/);
+  assert.doesNotMatch(webSource, /id="delivery-total"[^>]*readonly/);
   assert.match(deliverySource, /id="delivery-product"/);
   assert.match(deliverySource, /id="delivery-artifact"/);
   assert.match(deliverySource, /id="delivery-create-dialog" class="cam-detail-modal cam-form-modal"/);
   assert.match(deliverySource, /id="delivery-create-dialog"[\s\S]*?type="submit">确定<\/button>/);
   assert.match(deliverySource, /function updateDeliveryTotal\(\)/);
+  assert.match(webSource, /maxTotalSessions: Number\(\$\('#delivery-total'\)\.value\)/);
 });

@@ -102,7 +102,7 @@ test('cam-edge serves completed packages through principal-bound, resumable gran
   }
 });
 
-test('download grants bind the current operator and derive total sessions from selected files', async () => {
+test('download grants bind the current operator and honor configured total and per-file limits', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-download-grant-scope-'));
   const app = await buildEdgeApp({ dataDir, principalProvider: (request) => request.headers['x-test-user'] ? { id: request.headers['x-test-user'], type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] } : null });
   try {
@@ -125,7 +125,7 @@ test('download grants bind the current operator and derive total sessions from s
     const persisted = app.downloadGrantStore.getGrant(grant.grantId);
     assert.equal(persisted.principalId, 'operator-1');
     assert.equal(persisted.createdBy, 'operator-1');
-    assert.equal(persisted.maxTotalSessions, 4);
+    assert.equal(persisted.maxTotalSessions, 1);
     assert.ok(persisted.items.every((item) => item.maxSessions === 2));
   } finally {
     await app.close();

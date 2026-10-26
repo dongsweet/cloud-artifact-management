@@ -3,7 +3,7 @@ import { canEdgePage } from './role-permissions.js?v=20261023-auditor-scope';
 import { renderRoleGroups } from './role-display.js?v=20261022-role-display';
 
 let user = null, api, refresh, context, alert, labels = {}, users = [], exported = null;
-let selectedGrantId = null, grantDetailTimer = null, grantDetailLoading = false, grantScopeRoundId = null;
+let selectedGrantId = null, grantDetailTimer = null, grantDetailLoading = false, grantScopeRoundId = null, grantTotalCustomized = false;
 let loadAuditEvents = null;
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -35,7 +35,7 @@ function markup() {
   }
   document.body.insertAdjacentHTML('beforeend', `<div id="account-login" class="position-fixed top-0 start-0 w-100 h-100 bg-body-tertiary d-flex align-items-center justify-content-center" style="z-index:2000"><div class="card shadow" style="width:380px;max-width:95vw"><div class="card-header"><h3 class="card-title">CAM Edge · 制品管理</h3></div><form id="login-form"><div class="card-body"><div id="login-error" class="alert alert-danger d-none"></div>${input('login-name', '用户名', 'text', 'autocomplete="username" required')}${input('login-password', '密码', 'password', 'autocomplete="current-password" required')}<p class="small text-body-secondary">使用 CAM Core 中创建并获准登录 Edge 的账号。</p></div><div class="card-footer text-end"><button class="btn btn-primary" type="submit">登录</button></div></form></div></div>`
     + dialog('password', '修改密码', `<div id="password-help" class="alert alert-info">首次登录必须修改初始密码。</div>${input('old-password', '当前密码', 'password', 'autocomplete="current-password" required')}${input('new-password', '新密码（至少 12 个字符）', 'password', 'autocomplete="new-password" minlength="12" required')}${input('repeat-password', '确认新密码', 'password', 'autocomplete="new-password" minlength="12" required')}`, 'modal-dialog modal-dialog-centered cam-password-dialog')
-    + dialog('grant', '创建下载授权', `<div id="grant-round-filters"><div class="row"><div class="col-md-4"><label for="grant-product" class="form-label">软件产品</label><select id="grant-product" class="form-select mb-3"><option value="">请选择软件产品</option></select></div><div class="col-md-4"><label for="grant-release" class="form-label">发布版本</label><select id="grant-release" class="form-select mb-3" disabled><option value="">请先选择软件产品</option></select></div><div class="col-md-4"><label for="grant-round" class="form-label">候选轮次</label><select id="grant-round" class="form-select mb-3" disabled><option value="">请先选择发布版本</option></select></div></div></div><div id="grant-candidate-summary" class="alert alert-light border d-none"></div><label class="form-label" for="grant-owner">下载责任人</label><input id="grant-owner" class="form-control bg-body-secondary mb-3" readonly><div class="row"><div class="col-md-4">${input('grant-days', '有效天数（1–30）', 'number', 'min="1" max="30" value="1" required')}</div><div class="col-md-4">${input('grant-total', '累计会话次数', 'number', 'min="1" max="10000" readonly required')}</div><div class="col-md-4">${input('grant-per-file', '每文件会话次数', 'number', 'min="1" max="10000" value="2" required')}</div></div><p class="small text-body-secondary">累计会话次数按所选文件数 × 每文件会话次数自动计算。续传复用原会话，不重复计数。仅可选择已完成并通过摘要校验的文件。</p><div id="grant-files" style="max-height:300px;overflow:auto"></div>`)
+    + dialog('grant', '创建下载授权', `<div id="grant-round-filters"><div class="row"><div class="col-md-4"><label for="grant-product" class="form-label">软件产品</label><select id="grant-product" class="form-select mb-3"><option value="">请选择软件产品</option></select></div><div class="col-md-4"><label for="grant-release" class="form-label">发布版本</label><select id="grant-release" class="form-select mb-3" disabled><option value="">请先选择软件产品</option></select></div><div class="col-md-4"><label for="grant-round" class="form-label">候选轮次</label><select id="grant-round" class="form-select mb-3" disabled><option value="">请先选择发布版本</option></select></div></div></div><div id="grant-candidate-summary" class="alert alert-light border d-none"></div><label class="form-label" for="grant-owner">下载责任人</label><input id="grant-owner" class="form-control bg-body-secondary mb-3" readonly><div class="row"><div class="col-md-4">${input('grant-days', '有效天数（1–30）', 'number', 'min="1" max="30" value="1" required')}</div><div class="col-md-4">${input('grant-total', '累计会话次数', 'number', 'min="1" max="10000" value="0" required')}</div><div class="col-md-4">${input('grant-per-file', '每文件会话次数', 'number', 'min="1" max="10000" value="2" required')}</div></div><p class="small text-body-secondary">累计会话次数默认按所选文件数 × 每文件会话次数计算，可按需要调整。续传复用原会话，不重复计数。仅可选择已完成并通过摘要校验的文件。</p><div id="grant-files" style="max-height:300px;overflow:auto"></div>`)
     + `<div class="modal fade" id="grant-export-modal" tabindex="-1" aria-label="授权清单" aria-hidden="true"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">下载授权清单</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div><div class="modal-body"><div class="alert alert-warning">下载链接只在本次创建后显示，请立即保存并交给下载人员。</div><div id="grant-links"></div></div><div class="modal-footer"><button id="export-grant-json" class="btn btn-outline-primary"><i class="bi bi-filetype-json me-1"></i>导出 JSON</button><button id="export-grant-text" class="btn btn-outline-primary"><i class="bi bi-download me-1"></i>导出链接列表</button></div></div></div></div>`);
   $('#account-login .card-title').textContent = 'CAM Edge · 制品管理';
   function section(id, title, content, action) {
@@ -110,11 +110,12 @@ export async function initAccountUI(options) {
   $('#grant-release').onchange = () => loadGrantRounds().catch((e) => alert(e.message, 'danger'));
   $('#grant-round').onchange = () => loadGrantFiles().catch((e) => alert(e.message, 'danger'));
   $('#grant-per-file').oninput = updateGrantTotal;
+  $('#grant-total').oninput = () => { grantTotalCustomized = true; };
   $('#grant-files').onchange = updateGrantTotal;
   $('#grant-form').onsubmit = (e) => { e.preventDefault(); submit(e.target, async () => {
     const candidateIds = [...document.querySelectorAll('#grant-files input:checked')].map((i) => i.value);
     if (!candidateIds.length) throw new Error('请选择已完成文件');
-    exported = await api('/api/v1/download-grants', { method: 'POST', body: JSON.stringify({ candidateIds, roundId: grantScopeRoundId || $('#grant-round').value || null, expiresAt: new Date(Date.now() + Number($('#grant-days').value) * 86400000).toISOString(), maxSessionsPerFile: Number($('#grant-per-file').value) }) });
+    exported = await api('/api/v1/download-grants', { method: 'POST', body: JSON.stringify({ candidateIds, roundId: grantScopeRoundId || $('#grant-round').value || null, expiresAt: new Date(Date.now() + Number($('#grant-days').value) * 86400000).toISOString(), maxTotalSessions: Number($('#grant-total').value), maxSessionsPerFile: Number($('#grant-per-file').value) }) });
     exported.items.forEach((i) => { i.downloadUrl = new URL(i.downloadUrl, window.location.origin).href; });
     window.CamDownloadGrantUI.exportLinks(exported, $('#grant-links'), { hashField: 'sha256' });
     modal('grant').hide(); modal('grant-export').show(); if (context().view === 'grants') await renderAccountView('grants');
@@ -126,6 +127,7 @@ export async function initAccountUI(options) {
 async function openGrant(roundId, candidateId) {
   const products = await api('/api/v1/products');
   grantScopeRoundId = roundId || null;
+  grantTotalCustomized = false;
   $('#grant-owner').value = `${user.displayName} (${user.username})`;
   $('#grant-days').value = '1'; $('#grant-per-file').value = '2'; $('#grant-total').value = '0';
   $('#grant-files').innerHTML = '<div class="text-body-secondary">请先选择候选轮次</div>';
@@ -207,7 +209,7 @@ function renderGrantFiles(completed) {
     : '<div class="text-body-secondary">当前候选轮次没有已完成的候选包</div>';
   updateGrantTotal();
 }
-function updateGrantTotal() { const selectedCount = document.querySelectorAll('#grant-files input:checked').length; const perFile = Number($('#grant-per-file')?.value || 2); $('#grant-total').value = selectedCount * (Number.isSafeInteger(perFile) && perFile > 0 ? perFile : 0); }
+function updateGrantTotal() { if (grantTotalCustomized) return; const selectedCount = document.querySelectorAll('#grant-files input:checked').length; const perFile = Number($('#grant-per-file')?.value || 2); $('#grant-total').value = selectedCount * (Number.isSafeInteger(perFile) && perFile > 0 ? perFile : 0); }
 function saveExport(type) { window.CamDownloadGrantUI.saveExport(exported, type, { hashField: 'sha256' }); }
 export async function renderAccountView(view) {
   if (view !== 'grants') stopGrantDetailPolling();

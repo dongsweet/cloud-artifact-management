@@ -451,7 +451,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
         createdBy: actor.principalId,
         roundId: body.roundId || null,
         expiresAt: body.expiresAt,
-        maxTotalSessions: Array.isArray(body.candidateIds) ? body.candidateIds.length * body.maxSessionsPerFile : body.maxTotalSessions,
+        maxTotalSessions: body.maxTotalSessions,
         maxSessionsPerFile: body.maxSessionsPerFile
       });
       return reply.code(201).send({

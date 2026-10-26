@@ -88,10 +88,11 @@ export class AgentDeliveryStore {
     this.logger.info({ deliveryEvent: { eventId, grantId, fileSha256, sessionId, principalId, eventType: type, details, createdAt } }, 'agent delivery event');
   }
 
-  createGrant({ artifactId, artifact, fileSha256s, principalId, createdBy = principalId, expiresAt, maxSessionsPerFile = 2 }) {
+  createGrant({ artifactId, artifact, fileSha256s, principalId, createdBy = principalId, expiresAt, maxTotalSessions, maxSessionsPerFile = 2 }) {
     if (typeof artifactId !== 'string' || !artifactId.trim()) throw new Error('artifactId 必填');
     if (!artifact || artifact.artifactId !== artifactId) throw new Error('正式版本不存在');
     if (typeof principalId !== 'string' || !principalId.trim()) throw new Error('principalId 必填');
+    const totalLimit = integer(maxTotalSessions, '累计会话次数');
     const fileLimit = integer(maxSessionsPerFile, '每文件会话次数');
     const expiry = new Date(expiresAt); const current = Date.now();
     if (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= current || expiry.getTime() > current + 30 * 24 * 60 * 60 * 1000) throw new Error('有效期必须在未来 30 天以内');
@@ -100,7 +101,6 @@ export class AgentDeliveryStore {
     const files = (artifact.files ?? []).filter((file) => requested.has(file.sha256));
     if (files.length !== requested.size) throw new Error('选择的文件不属于该正式版本');
     if (files.some((file) => !file.cached || !/^[a-f0-9]{64}$/u.test(file.sha256))) throw new Error('只能交付 Agent 已缓存并校验完成的文件');
-    const totalLimit = files.length * fileLimit;
     const grantId = `ADG-${Date.now()}-${randomUUID()}`; const token = randomBytes(32).toString('base64url'); const createdAt = now();
     this.db.exec('BEGIN IMMEDIATE');
     try {

@@ -32,8 +32,10 @@ test('download grant form binds the current operator and derives its total sessi
   const [script, appScript, routes] = await Promise.all([read('./account-ui.js'), read('./app.js'), read('../apps/cam-edge/src/routes.js')]);
   assert.match(script, /id="grant-owner" class="form-control bg-body-secondary mb-3" readonly/u);
   assert.doesNotMatch(script, /id="grant-recipient"/u);
-  assert.match(script, /input\('grant-total',[^\n]*readonly/u);
+  assert.match(script, /input\('grant-total',[^\n]*value="0" required/u);
+  assert.doesNotMatch(script, /input\('grant-total',[^\n]*readonly/u);
   assert.match(script, /selectedCount \* \(Number\.isSafeInteger\(perFile\)/u);
+  assert.match(script, /maxTotalSessions: Number\(\$\('#grant-total'\)\.value\)/u);
   assert.match(script, /maxSessionsPerFile: Number\(\$\('#grant-per-file'\)\.value\)/u);
   assert.match(script, /openGrant\(context\(\)\.roundId, context\(\)\.candidateId\)/u);
   assert.match(script, /roundId: grantScopeRoundId \|\| \$\('#grant-round'\)\.value \|\| null/u);
@@ -48,5 +50,5 @@ test('download grant form binds the current operator and derives its total sessi
   assert.doesNotMatch(script, /redownload-grant-list/u);
   assert.doesNotMatch(script, /测试服务器下载/u);
   assert.doesNotMatch(script, /recipientId: \$\('#grant-recipient'\)\.value/u);
-  assert.match(routes, /principalId: actor\.principalId,[\s\S]*?maxTotalSessions: Array\.isArray\(body\.candidateIds\) \? body\.candidateIds\.length \* body\.maxSessionsPerFile/u);
+  assert.match(routes, /principalId: actor\.principalId,[\s\S]*?maxTotalSessions: body\.maxTotalSessions/u);
 });
