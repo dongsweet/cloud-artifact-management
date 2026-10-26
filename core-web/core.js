@@ -299,7 +299,7 @@ function renderTransferMonitor(data) {
     const round = item.roundNo ? `第 ${item.roundNo} 轮` : '-';
     const deadline = item.status === 'WAITING_EDGE' ? item.startDeadlineAt : item.idleDeadlineAt;
     const recovery = Number(item.recoveryAttempts ?? 0) > 0 ? `<div class="small text-body-secondary">协调恢复 ${escapeHtml(item.recoveryAttempts)}${item.recoveryLimit ? ` / ${escapeHtml(item.recoveryLimit)}` : ''} 次</div>` : '';
-    return `<tr><td><div class="fw-semibold">${escapeHtml(version)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(item.requestId)}</div></td><td>${escapeHtml(round)}<div class="small text-body-secondary font-monospace">${escapeHtml(item.roundId ?? '-')}</div></td><td><code>${escapeHtml(item.transferTaskId ?? '-')}</code></td><td>${monitorStatusBadge(item.status)}${deadline ? `<div class="small text-body-secondary mt-1">${item.status === 'WAITING_EDGE' ? '开始截止' : '空闲截止'}：${escapeHtml(displayTime(deadline))}</div>` : ''}${item.lastActivityAt ? `<div class="small text-body-secondary">最后活动：${escapeHtml(displayTime(item.lastActivityAt))}</div>` : ''}</td><td>${monitorProgressText(item.summary)}</td><td>${escapeHtml(item.attempts ?? 0)}${recovery}${item.retryAt ? `<div class="small text-warning-emphasis">${escapeHtml(displayTime(item.retryAt))}</div>` : ''}</td><td>${item.lastError ? `<span class="small text-danger" title="${escapeHtml(item.lastError)}">${escapeHtml(item.lastError.length > 80 ? `${item.lastError.slice(0, 80)}…` : item.lastError)}</span>` : '-'}</td><td>${escapeHtml(displayTime(item.updatedAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button type="button" class="btn btn-outline-primary btn-sm monitor-edge-detail" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-eye me-1"></i>详情</button>${canControl && notificationRetryable ? `<button type="button" class="btn btn-outline-danger btn-sm monitor-edge-notification-retry" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-send me-1"></i>重新通知 Edge</button>` : ''}${canControl && recoverable ? `<button type="button" class="btn btn-outline-warning btn-sm monitor-edge-retry" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-arrow-repeat me-1"></i>立即恢复</button>` : ''}${canControl && fallbackRecoverable ? `<button type="button" class="btn btn-outline-danger btn-sm monitor-edge-fallback" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-life-preserver me-1"></i>兜底恢复</button>` : ''}</div></td></tr>`;
+    return `<tr><td><div class="fw-semibold">${escapeHtml(version)}</div><div class="small text-body-secondary font-monospace">${escapeHtml(item.requestId)}</div></td><td>${escapeHtml(round)}<div class="small text-body-secondary font-monospace">${escapeHtml(item.roundId ?? '-')}</div></td><td><code>${escapeHtml(item.transferTaskId ?? '-')}</code></td><td>${monitorStatusBadge(item.status)}${deadline ? `<div class="small text-body-secondary mt-1">${item.status === 'WAITING_EDGE' ? '开始截止' : '空闲截止'}：${escapeHtml(displayTime(deadline))}</div>` : ''}${item.lastActivityAt ? `<div class="small text-body-secondary">最后活动：${escapeHtml(displayTime(item.lastActivityAt))}</div>` : ''}</td><td>${monitorProgressText(item.summary)}</td><td>${escapeHtml(item.attempts ?? 0)}${recovery}${item.retryAt ? `<div class="small text-warning-emphasis">${escapeHtml(displayTime(item.retryAt))}</div>` : ''}</td><td>${item.lastError ? `<span class="small text-danger" title="${escapeHtml(item.lastError)}">${escapeHtml(item.lastError.length > 80 ? `${item.lastError.slice(0, 80)}…` : item.lastError)}</span>` : '-'}</td><td>${escapeHtml(displayTime(item.updatedAt))}</td><td class="cam-actions-cell"><div class="cam-action-buttons"><button type="button" class="btn btn-outline-primary btn-sm monitor-edge-detail" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-eye me-1"></i>详情</button>${canControl && notificationRetryable ? `<button type="button" class="btn btn-outline-danger btn-sm monitor-edge-notification-retry" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-send me-1"></i>重新通知 Edge</button>` : ''}${canControl && recoverable ? `<button type="button" class="btn btn-outline-warning btn-sm monitor-edge-retry" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-arrow-repeat me-1"></i>立即恢复</button>` : ''}${canControl && fallbackRecoverable ? `<button type="button" class="btn btn-outline-warning btn-sm monitor-edge-fallback" data-request-id="${escapeHtml(item.requestId)}"><i class="bi bi-arrow-repeat me-1"></i>重试 Edge → Core 传输</button>` : ''}</div></td></tr>`;
   }).join('') : '<tr><td colspan="9" class="text-center text-body-secondary py-4">暂无 Edge → Core 传输任务</td></tr>';
   $('#monitor-agent-rows').innerHTML = agentItems.length ? agentItems.map((task) => {
     const retryable = task.displayStatus === 'RETRY_WAIT' || (task.displayStatus === 'QUEUED' && task.lastError);
@@ -328,12 +328,12 @@ async function loadTransferMonitor() {
   catch (error) { message(error.message, 'danger'); }
 }
 async function retryEdgeTransfer(requestId, button, { fallback = false } = {}) {
-  if (fallback && !await confirmDialog({ title: '兜底恢复 Edge → Core 传输', text: '自动恢复次数已用尽。请先确认 Edge、网闸和存储故障已修复；兜底恢复只重置 Core 的协调恢复预算，并保留已接收分块和已入库制品。确认继续吗？', confirmLabel: '兜底恢复', confirmClass: 'btn-danger' })) return;
+  if (fallback && !await confirmDialog({ title: '重试 Edge → Core 传输', text: '自动恢复次数已用尽。请先确认 Edge、网闸和存储故障已修复；本次重试会保留已接收分块和已入库制品。确认继续吗？', confirmLabel: '重试', confirmClass: 'btn-warning' })) return;
   button.disabled = true;
   try {
     const result = await api(`/api/v1/approval-requests/${encodeURIComponent(requestId)}/transfer/recover`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fallback }) });
     await loadTransferMonitor();
-    message(result.idempotent ? '恢复命令已在发送或 Edge 已在处理该任务' : fallback ? '已发起兜底恢复，正在等待 Edge 确认' : '已向 Edge 下发恢复指令，正在等待确认');
+    message(result.idempotent ? '恢复命令已在发送或 Edge 已在处理该任务' : fallback ? '已发起重试，正在等待 Edge 确认' : '已向 Edge 下发恢复指令，正在等待确认');
   } catch (error) { message(error.message, 'danger'); button.disabled = false; }
 }
 async function retryEdgeNotification(requestId, button) {
@@ -465,7 +465,7 @@ function transferProgressMarkup(progress) {
   const edgeDeadlineLabel = edge.status === 'ACCEPTED' ? '等待开始截止' : '空闲截止';
   const edgeControlDetails = edge.status ? `<div class="small text-body-secondary mt-2"><span>Edge 控制状态：${escapeHtml(edgeState)}</span>${edge.lastActivityAt ? ` <span class="ms-2">最后活动：${escapeHtml(displayTime(edge.lastActivityAt))}</span>` : ''}${edgeDeadline ? ` <span class="ms-2">${edgeDeadlineLabel}：${escapeHtml(displayTime(edgeDeadline))}</span>` : ''}${Number(edge.recoveryAttempts ?? 0) > 0 ? ` <span class="ms-2">协调恢复：${escapeHtml(edge.recoveryAttempts)} 次</span>` : ''}</div>` : '';
   const edgeFailure = progress.edgeFailure;
-  const failureState = edgeFailure?.terminal ? '，已停止自动恢复，可由操作员执行兜底恢复' : edgeFailure?.status === 'RECOVERY_SENDING' ? '，Core 正在向 Edge 发送恢复命令' : edgeFailure?.status === 'RETRY_WAIT' ? '，等待 Core 自动恢复' : edgeFailure ? '，已保留最近失败原因，等待 Edge 继续' : '';
+  const failureState = edgeFailure?.terminal ? '，已停止自动恢复，可由操作员手动重试' : edgeFailure?.status === 'RECOVERY_SENDING' ? '，Core 正在向 Edge 发送恢复命令' : edgeFailure?.status === 'RETRY_WAIT' ? '，等待 Core 自动恢复' : edgeFailure ? '，已保留最近失败原因，等待 Edge 继续' : '';
   const failurePanel = edgeFailure ? `<div class="alert alert-danger py-2 mt-2 mb-0"><div><strong>Edge 传输异常${edgeFailure.code ? `（${escapeHtml(transferFailureCodeLabel(edgeFailure.code))}）` : ''}</strong>${failureState}</div><div class="text-break mt-1">${escapeHtml(edgeFailure.message)}</div><div class="small mt-1">Edge 已尝试 ${escapeHtml(edgeFailure.attempts ?? 0)} 次${Number(edgeFailure.recoveryAttempts ?? 0) > 0 ? `；协调恢复 ${escapeHtml(edgeFailure.recoveryAttempts)}${edgeFailure.recoveryLimit ? ` / ${escapeHtml(edgeFailure.recoveryLimit)}` : ''} 次` : ''}${edgeFailure.retryAt ? `；下次自动恢复：${escapeHtml(displayTime(edgeFailure.retryAt))}` : ''}</div></div>` : '';
   const storedGap = Number(summary.receivedBytes ?? 0) > Number(summary.storedBytes ?? 0);
   const storageHint = storedGap ? `<div class="small text-body-secondary mt-2"><i class="bi bi-info-circle me-1"></i>分块已接收 ${escapeHtml(formatTransferBytes(summary.receivedBytes))}，其中 ${escapeHtml(formatTransferBytes(summary.storedBytes))} 已完成组装、校验并入库；其余文件正在组装或等待校验。</div>` : '';
@@ -539,7 +539,7 @@ async function showDetail(id) {
   if (item.status === 'APPROVED' && !item.transferTaskId && item.cloudTransferTaskId && canCore('businessWrite')) actions.push('<button id="prepare-transfer-button" class="btn btn-primary"><i class="bi bi-send-check me-1"></i>准备正式制品传输</button>');
   if (item.status === 'APPROVED' && item.transferTaskId && item.transferNotificationState === 'FAILED' && canCore('businessWrite')) actions.push('<button id="edge-notification-retry-button" class="btn btn-danger"><i class="bi bi-send me-1"></i>重新通知 Edge</button>');
   if (item.status === 'APPROVED' && item.transferTaskId && item.transferEdgeStatus === 'RETRY_WAIT' && canCore('businessWrite')) actions.push('<button id="edge-transfer-retry-button" class="btn btn-warning"><i class="bi bi-arrow-repeat me-1"></i>立即恢复 Edge → Core 传输</button>');
-  if (item.status === 'APPROVED' && item.transferTaskId && item.transferEdgeStatus === 'FAILED' && item.transferEdgeFailureTerminal && canCore('businessWrite')) actions.push('<button id="edge-transfer-fallback-button" class="btn btn-danger"><i class="bi bi-life-preserver me-1"></i>兜底恢复 Edge → Core 传输</button>');
+  if (item.status === 'APPROVED' && item.transferTaskId && item.transferEdgeStatus === 'FAILED' && item.transferEdgeFailureTerminal && canCore('businessWrite')) actions.push('<button id="edge-transfer-fallback-button" class="btn btn-warning"><i class="bi bi-arrow-repeat me-1"></i>重试 Edge → Core 传输</button>');
   if (item.status === 'APPROVED' && item.transferStatus === 'RECEIVED' && canCore('businessWrite')) actions.push('<button id="close-button" class="btn btn-success">确认关单</button>');
   $('#actions').innerHTML = actions.join('');
   startDetailPolling(id);
@@ -614,18 +614,18 @@ async function showDetail(id) {
   });
   $('#edge-transfer-fallback-button')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
-    if (!await confirmDialog({ title: '兜底恢复 Edge → Core 传输', text: '自动恢复次数已用尽。请先确认 Edge、网闸和存储故障已修复；兜底恢复只重置 Core 的协调恢复预算，并保留已接收分块和已入库制品。确认继续吗？', confirmLabel: '兜底恢复', confirmClass: 'btn-danger' })) return;
+    if (!await confirmDialog({ title: '重试 Edge → Core 传输', text: '自动恢复次数已用尽。请先确认 Edge、网闸和存储故障已修复；本次重试会保留已接收分块和已入库制品。确认继续吗？', confirmLabel: '重试', confirmClass: 'btn-warning' })) return;
     button.disabled = true;
     button.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>正在请求恢复…';
     try {
       const result = await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/transfer/recover`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fallback: true }) });
       await load();
       await showDetail(id);
-      message(result.idempotent ? '恢复命令已在发送或 Edge 已在处理该传输任务' : '已发起兜底恢复，正在等待 Edge 确认');
+      message(result.idempotent ? '恢复命令已在发送或 Edge 已在处理该传输任务' : '已发起重试，正在等待 Edge 确认');
     } catch (error) {
       message(error.message, 'danger');
       button.disabled = false;
-      button.innerHTML = '<i class="bi bi-life-preserver me-1"></i>兜底恢复 Edge → Core 传输';
+      button.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>重试 Edge → Core 传输';
     }
   });
   $('#close-button')?.addEventListener('click', async () => {
