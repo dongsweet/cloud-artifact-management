@@ -94,7 +94,9 @@ chmod 600 deploy/edge.env deploy/core.env deploy/agent.env
 | 字段 | 修改要求 |
 |---|---|
 | `CAM_*_IMAGE` | 必须与本次导入镜像名和版本标签一致；仓库部署需包含仓库前缀 |
-| `CAM_*_DATA_DIR` | 设置为目标主机本地持久化路径；Edge、Core、每台 Agent 使用互不重叠的目录 |
+| `CAM_*_DATA_DIR` | 设置为目标主机本地持久化路径；Edge、Core、每台 Agent 使用互不重叠的目录。应用日志会写入对应数据目录下的 `logs/` 子目录 |
+| `CAM_LOG_MAX_BYTES` / `CAM_LOG_MAX_FILES` | 应用日志单文件大小和轮转数量，默认 `52428800` / `5`；Docker `json-file` 轮转仍独立生效 |
+| `CAM_LOG_COLLECTION_MAX_BYTES` | 单个 Agent 或 Core 日志归档的大小上限，默认 `104857600`（100 MiB） |
 | `CAM_*_WEB_PORT` / `CAM_*_API_PORT` | 有宿主机端口冲突时调整；反代入口默认绑定 `127.0.0.1` |
 | `CAM_*_WEB_BIND` / `CAM_*_API_BIND` | 有本机 HTTPS 反向代理时保持 `127.0.0.1`；确需让其他主机直连时才改成受控内网地址，并配置防火墙 |
 | `CAM_DOCKER_SUBNET` | 该 Compose 项目的 Docker 子网，模板为每个模块分配不同的 `192.168.241/242/243.0/24` 网段；部署前检查不与宿主机、VPN、业务网或其他 Docker 网络冲突，冲突时修改此值 |

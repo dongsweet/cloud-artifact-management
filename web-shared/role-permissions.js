@@ -23,6 +23,7 @@ export const EDGE_PAGE_PERMISSIONS = Object.freeze({
   'release-detail': 'candidateRead',
   'candidate-detail': 'candidateRead',
   'gate-config': 'configRead',
+  'log-collections': 'configRead',
   users: 'userAdminRead',
   grants: 'validatorRead',
   audit: 'auditRead'

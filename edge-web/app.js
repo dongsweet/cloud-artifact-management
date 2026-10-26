@@ -16,7 +16,7 @@ function showAlert(message, type = 'success') {
   window.setTimeout(() => alert.classList.add('d-none'), 5000);
 }
 
-function statusLabel(status) { return { OPEN: '开放', SEALED: '已固化封存', CREATED: '待接收', RECEIVING: '接收中', PARTIAL: '待完成', ASSEMBLING: '组装校验中', FAILED: '失败', COMPLETED: '已完成', DRAFT: '固化草稿', PENDING_APPROVAL: '等待审批', APPROVED: '审批通过，已固化', REJECTED: '审批驳回', WITHDRAWN: '已撤回', IDLE: '尚未准备传输', READY: '待发送', SENDING: '传输中', RECEIVED: '传输完成' }[status] ?? status; }
+function statusLabel(status) { return { OPEN: '开放', SEALED: '已固化封存', CREATED: '待接收', RECEIVING: '接收中', PARTIAL: '待完成', ASSEMBLING: '组装校验中', FAILED: '失败', COMPLETED: '已完成', DRAFT: '固化草稿', PENDING_APPROVAL: '等待审批', APPROVED: '审批通过，已固化', REJECTED: '审批驳回', WITHDRAWN: '已撤回', IDLE: '尚未准备传输', READY: '待发送', SENDING: '传输中', RECEIVED: '传输完成', COLLECTING: '收集中', PACKAGING: '打包中', EXPIRED: '已过期' }[status] ?? status; }
 function statusClass(status) { return { OPEN: 'text-bg-primary', SEALED: 'text-bg-success', CREATED: 'text-bg-secondary', RECEIVING: 'text-bg-info', PARTIAL: 'text-bg-warning', ASSEMBLING: 'text-bg-primary', FAILED: 'text-bg-danger', COMPLETED: 'text-bg-success', DRAFT: 'text-bg-secondary', PENDING_APPROVAL: 'text-bg-warning', APPROVED: 'text-bg-success', REJECTED: 'text-bg-danger', WITHDRAWN: 'text-bg-secondary' }[status] ?? 'text-bg-secondary'; }
 function internalDeliveryLabel(status) { return status === 'DELIVERED' ? '已进入内网，等待审批' : '正在进入内网，系统会自动重试'; }
 function queueLabel(status) { return { QUEUED: '排队中', RUNNING: '调度中', PAUSED: '已暂停', FAILED: '调度失败', CANCELLED: '已取消', COMPLETED: '已完成' }[status] ?? status; }
@@ -46,7 +46,7 @@ function routeContext() {
   const [viewPart, queryPart = ''] = window.location.hash.slice(1).split('?');
   const params = new URLSearchParams(queryPart);
   return {
-    view: ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'gate-config', 'users', 'grants', 'audit'].includes(viewPart) ? viewPart : 'products',
+    view: ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'gate-config', 'log-collections', 'users', 'grants', 'audit'].includes(viewPart) ? viewPart : 'products',
     productId: params.get('productId'),
     releaseId: params.get('releaseId'),
     roundId: params.get('roundId'),
@@ -60,7 +60,7 @@ function paramsForState(overrides = {}) {
 }
 
 function renderShell(view) {
-  const views = ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'gate-config', 'users', 'grants', 'audit'];
+  const views = ['products', 'releases', 'rounds', 'candidates', 'release-detail', 'candidate-detail', 'gate-config', 'log-collections', 'users', 'grants', 'audit'];
   views.forEach((name) => $(`#view-${name}`).classList.toggle('d-none', name !== view));
   const activeRoute = view === 'release-detail' ? 'rounds' : view === 'candidate-detail' ? 'candidates' : view;
   document.querySelectorAll('.sidebar-menu a').forEach((link) => link.classList.toggle('active', (link.dataset.route ?? link.hash.slice(1)) === activeRoute));
@@ -68,7 +68,7 @@ function renderShell(view) {
     const route = link.dataset.route ?? link.hash.slice(1);
     link.parentElement.classList.toggle('d-none', !canEdgePage(currentUser()?.roles ?? [], route));
   });
-  const titles = { products: '软件产品', releases: '发布版本', rounds: '候选轮次', candidates: '候选包文件清单', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情', 'gate-config': '网闸对接配置', users: '账号管理', grants: '下载授权', audit: '审计日志' };
+    const titles = { products: '软件产品', releases: '发布版本', rounds: '候选轮次', candidates: '候选包文件清单', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情', 'gate-config': '网闸对接配置', 'log-collections': '日志收集', users: '账号管理', grants: '下载授权', audit: '审计日志' };
   $('#page-title').textContent = titles[view] ?? '软件产品';
 }
 
@@ -169,6 +169,12 @@ async function loadGateKeys({ preserveInputs = false } = {}) {
   $('#gate-rotate-now').disabled = !item.peerTrusted;
   return item;
 }
+
+function logCollectionStatusClass(status) { return status === 'READY' ? 'text-bg-success' : status === 'FAILED' ? 'text-bg-danger' : 'text-bg-warning'; }
+function renderLogCollections(items = []) {
+  $('#log-collection-rows').innerHTML = items.length ? items.map((item) => `<tr><td>${escapeHtml(new Date(item.fromAt).toLocaleString())} 至 ${escapeHtml(new Date(item.toAt).toLocaleString())}</td><td>${escapeHtml((item.categories ?? []).join('、'))}</td><td><span class="badge ${logCollectionStatusClass(item.status)}">${escapeHtml(statusLabel(item.status))}</span>${item.lastError ? `<div class="small text-danger mt-1">${escapeHtml(item.lastError)}</div>` : ''}</td><td>${escapeHtml(new Date(item.createdAt).toLocaleString())}</td><td>${item.status === 'READY' ? `<a class="btn btn-sm btn-outline-primary" href="/api/v1/log-collections/${encodeURIComponent(item.jobId)}/download"><i class="bi bi-download me-1"></i>下载</a>` : '-'}</td></tr>`).join('') : '<tr><td colspan="5" class="text-center text-body-secondary py-4">暂无日志收集任务</td></tr>';
+}
+async function loadLogCollections() { const result = await api('/api/v1/log-collections'); renderLogCollections(result.items ?? []); }
 
 function productFilterItems(products) { return products.map((item) => ({ id: item.productId, name: item.name })); }
 function releaseLabel(item) { return `${item.productName} / ${item.displayVersion ?? (item.revision > 0 ? `${item.version}-r${item.revision}` : item.version)}`; }
@@ -787,7 +793,7 @@ async function renderRoute() {
   const generation = ++state.routeGeneration;
   const route = routeContext();
   if (!canEdgePage(currentUser().roles ?? [], route.view)) {
-    const fallback = ['products', 'gate-config', 'users', 'audit', 'grants'].find((view) => canEdgePage(currentUser().roles ?? [], view)) ?? 'products';
+    const fallback = ['products', 'gate-config', 'log-collections', 'users', 'audit', 'grants'].find((view) => canEdgePage(currentUser().roles ?? [], view)) ?? 'products';
     if (window.location.hash !== `#${fallback}`) window.location.hash = `#${fallback}`;
     return;
   }
@@ -803,6 +809,7 @@ async function renderRoute() {
     if (state.view === 'release-detail') await loadReleaseDetail(generation);
     if (state.view === 'candidate-detail') await loadCandidateDetail(generation);
     if (state.view === 'gate-config') await loadGateConfig();
+    if (state.view === 'log-collections') await loadLogCollections();
     if (generation === state.routeGeneration) renderBreadcrumb();
     if (state.view === 'release-detail' && generation === state.routeGeneration) startRoundQueuePolling();
   } catch (error) {
@@ -915,6 +922,7 @@ $('#gate-trust-peer').addEventListener('click', async (event) => {
 $('#gate-pairing-test').addEventListener('click', async (event) => { const button = event.currentTarget; const notice = $('#gate-pairing-result'); button.disabled = true; button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>测试中'; notice.className = 'alert alert-info mt-3 mb-0'; notice.textContent = '正在测试身份配对与签名认证…'; try { const result = await api('/api/v1/gate/keys/test', { method: 'POST' }); notice.className = 'alert alert-success mt-3 mb-0'; notice.textContent = `配对测试通过：本端 Edge 与对端 ${result.checks.remote.role} 均已配对，签名认证成功（${new Date().toLocaleString()}）。`; showAlert('身份配对和 Core 签名控制通道均正常'); } catch (error) { notice.className = 'alert alert-danger mt-3 mb-0'; notice.textContent = `配对测试未通过：${error.message}`; showAlert(error.message, 'danger'); } finally { await loadGateKeys({ preserveInputs: true }).catch(() => {}); button.disabled = false; button.innerHTML = '<i class="bi bi-shield-check me-1"></i>测试身份配对'; } });
 $('#gate-schedule').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/keys/schedule', { method: 'PUT', body: JSON.stringify({ rotationIntervalDays: Number($('#gate-rotation-days').value), gracePeriodHours: Number($('#gate-grace-hours').value) }) }); await loadGateKeys(); showAlert('本端身份轮换策略已保存'); } catch (error) { showAlert(error.message, 'danger'); } });
 $('#gate-rotate-now').addEventListener('click', async (event) => { const button = event.currentTarget; button.disabled = true; try { await api('/api/v1/gate/keys/rotate', { method: 'POST', body: '{}' }); await loadGateKeys(); showAlert('Edge 身份公私钥已完成轮换'); } catch (error) { showAlert(error.message, 'danger'); } finally { button.disabled = false; } });
+$('#log-collection-form').addEventListener('submit', async (event) => { event.preventDefault(); const fromAt = new Date($('#log-from').value).toISOString(); const toAt = new Date($('#log-to').value).toISOString(); const categories = [...document.querySelectorAll('[name="log-category"]:checked')].map((input) => input.value); try { await api('/api/v1/log-collections', { method: 'POST', body: JSON.stringify({ fromAt, toAt, categories, retentionDays: 7 }) }); showAlert('日志收集任务已创建，系统将在后台汇总并打包'); await loadLogCollections(); } catch (error) { showAlert(error.message, 'danger'); } });
 window.addEventListener('hashchange', renderRoute);
 
 document.querySelectorAll('[data-modal]').forEach((button) => button.addEventListener('click', async () => {
@@ -1039,4 +1047,5 @@ $('#package-form').addEventListener('submit', async (event) => {
 
 initAccountUI({ api, refresh: renderRoute, context: () => ({ ...state, confirm: confirmAction }), alert: showAlert });
 
-setInterval(() => { if (!document.hidden && !$('#view-gate-config').classList.contains('d-none') && !$('.app-wrapper').classList.contains('d-none')) void loadGateKeys({ preserveInputs: true }).catch(() => {}); }, 5000);
+const logTo = new Date(); const logFrom = new Date(logTo.getTime() - 24 * 3600_000); const localInput = (date) => { const offset = date.getTimezoneOffset() * 60_000; return new Date(date.getTime() - offset).toISOString().slice(0, 16); }; $('#log-from').value = localInput(logFrom); $('#log-to').value = localInput(logTo);
+setInterval(() => { if (document.hidden || $('.app-wrapper').classList.contains('d-none')) return; if (!$('#view-gate-config').classList.contains('d-none')) void loadGateKeys({ preserveInputs: true }).catch(() => {}); if (!$('#view-log-collections').classList.contains('d-none')) void loadLogCollections().catch(() => {}); }, 5000);

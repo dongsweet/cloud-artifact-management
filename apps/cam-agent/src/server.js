@@ -16,6 +16,7 @@ import { agentPage } from './web.js';
 import { CoreConnectionStore } from './core-connection.js';
 import { AgentDeliveryStore } from './delivery-store.js';
 import { bearerToken, parseRange } from '../../../libs/cam-transfer/src/http.js';
+import { buildLogBundle, readRuntimeLogs, sha256 } from '../../../libs/cam-server/src/log-bundle.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/agent' : join(process.cwd(), 'data', 'agent'));
 const CORE_URL = (process.env.CAM_CORE_URL ?? 'http://127.0.0.1:3102').replace(/\/$/u, '');
@@ -339,7 +340,18 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
       db.prepare('UPDATE agent_tasks SET status = ?, progress_json = ?, updated_at = ?, last_error = NULL WHERE task_id = ?').run('COMPLETED', JSON.stringify({ state: 'ready', completedFiles: task.files.length, totalFiles: task.files.length }), nowIso(), task.taskId); await update(task.taskId, { status: 'COMPLETED', progress: { state: 'ready' } });
     } catch (err) { if (err.code === 'task_paused' || err.code === 'task_cancelled') { const state = err.code === 'task_paused' ? 'PAUSED' : 'CANCELLED'; db.prepare('UPDATE agent_tasks SET status = ?, last_error = NULL, updated_at = ? WHERE task_id = ?').run(state, nowIso(), task.taskId); await update(task.taskId, { status: state, progress: { state: state.toLowerCase() } }).catch(() => {}); return; } const errorMessage = String(err.message).slice(0, 1000); if (currentFile) updateTaskFile(task.taskId, currentFile, { status: 'FAILED', lastError: errorMessage }); const remote = await update(task.taskId, { status: 'FAILED', error: errorMessage }).catch(() => null); const remoteState = ['PAUSED', 'CANCELLED'].includes(remote?.item?.status) ? remote.item.status : 'QUEUED'; db.prepare('UPDATE agent_tasks SET status = ?, last_error = ?, updated_at = ? WHERE task_id = ?').run(remoteState, remoteState === 'QUEUED' ? errorMessage : null, nowIso(), task.taskId); }
   }
-  const poll = async () => { if (running || configuring || testing) return; running = true; try { await rotation.sync(); const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST', body: '' })).json()).items ?? []; for (const task of tasks) { localTask(task); if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
+  const collectLogJobs = async () => {
+    const response = await core('/api/v1/agent/log-collections/pull', { method: 'POST', body: '' });
+    if (!response.ok) return;
+    const jobs = (await response.json()).items ?? [];
+    for (const job of jobs) {
+      const runtime = readRuntimeLogs(process.env.CAM_LOG_DIR ?? join(dataDir, 'logs'), 'cam-agent', { fromAt: job.fromAt, toAt: job.toAt, maxBytes: Number(process.env.CAM_LOG_COLLECTION_MAX_BYTES ?? 100 * 1024 * 1024) });
+      const bundle = buildLogBundle({ fromAt: job.fromAt, toAt: job.toAt, categories: job.categories, source: 'agent-aggregate', entries: [{ name: 'runtime.jsonl', data: runtime }] });
+      const uploaded = await core(`/api/v1/agent/log-collections/${encodeURIComponent(job.jobId)}`, { method: 'PUT', headers: { 'content-type': 'application/gzip', 'x-log-sha256': sha256(bundle) }, body: bundle });
+      if (!uploaded.ok) throw new Error(`Agent 日志上传失败（HTTP ${uploaded.status}）`);
+    }
+  };
+  const poll = async () => { if (running || configuring || testing) return; running = true; try { await rotation.sync(); await collectLogJobs(); const tasks = (await (await core('/api/v1/agent/tasks/pull', { method: 'POST', body: '' })).json()).items ?? []; for (const task of tasks) { localTask(task); if (db.prepare('SELECT status FROM agent_tasks WHERE task_id = ?')?.get?.(task.taskId)?.status !== 'COMPLETED') await downloadTask(task); } } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务轮询失败'); } finally { running = false; } };
   app.get('/api/v1/identity', { preHandler: requirePermission('configRead', '需要配置查看权限') }, async () => ({ agentId: rotation.status().agentId ?? null, centerId: rotation.status().policy?.centerId ?? null, agentName: rotation.status().policy?.name ?? null, publicKey: identity.publicKeyPem, fingerprint: identity.fingerprint, registered: Boolean(rotation.status().agentId), rotation: rotation.status() }));
   app.post('/api/v1/tasks/pull', { preHandler: requirePermission('businessWrite', '需要操作员权限') }, async (_request, reply) => { if (running) return reply.code(202).send({ queued: false, running: true }); queueMicrotask(() => { void poll(); }); return reply.code(202).send({ queued: true }); });
   app.get('/api/v1/available-artifacts', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (_request, reply) => {

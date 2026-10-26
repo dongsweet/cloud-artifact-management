@@ -141,7 +141,7 @@ export async function finalizeCandidate(store, candidateId) {
   return completed;
 }
 
-export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher, artifactDispatcher }) {
+export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher, artifactDispatcher, logCollections }) {
   app.addHook('preHandler', async (request, reply) => {
     const url = request.url.split('?')[0];
     const exchangePath = url === '/api/v1/gate/pairing-probe' || url === '/api/v1/gate/approval-results' || url === '/api/v1/gate/transfer-requests' || url === '/api/v1/gate/transfer-retry' || url === '/api/v1/gate/identity-rotation/proposals' || url.startsWith('/api/v1/gate/transfer/reports/');
@@ -242,6 +242,20 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     if (!request.principal?.roles?.some((role) => ['EDGE_SYSTEM_ADMIN', 'EDGE_SECURITY_ADMIN'].includes(role))) return error(reply, 403, 'admin_required', '需要外部交换区网闸配置管理员权限');
     try { return { item: await rotateIdentity() }; }
     catch (err) { return error(reply, 502, err.code ?? 'gate_identity_rotation_failed', err.message); }
+  });
+  app.get('/api/v1/log-collections', async () => ({ items: logCollections.list() }));
+  app.post('/api/v1/log-collections', { bodyLimit: 8 * 1024 }, async (request, reply) => {
+    try { return reply.code(202).send({ item: await logCollections.create({ ...request.body, requestedBy: request.principal?.id }) }); }
+    catch (err) { return error(reply, err.status ?? 400, err.code ?? 'log_collection_create_failed', err.message); }
+  });
+  app.get('/api/v1/log-collections/:jobId', async (request, reply) => {
+    const item = logCollections.get(request.params.jobId); if (!item) return error(reply, 404, 'log_collection_not_found', '日志收集任务不存在'); return reply.send({ item });
+  });
+  app.get('/api/v1/log-collections/:jobId/download', async (request, reply) => {
+    const item = logCollections.get(request.params.jobId); if (!item || item.status !== 'READY' || !item.bundlePath) return error(reply, 404, 'log_collection_not_ready', '日志归档尚未准备完成');
+    if (Date.parse(item.expiresAt) <= Date.now()) return error(reply, 410, 'log_collection_expired', '日志归档已过期');
+    try { const info = await stat(item.bundlePath); return reply.type('application/gzip').header('Content-Length', String(info.size)).header('Content-Disposition', `attachment; filename="cam-log-collection-${encodeURIComponent(item.jobId)}.tar.gz"`).header('Cache-Control', 'no-store').header('X-Log-Bundle-Sha256', item.bundleSha256).send(createReadStream(item.bundlePath)); }
+    catch { return error(reply, 404, 'log_collection_bundle_missing', '日志归档文件不存在'); }
   });
   app.post('/api/v1/gate/identity-rotation/proposals', { bodyLimit: 16 * 1024 }, async (request, reply) => {
     try { return await keyring.acceptIdentityRotation(request.body ?? {}); }

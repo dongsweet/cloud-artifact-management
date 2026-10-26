@@ -66,6 +66,7 @@ export function registerAuth(app, { auth, principalProvider, keyring, gateConfig
     if (path.startsWith('/api/v1/auth/')) return;
     let required;
     if (path === '/api/v1/auth-events') required = EDGE_PERMISSION_ROLES.auditRead;
+    else if (path === '/api/v1/log-collections' || /^\/api\/v1\/log-collections\/[^/]+$/.test(path) || /^\/api\/v1\/log-collections\/[^/]+\/download$/.test(path)) required = writing ? EDGE_PERMISSION_ROLES.configWrite : EDGE_PERMISSION_ROLES.configRead;
     else if (path.startsWith('/api/v1/users')) required = writing ? EDGE_PERMISSION_ROLES.userAdminWrite : EDGE_PERMISSION_ROLES.userAdminRead;
     else if (path === '/api/v1/gate/config' || path === '/api/v1/gate/config/test' || path === '/api/v1/gate/keys' || path === '/api/v1/gate/keys/test' || path === '/api/v1/gate/keys/trusted-peer' || path === '/api/v1/gate/keys/schedule' || path === '/api/v1/gate/keys/rotate') required = writing ? EDGE_PERMISSION_ROLES.configWrite : EDGE_PERMISSION_ROLES.configRead;
     else if (path === '/api/v1/validators') required = writing ? EDGE_PERMISSION_ROLES.validatorWrite : EDGE_PERMISSION_ROLES.validatorRead;

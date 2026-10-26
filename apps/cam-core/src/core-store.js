@@ -203,7 +203,20 @@ export class CoreStore {
       INSERT OR IGNORE INTO core_agent_rotation_policy (singleton, rotation_days, grace_hours)
       VALUES (1, COALESCE((SELECT rotation_days FROM core_agents ORDER BY created_at LIMIT 1), 90), COALESCE((SELECT grace_hours FROM core_agents ORDER BY created_at LIMIT 1), 24));
     `);
-    db.exec('CREATE TABLE IF NOT EXISTS core_agent_nonces (agent_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (agent_id, nonce))');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS core_agent_nonces (agent_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (agent_id, nonce));
+      CREATE TABLE IF NOT EXISTS core_log_collection_jobs (
+        job_id TEXT PRIMARY KEY, from_at TEXT NOT NULL, to_at TEXT NOT NULL, categories_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'COLLECTING', bundle_path TEXT, bundle_sha256 TEXT, bundle_size INTEGER,
+        last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS core_log_collection_agents (
+        job_id TEXT NOT NULL REFERENCES core_log_collection_jobs(job_id), agent_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'PENDING', bundle_path TEXT, bundle_sha256 TEXT, bundle_size INTEGER,
+        last_error TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (job_id, agent_id)
+      );
+      CREATE INDEX IF NOT EXISTS core_log_collection_jobs_status_idx ON core_log_collection_jobs(status, updated_at);
+    `);
     const distributionColumns = new Set(db.prepare('PRAGMA table_info(core_distribution_tasks)').all().map((column) => column.name));
     if (!distributionColumns.has('control_state')) db.exec("ALTER TABLE core_distribution_tasks ADD COLUMN control_state TEXT NOT NULL DEFAULT 'RUN'");
     if (!distributionColumns.has('attempts')) db.exec('ALTER TABLE core_distribution_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
@@ -257,6 +270,59 @@ export class CoreStore {
   }
   listAgents() {
     return this.db.prepare('SELECT agent_id FROM core_agents ORDER BY created_at DESC').all().map((row) => this.getAgentIdentity(row.agent_id));
+  }
+  createLogCollection({ fromAt, toAt, categories = ['runtime'], retentionDays = 7 } = {}) {
+    const from = Date.parse(fromAt); const to = Date.parse(toAt);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) throw Object.assign(new Error('日志时间范围无效'), { code: 'log_collection_range_invalid' });
+    if (to - from > 7 * 86400_000) throw Object.assign(new Error('单次日志收集时间范围不能超过 7 天'), { code: 'log_collection_range_too_large' });
+    const allowed = new Set(['runtime', 'transfer', 'error']);
+    const selected = [...new Set(Array.isArray(categories) ? categories.filter((item) => allowed.has(item)) : [])];
+    if (!selected.length) throw Object.assign(new Error('至少选择一种日志范围'), { code: 'log_collection_category_required' });
+    const timestamp = now(); const jobId = id('LOG'); const expiresAt = new Date(Date.now() + Math.max(1, Math.min(30, retentionDays)) * 86400_000).toISOString();
+    const agents = this.db.prepare("SELECT agent_id FROM core_agents WHERE status = 'ACTIVE' ORDER BY created_at").all();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('INSERT INTO core_log_collection_jobs (job_id, from_at, to_at, categories_json, status, created_at, updated_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(jobId, new Date(from).toISOString(), new Date(to).toISOString(), JSON.stringify(selected), agents.length ? 'COLLECTING' : 'PACKAGING', timestamp, timestamp, expiresAt);
+      const statement = this.db.prepare('INSERT INTO core_log_collection_agents (job_id, agent_id, status, updated_at) VALUES (?, ?, ?, ?)');
+      for (const agent of agents) statement.run(jobId, agent.agent_id, 'PENDING', timestamp);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.getLogCollection(jobId);
+  }
+  getLogCollection(jobId) {
+    const row = this.db.prepare('SELECT * FROM core_log_collection_jobs WHERE job_id = ?').get(jobId);
+    if (!row) return null;
+    const counts = this.db.prepare("SELECT count(*) AS total, sum(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completed, sum(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed FROM core_log_collection_agents WHERE job_id = ?").get(jobId);
+    return { jobId: row.job_id, fromAt: row.from_at, toAt: row.to_at, categories: JSON.parse(row.categories_json), status: row.status, bundleSha256: row.bundle_sha256, bundleSize: row.bundle_size, lastError: row.last_error, createdAt: row.created_at, updatedAt: row.updated_at, expiresAt: row.expires_at, agentTotal: counts.total ?? 0, agentCompleted: counts.completed ?? 0, agentFailed: counts.failed ?? 0 };
+  }
+  listPendingLogCollections(agentId) {
+    return this.db.prepare("SELECT j.job_id AS jobId, j.from_at AS fromAt, j.to_at AS toAt, j.categories_json AS categories FROM core_log_collection_jobs j JOIN core_log_collection_agents a ON a.job_id = j.job_id WHERE a.agent_id = ? AND a.status = 'PENDING' AND j.status IN ('COLLECTING','PACKAGING') ORDER BY j.created_at").all(agentId).map((row) => ({ ...row, categories: JSON.parse(row.categories) }));
+  }
+  saveAgentLogCollection(jobId, agentId, filePath, sha256, size) {
+    const task = this.db.prepare('SELECT status FROM core_log_collection_agents WHERE job_id = ? AND agent_id = ?').get(jobId, agentId);
+    if (!task) throw Object.assign(new Error('日志收集任务不存在或未授权'), { code: 'log_collection_not_found' });
+    if (task.status === 'COMPLETED') return this.getLogCollection(jobId);
+    const timestamp = now();
+    this.db.prepare("UPDATE core_log_collection_agents SET status = 'COMPLETED', bundle_path = ?, bundle_sha256 = ?, bundle_size = ?, last_error = NULL, updated_at = ? WHERE job_id = ? AND agent_id = ?").run(filePath, sha256, size, timestamp, jobId, agentId);
+    const pending = this.db.prepare("SELECT count(*) AS total FROM core_log_collection_agents WHERE job_id = ? AND status <> 'COMPLETED'").get(jobId).total;
+    this.db.prepare('UPDATE core_log_collection_jobs SET status = ?, updated_at = ? WHERE job_id = ?').run(pending ? 'COLLECTING' : 'PACKAGING', timestamp, jobId);
+    return this.getLogCollection(jobId);
+  }
+  listAgentLogCollectionFiles(jobId) { return this.db.prepare("SELECT agent_id AS agentId, bundle_path AS bundlePath, bundle_sha256 AS bundleSha256, bundle_size AS bundleSize FROM core_log_collection_agents WHERE job_id = ? AND status = 'COMPLETED' ORDER BY agent_id").all(jobId); }
+  setLogCollectionBundle(jobId, { status, path = null, sha256 = null, size = null, error = null } = {}) { this.db.prepare('UPDATE core_log_collection_jobs SET status = ?, bundle_path = ?, bundle_sha256 = ?, bundle_size = ?, last_error = ?, updated_at = ? WHERE job_id = ?').run(status, path, sha256, size, error, now(), jobId); return this.getLogCollection(jobId); }
+  getLogCollectionBundle(jobId) { const row = this.db.prepare("SELECT bundle_path AS path, bundle_sha256 AS sha256, bundle_size AS size, expires_at AS expiresAt FROM core_log_collection_jobs WHERE job_id = ? AND status = 'READY'").get(jobId); return row ?? null; }
+  expireLogCollections(at = now()) {
+    const rows = this.db.prepare("SELECT job_id AS jobId FROM core_log_collection_jobs WHERE expires_at <= ? AND status <> 'EXPIRED'").all(at);
+    if (!rows.length) return [];
+    const timestamp = now();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const updateJob = this.db.prepare("UPDATE core_log_collection_jobs SET status = 'EXPIRED', bundle_path = NULL, bundle_sha256 = NULL, bundle_size = NULL, updated_at = ? WHERE job_id = ?");
+      const updateAgent = this.db.prepare("UPDATE core_log_collection_agents SET status = 'EXPIRED', bundle_path = NULL, bundle_sha256 = NULL, bundle_size = NULL, updated_at = ? WHERE job_id = ?");
+      for (const row of rows) { updateJob.run(timestamp, row.jobId); updateAgent.run(timestamp, row.jobId); }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return rows.map((row) => row.jobId);
   }
   // 分发页只需要安全的业务摘要；完整身份和轮换详情继续留在配置接口。
   listDistributionAgents() {

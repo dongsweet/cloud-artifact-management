@@ -14,6 +14,8 @@ import { GateConfigStore } from '../../../libs/cam-gate/src/config.js';
 import { GateKeyring } from '../../../libs/cam-gate/src/keyring.js';
 import { createApprovalDispatcher } from './approval-dispatcher.js';
 import { createArtifactDispatcher } from './artifact-dispatcher.js';
+import { LogCollectionStore } from './log-collection-store.js';
+import { createLogCollectionDispatcher } from './log-collection-dispatcher.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/edge' : join(process.cwd(), 'data', 'edge'));
 
@@ -30,12 +32,14 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   await keyring.ready;
   const approvalDispatcher = createApprovalDispatcher({ freezes, gateConfig, keyring });
   const artifactDispatcher = createArtifactDispatcher({ freezes, candidates: store, gateConfig, keyring });
+  const logCollections = new LogCollectionStore({ db, dataDir });
+  const logCollectionDispatcher = createLogCollectionDispatcher({ store: logCollections, gateConfig, keyring, dataDir, fetchImpl });
   const app = await buildServer({
     service: 'cam-edge',
     configure: async (server) => {
       registerAuth(server, { auth, principalProvider, keyring, gateConfig, fetchImpl, secureCookies });
-      registerCandidateRoutes(server, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher, artifactDispatcher });
-      server.addHook('onClose', async () => { await artifactDispatcher.close(); await approvalDispatcher.close(); await scheduler.close(); await db.close(); });
+      registerCandidateRoutes(server, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher, artifactDispatcher, logCollections: logCollectionDispatcher });
+      server.addHook('onClose', async () => { await artifactDispatcher.close(); await approvalDispatcher.close(); await scheduler.close(); logCollectionDispatcher.close(); await db.close(); });
     }
   });
   downloadGrants.setLogger(app.log);
@@ -49,7 +53,9 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   app.decorate('gateKeyring', keyring);
   app.decorate('approvalDispatcher', approvalDispatcher);
   app.decorate('artifactDispatcher', artifactDispatcher);
+  app.decorate('logCollectionDispatcher', logCollectionDispatcher);
   queueMicrotask(() => { scheduler.start(); approvalDispatcher.start(); artifactDispatcher.start(); });
+  logCollectionDispatcher.start();
   return app;
 }
 

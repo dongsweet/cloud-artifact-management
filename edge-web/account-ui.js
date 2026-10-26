@@ -80,7 +80,7 @@ async function acceptSession(result) {
   $('#password-help').textContent = user.mustChangePassword ? '首次登录必须修改初始密码。' : '修改密码后需要重新登录。';
   $('#password-modal .btn-close').classList.toggle('d-none', Boolean(user.mustChangePassword));
   if (user.mustChangePassword) bootstrap.Modal.getOrCreateInstance($('#password-modal'), { backdrop: 'static', keyboard: false }).show();
-  else if (!canEdgePage(user.roles ?? [], context().view)) { window.location.hash = `#${['products', 'gate-config', 'users', 'audit', 'grants'].find((view) => canEdgePage(user.roles ?? [], view)) ?? 'products'}`; await refresh(); }
+  else if (!canEdgePage(user.roles ?? [], context().view)) { window.location.hash = `#${['products', 'gate-config', 'log-collections', 'users', 'audit', 'grants'].find((view) => canEdgePage(user.roles ?? [], view)) ?? 'products'}`; await refresh(); }
   else await refresh();
 }
 async function submit(form, action, id) {

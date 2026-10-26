@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { once } from 'node:events';
 import { attachmentContentType } from '../../../libs/cam-server/src/attachment-types.js';
@@ -8,6 +8,7 @@ import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
 import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/client.js';
 import { verifyRequest } from '../../../libs/cam-agent-auth/src/protocol.js';
 import { hasCorePermission } from '../../../libs/cam-auth/src/roles.js';
+import { buildCoreLogCollection, expireCoreLogCollections } from './log-collection.js';
 
 function error(reply, status, code, message) { return reply.code(status).send({ error: { code, message } }); }
 function requireCorePermission(request, reply, permission, message) {
@@ -204,6 +205,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     if (workerBusy) return;
     workerBusy = true;
     try {
+      await expireCoreLogCollections(store);
       const timestamp = Date.now();
       for (const requestId of store.listCloudPending()) void submitCloud(requestId);
       for (const requestId of store.listCloudApprovalPending()) {
@@ -220,7 +222,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   queueMicrotask(() => { void pumpWorkers(); });
   app.addHook('onClose', async () => clearInterval(cloudTimer));
   app.addHook('preHandler', async (request, reply) => {
-    const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/') || request.url === '/api/v1/gate/transfer-failures' || request.url.startsWith('/api/v1/gate/pairing-probe') || request.url.startsWith('/api/v1/gate/identity-rotation/') || ['/api/v1/gate/authenticate', '/api/v1/gate/users', '/api/v1/gate/change-password'].includes(request.url.split('?')[0]);
+    const exchangePath = request.url.startsWith('/api/v1/gate/approval-requests') || request.url.startsWith('/api/v1/gate/receipts') || request.url.startsWith('/api/v1/gate/transfers/') || request.url.startsWith('/api/v1/gate/log-collections') || request.url === '/api/v1/gate/transfer-failures' || request.url.startsWith('/api/v1/gate/pairing-probe') || request.url.startsWith('/api/v1/gate/identity-rotation/') || ['/api/v1/gate/authenticate', '/api/v1/gate/users', '/api/v1/gate/change-password'].includes(request.url.split('?')[0]);
     if (!exchangePath) return;
     const authorization = await gateAuthorized(request, keyring);
     if (authorization === 'pairing_required') return error(reply, 503, 'gate_pairing_required', 'Core 尚未完成 Edge 身份配对，暂不能接收跨区业务消息');
@@ -230,7 +232,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   const agentPrincipal = (request) => store.authenticateAgent({
     agentId: request.headers['x-cam-agent-id'], keyId: request.headers['x-cam-agent-key-id'], timestamp: request.headers['x-cam-agent-timestamp'],
     nonce: request.headers['x-cam-agent-nonce'], signature: request.headers['x-cam-agent-signature'],
-    method: request.method, path: request.url.split('?')[0], body: request.body === undefined ? '' : JSON.stringify(request.body), allowPendingIdentity: true
+    method: request.method, path: request.url.split('?')[0], body: request.body === undefined ? '' : Buffer.isBuffer(request.body) ? request.body : JSON.stringify(request.body), allowPendingIdentity: true
   });
   app.addHook('preHandler', async (request, reply) => {
     if (!request.url.startsWith('/api/v1/agent/')) return;
@@ -290,6 +292,23 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     catch (err) { return error(reply, 400, err.code ?? 'agent_rotation_failed', err.message); }
   });
   app.get('/api/v1/agent/identity', async (request) => ({ item: store.getAgentIdentity(request.agentPrincipal.agentId) }));
+  app.post('/api/v1/agent/log-collections/pull', { bodyLimit: 4096 }, async (request) => ({ items: store.listPendingLogCollections(request.agentPrincipal.agentId) }));
+  app.put('/api/v1/agent/log-collections/:jobId', { bodyLimit: Number(process.env.CAM_LOG_COLLECTION_MAX_BYTES ?? 100 * 1024 * 1024) + 1024 * 1024 }, async (request, reply) => {
+    const body = Buffer.isBuffer(request.body) ? request.body : null;
+    if (!body || !body.length) return error(reply, 400, 'log_collection_empty', '日志归档为空');
+    const declared = String(request.headers['x-log-sha256'] ?? '').toLowerCase();
+    const received = createHash('sha256').update(body).digest('hex');
+    if (!/^[a-f0-9]{64}$/u.test(declared) || declared !== received) return error(reply, 400, 'log_collection_digest_invalid', '日志归档摘要校验失败');
+    const dir = join(store.dataDir, 'log-collections', request.params.jobId, 'agents');
+    await mkdir(dir, { recursive: true, mode: 0o750 });
+    const path = join(dir, `${request.agentPrincipal.agentId}.tar.gz`);
+    const temporary = `${path}.${process.pid}.tmp`;
+    await writeFile(temporary, body, { mode: 0o640 });
+    await rename(temporary, path);
+    const item = store.saveAgentLogCollection(request.params.jobId, request.agentPrincipal.agentId, path, received, body.length);
+    if (item?.status === 'PACKAGING') queueMicrotask(() => { void buildCoreLogCollection(store, request.params.jobId).catch((err) => { app.log.error?.({ jobId: request.params.jobId, message: err.message }, 'Core 日志归档失败'); }); });
+    return reply.send({ accepted: true, item: { jobId: request.params.jobId, status: item.status } });
+  });
   app.post('/api/v1/agent/identity/confirm', { bodyLimit: 4096 }, async (request, reply) => {
     try { return { item: store.confirmAgentIdentity(request.agentPrincipal) }; }
     catch (err) { return error(reply, 409, err.code ?? 'agent_confirmation_failed', err.message); }
@@ -311,6 +330,36 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   app.post('/api/v1/agent/identity/failure', { bodyLimit: 4096 }, async (request, reply) => {
     try { return { item: store.reportAgentRotationFailure(request.agentPrincipal.agentId, request.body ?? {}) }; }
     catch (err) { return error(reply, 400, err.code ?? 'agent_rotation_report_invalid', err.message); }
+  });
+  app.post('/api/v1/gate/log-collections', { bodyLimit: 16 * 1024 }, async (request, reply) => {
+    try {
+      const item = store.createLogCollection({ fromAt: request.body?.fromAt, toAt: request.body?.toAt, categories: request.body?.categories, retentionDays: request.body?.retentionDays });
+      if (item.status === 'PACKAGING') queueMicrotask(() => { void buildCoreLogCollection(store, item.jobId).catch((err) => { app.log.error?.({ jobId: item.jobId, message: err.message }, 'Core 日志归档失败'); }); });
+      return reply.code(202).send({ item: { jobId: item.jobId, fromAt: item.fromAt, toAt: item.toAt, categories: item.categories, status: item.status, expiresAt: item.expiresAt } });
+    } catch (err) { return error(reply, 400, err.code ?? 'log_collection_create_failed', err.message); }
+  });
+  app.get('/api/v1/gate/log-collections/:jobId', async (request, reply) => {
+    const item = store.getLogCollection(request.params.jobId);
+    if (!item) return error(reply, 404, 'log_collection_not_found', '日志收集任务不存在');
+    if (item.status === 'PACKAGING' && item.agentCompleted === item.agentTotal) queueMicrotask(() => { void buildCoreLogCollection(store, item.jobId).catch((err) => { app.log.error?.({ jobId: item.jobId, message: err.message }, 'Core 日志归档失败'); }); });
+    return reply.send({ item: { jobId: item.jobId, fromAt: item.fromAt, toAt: item.toAt, categories: item.categories, status: item.status, bundleSha256: item.bundleSha256, bundleSize: item.bundleSize, lastError: item.lastError, createdAt: item.createdAt, updatedAt: item.updatedAt, expiresAt: item.expiresAt } });
+  });
+  app.get('/api/v1/gate/log-collections/:jobId/bundle', async (request, reply) => {
+    const item = store.getLogCollection(request.params.jobId); const bundle = store.getLogCollectionBundle(request.params.jobId);
+    if (!item || !bundle) return error(reply, 404, 'log_collection_not_ready', '日志归档尚未准备完成');
+    if (Date.parse(bundle.expiresAt) <= Date.now()) return error(reply, 410, 'log_collection_expired', '日志归档已过期');
+    try {
+      const info = await stat(bundle.path);
+      const rangeHeader = request.headers.range;
+      const match = typeof rangeHeader === 'string' && /^bytes=(\d+)-(\d*)$/u.exec(rangeHeader);
+      const start = match ? Number(match[1]) : 0;
+      const end = match?.[2] ? Math.min(info.size - 1, Number(match[2])) : info.size - 1;
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end || end >= info.size) return reply.code(416).header('Content-Range', `bytes */${info.size}`).send();
+      const length = end - start + 1;
+      reply.code(match ? 206 : 200).type('application/gzip').header('Accept-Ranges', 'bytes').header('Content-Length', String(length)).header('X-Log-Bundle-Sha256', bundle.sha256);
+      if (match) reply.header('Content-Range', `bytes ${start}-${end}/${info.size}`);
+      return reply.send(createReadStream(bundle.path, { start, end }));
+    } catch { return error(reply, 404, 'log_collection_bundle_missing', '日志归档文件不存在'); }
   });
   app.get('/api/v1/distribution-tasks', async (request, reply) => {
     if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
