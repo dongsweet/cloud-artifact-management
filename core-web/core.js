@@ -249,7 +249,7 @@ async function loadDistribution() {
   } catch (error) { message(error.message, 'danger'); }
 }
 const monitorStatusLabels = {
-  WAITING_AUTHORIZATION: '等待授权', WAITING_EDGE: '等待 Edge', RETRY_WAIT: '重试等待', RECEIVING: '接收中', ASSEMBLY_PENDING: '待组装', ASSEMBLING: '组装中', VERIFYING: '校验中', VERIFY_FAILED: '校验不通过', FAILED: '失败', COMPLETED: '已完成',
+  WAITING_AUTHORIZATION: '等待授权', WAITING_EDGE: '等待 Edge', RETRY_WAIT: '重试等待', RECEIVING: '接收中', ASSEMBLY_PENDING: '恢复中', ASSEMBLING: '组装中', VERIFYING: '校验中', VERIFY_FAILED: '校验不通过', FAILED: '失败', COMPLETED: '已完成',
   SCHEDULED: '已计划', QUEUED: '排队中', RUNNING: '传输中', PAUSE_REQUESTED: '等待暂停', PAUSED: '已暂停', CANCEL_REQUESTED: '等待取消', CANCELLED: '已取消'
 };
 const monitorStatusColors = { WAITING_AUTHORIZATION: 'secondary', WAITING_EDGE: 'warning', RETRY_WAIT: 'danger', RECEIVING: 'primary', ASSEMBLY_PENDING: 'warning', ASSEMBLING: 'info', VERIFYING: 'info', VERIFY_FAILED: 'danger', FAILED: 'danger', COMPLETED: 'success', SCHEDULED: 'info', QUEUED: 'warning', RUNNING: 'primary', PAUSE_REQUESTED: 'warning', PAUSED: 'secondary', CANCEL_REQUESTED: 'danger', CANCELLED: 'secondary' };
@@ -371,7 +371,7 @@ function formatTransferBytes(value) {
   return `${amount.toFixed(amount >= 100 || unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 function transferProgressLabel(status) {
-  return { WAITING_AUTHORIZATION: '等待 Core 授权', WAITING_EDGE: '等待 Edge 开始传输', RETRY_WAIT: '等待重试', FAILED: '传输失败', RECEIVING: 'Edge → Core 接收中', ASSEMBLY_PENDING: '待组装', ASSEMBLING: '组装中', VERIFYING: '校验并准备回执', VERIFY_FAILED: '校验不通过', COMPLETED: '已完成' }[status] ?? status ?? '未开始';
+  return { WAITING_AUTHORIZATION: '等待 Core 授权', WAITING_EDGE: '等待 Edge 开始传输', RETRY_WAIT: '等待重试', FAILED: '传输失败', RECEIVING: 'Edge → Core 接收中', ASSEMBLY_PENDING: '恢复中', ASSEMBLING: '组装中', VERIFYING: '校验并准备回执', VERIFY_FAILED: '校验不通过', COMPLETED: '已完成' }[status] ?? status ?? '未开始';
 }
 function transferProgressColor(status) {
   return status === 'COMPLETED' ? 'success' : status === 'FAILED' || status === 'VERIFY_FAILED' ? 'danger' : status === 'RETRY_WAIT' || status === 'WAITING_EDGE' || status === 'ASSEMBLY_PENDING' ? 'warning' : ['RECEIVING', 'ASSEMBLING', 'VERIFYING'].includes(status) ? 'primary' : 'secondary';
@@ -384,7 +384,7 @@ function transferProgressMarkup(progress) {
   const summary = progress.summary ?? {};
   const percent = Number(summary.percent ?? 0);
   const files = progress.files ?? [];
-  const fileStatus = { COMPLETED: '已入库', ASSEMBLY_PENDING: '待组装', ASSEMBLING: '组装中', VERIFYING: '校验中', VERIFY_FAILED: '校验不通过', RECEIVING: '接收中', WAITING: '待接收' };
+  const fileStatus = { COMPLETED: '已入库', ASSEMBLY_PENDING: '恢复中', ASSEMBLING: '组装中', VERIFYING: '校验中', VERIFY_FAILED: '校验不通过', RECEIVING: '接收中', WAITING: '待接收' };
   const fileColor = { COMPLETED: 'success', ASSEMBLY_PENDING: 'warning', ASSEMBLING: 'info', VERIFYING: 'info', VERIFY_FAILED: 'danger', RECEIVING: 'primary', WAITING: 'secondary' };
   const detailRows = files.length ? files.map((file) => `<tr><td><div class="fw-semibold">${escapeHtml(file.fileName)}</div><div class="small text-body-secondary">${escapeHtml(file.packageKey ?? '')}${file.reused ? ' · 本机已缓存，可复用' : ''}</div></td><td>${escapeHtml(formatTransferBytes(file.sizeBytes))}</td><td><span class="badge text-bg-${fileColor[file.status] ?? 'secondary'}">${escapeHtml(fileStatus[file.status] ?? file.status ?? '-')}</span><div class="small text-body-secondary mt-1">${file.chunkCount ? `${escapeHtml(file.receivedParts)} / ${escapeHtml(file.chunkCount)} 个分块` : (file.stored ? '完整文件' : '尚未开始')}</div>${file.lastError ? `<div class="small text-danger mt-1">${escapeHtml(file.lastError)}</div>` : ''}</td><td><div>${escapeHtml(formatTransferBytes(file.receivedBytes))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div><code class="small cam-break-anywhere">${escapeHtml(file.sha256)}</code></td></tr>`).join('') : '<tr><td colspan="4" class="text-center text-body-secondary py-3">Edge 尚未同步正式制品清单</td></tr>';
   const notification = progress.notification ?? {};
