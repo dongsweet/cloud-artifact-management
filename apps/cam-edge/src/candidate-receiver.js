@@ -54,7 +54,7 @@ async function resolveRemoteSize(url, fetchImpl) {
   return Number(match[1]);
 }
 
-export function createCandidateReceiver({ store, allowlist = parseAllowlist(), fetchImpl = globalThis.fetch, finalize = null }) {
+export function createCandidateReceiver({ store, allowlist = parseAllowlist(), allowlistProvider = null, fetchImpl = globalThis.fetch, finalize = null }) {
   const running = new Map();
   const cancelled = new Set();
   const controllers = new Map();
@@ -67,7 +67,8 @@ export function createCandidateReceiver({ store, allowlist = parseAllowlist(), f
     const promise = (async () => {
       const candidate = store.get(candidateId);
       if (!candidate) throw new Error('candidate not found');
-      if (!allowlisted(candidate.source_url, allowlist)) throw new Error('source host is not allowlisted');
+      const currentAllowlist = typeof allowlistProvider === 'function' ? allowlistProvider() : allowlist;
+      if (!allowlisted(candidate.source_url, currentAllowlist)) throw new Error('source host is not allowlisted');
       if (candidate.expected_size === 0 && candidate.chunk_count === 0) {
         store.setExpectedSize(candidateId, await resolveRemoteSize(candidate.source_url, fetchImpl));
       }

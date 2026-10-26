@@ -69,7 +69,7 @@ function renderShell(view) {
     const route = link.dataset.route ?? link.hash.slice(1);
     link.parentElement.classList.toggle('d-none', !canEdgePage(currentUser()?.roles ?? [], route));
   });
-    const titles = { products: '软件产品', releases: '发布版本', rounds: '候选轮次', candidates: '候选包文件清单', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情', 'gate-config': '网闸对接配置', 'log-collections': '日志收集', users: '账号管理', grants: '下载授权', audit: '审计日志' };
+    const titles = { products: '软件产品', releases: '发布版本', rounds: '候选轮次', candidates: '候选包文件清单', 'release-detail': '发布版本详情', 'candidate-detail': '候选包详情', 'gate-config': '对接配置', 'log-collections': '日志收集', users: '账号管理', grants: '下载授权', audit: '审计日志' };
   $('#page-title').textContent = titles[view] ?? '软件产品';
 }
 
@@ -121,11 +121,24 @@ async function getRoundsByFilter({ productId = null, releaseId = null } = {}) {
   return (await api(`/api/v1/rounds${suffix}`)).items;
 }
 
+function ensureIntegrationConfigFields() {
+  $('#gate-config-nav p').textContent = '对接配置';
+  $('#view-gate-config > .card > .card-header .card-title').textContent = '对接配置';
+  const form = $('#gate-config-form');
+  if (form.querySelector('[name="sourceAllowlist"]')) return;
+  const status = $('#gate-config-status');
+  const wrapper = document.createElement('div');
+  wrapper.className = 'col-12';
+  wrapper.innerHTML = '<hr class="my-2"><label class="form-label" for="gate-source-allowlist">可信下载来源</label><textarea id="gate-source-allowlist" name="sourceAllowlist" class="form-control font-monospace" rows="3" placeholder="每行填写一个主机名或 IP 地址"></textarea><div class="form-text">仅允许候选包从这些主机名或 IP 地址下载；支持 *.example.com 通配域名。不填写时禁止接收候选包。</div>';
+  status.parentNode.insertBefore(wrapper, status);
+}
+
 async function loadGateConfig() {
+  ensureIntegrationConfigFields();
   const form = $('#gate-config-form');
   try {
     const result = await api('/api/v1/gate/config'); const item = result.item ?? {};
-    for (const element of form.elements) if (element.name && item[element.name] !== undefined) element.value = item[element.name];
+    for (const element of form.elements) if (element.name && item[element.name] !== undefined) element.value = element.name === 'sourceAllowlist' && Array.isArray(item[element.name]) ? item[element.name].join('\n') : item[element.name];
     $('#gate-secret-status').value = result.identityConfigured ? (result.previousIdentityConfigured ? '身份已配对（旧身份过渡中）' : '身份已配对') : '尚未配对';
     $('#gate-config-status').textContent = `配置来源：${item.source === 'database' ? 'Edge 数据库' : '.env 默认值'}；映射模式固定为 mapping。`;
     await loadGateKeys();
@@ -893,7 +906,7 @@ $('#receive-button').addEventListener('click', receiveCandidate);
 $('#pause-button').addEventListener('click', pauseCandidate);
 $('#candidate-edit-button').addEventListener('click', openCandidateEditor);
 $('#candidate-delete-button').addEventListener('click', deleteCandidate);
-$('#gate-config-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/config', { method: 'PUT', body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); showAlert('网闸映射配置已保存'); await loadGateConfig(); } catch (error) { showAlert(error.message, 'danger'); } });
+$('#gate-config-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/config', { method: 'PUT', body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); showAlert('对接配置已保存'); await loadGateConfig(); } catch (error) { showAlert(error.message, 'danger'); } });
 $('#gate-test').addEventListener('click', async () => { const button = $('#gate-test'); button.disabled = true; try { const result = await api('/api/v1/gate/config/test', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData($('#gate-config-form')))) }); $('#gate-config-status').textContent = `控制通道测试成功：${Object.keys(result.checks).map((key) => `${key}=${result.checks[key].service ?? 'ready'}`).join('，')}`; showAlert('网闸映射通道测试成功'); } catch (error) { $('#gate-config-status').textContent = '映射通道测试失败，请检查网闸虚拟地址和策略。'; showAlert(error.message, 'danger'); } finally { button.disabled = false; } });
 $('#gate-copy-identity').addEventListener('click', async () => {
   const input = $('#gate-identity-bundle');

@@ -9,6 +9,7 @@ import { previewCandidateWorkbook } from './candidate-import.js';
 import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
 import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/client.js';
 import { attachmentContentType, validAttachmentFileName } from '../../../libs/cam-server/src/attachment-types.js';
+import { normalizeSourceAllowlist } from './source-config-store.js';
 
 function error(reply, statusCode, code, message) {
   return reply.code(statusCode).send({ error: { code, message } });
@@ -141,7 +142,7 @@ export async function finalizeCandidate(store, candidateId) {
   return completed;
 }
 
-export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, keyring, approvalDispatcher, artifactDispatcher, logCollections }) {
+export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, sourceConfig, keyring, approvalDispatcher, artifactDispatcher, logCollections }) {
   app.addHook('preHandler', async (request, reply) => {
     const url = request.url.split('?')[0];
     const exchangePath = url === '/api/v1/gate/pairing-probe' || url === '/api/v1/gate/approval-results' || url === '/api/v1/gate/transfer-requests' || url === '/api/v1/gate/transfer-retry' || url === '/api/v1/gate/identity-rotation/proposals' || url.startsWith('/api/v1/gate/transfer/reports/');
@@ -190,11 +191,19 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
   app.get('/api/v1/gate/config', async (request, reply) => {
     const item = gateConfig.get();
+    const source = sourceConfig.get();
     const keys = await keyring.status();
-    return reply.send({ item, identityConfigured: keys.keyConfigured, previousIdentityConfigured: Boolean(keys.previousKeyExpiresAt) });
+    return reply.send({ item: { ...item, sourceAllowlist: source.allowlist, sourceAllowlistSource: source.source }, identityConfigured: keys.keyConfigured, previousIdentityConfigured: Boolean(keys.previousKeyExpiresAt) });
   });
   app.put('/api/v1/gate/config', { bodyLimit: 8192 }, async (request, reply) => {
-    try { const item = gateConfig.save(request.body ?? {}, request.principal?.id); const keys = await keyring.status(); return reply.send({ item, identityConfigured: keys.keyConfigured, previousIdentityConfigured: Boolean(keys.previousKeyExpiresAt) }); }
+    try {
+      const input = request.body ?? {};
+      const sourceAllowlist = Object.prototype.hasOwnProperty.call(input, 'sourceAllowlist') ? normalizeSourceAllowlist(input.sourceAllowlist) : null;
+      const item = gateConfig.save(input, request.principal?.id);
+      const source = sourceAllowlist === null ? sourceConfig.get() : sourceConfig.save(sourceAllowlist, request.principal?.id);
+      const keys = await keyring.status();
+      return reply.send({ item: { ...item, sourceAllowlist: source.allowlist, sourceAllowlistSource: source.source }, identityConfigured: keys.keyConfigured, previousIdentityConfigured: Boolean(keys.previousKeyExpiresAt) });
+    }
     catch (err) { return error(reply, 400, err.code ?? 'gate_config_invalid', err.message); }
   });
   app.post('/api/v1/gate/config/test', { bodyLimit: 8192 }, async (request, reply) => {
