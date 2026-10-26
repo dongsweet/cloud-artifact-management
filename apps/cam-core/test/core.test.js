@@ -314,6 +314,9 @@ test('Core sends a signed Edge transfer retry instruction from the Core API', as
     assert.equal(app.coreStore.get(requestId).transferEdgeStatus, 'RECEIVING', 'an accepted manual retry is shown as active immediately');
     assert.equal(app.coreStore.get(requestId).transferEdgeAttempts, 0, 'manual retry starts a fresh Core attempt window');
     assert.equal(app.coreStore.get(requestId).transferEdgeLastError, '磁盘空间不足', 'the previous Edge error remains visible until a new report arrives');
+    app.coreStore.recordEdgeTransferFailure({ requestId, freezeId: requestId, transferTaskId: 'TR-TRANSFER-RETRY', manifestSha256, attempt: 1, code: 'ETIMEDOUT', message: '新的传输超时', retryAt: new Date(Date.now() + 60_000).toISOString(), terminal: false });
+    assert.equal(app.coreStore.get(requestId).transferEdgeStatus, 'RETRY_WAIT', 'the first failure of a manual retry window is accepted');
+    assert.equal(app.coreStore.get(requestId).transferEdgeAttempts, 1);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
