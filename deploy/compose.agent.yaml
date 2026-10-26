@@ -35,13 +35,37 @@ services:
       CAM_AAA_TIMEOUT_MS: ${CAM_AAA_TIMEOUT_MS:-10000}
       CAM_AAA_ALLOW_HTTP: ${CAM_AAA_ALLOW_HTTP:-false}
       CAM_AAA_SKIP_TLS_VERIFICATION: ${CAM_AAA_SKIP_TLS_VERIFICATION:-false}
-    ports:
-      - "${CAM_AGENT_API_BIND:-127.0.0.1}:${CAM_AGENT_API_PORT:-3111}:3103"
     restart: unless-stopped
     logging:
       driver: json-file
       options:
         max-size: "50m"
+        max-file: "5"
+
+  cam-agent-web:
+    image: ${CAM_AGENT_WEB_IMAGE:-cam-agent-web:1.0.0}
+    container_name: cam-agent-web
+    read_only: true
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+      - /data:size=16m,mode=0700,uid=10001,gid=10001
+      - /config:size=4m,mode=0700,uid=10001,gid=10001
+    environment:
+      CAM_AGENT_UPSTREAM: ${CAM_AGENT_UPSTREAM:-cam-agent:3103}
+    depends_on:
+      - cam-agent
+    ports:
+      - "${CAM_AGENT_WEB_BIND:-127.0.0.1}:${CAM_AGENT_WEB_PORT:-3111}:8080"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
         max-file: "5"
 
 networks:

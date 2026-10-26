@@ -44,6 +44,8 @@ docker compose --env-file deploy/.env -f compose.direct.yaml up -d --build
 
 该命令只解除 `cam-edge` 对 Hillstone 网络命名空间的依赖，不会删除业务数据目录。
 
+根目录的 `compose.yaml` / `compose.direct.yaml` 继续用于开发机和测试联调，Agent 保持页面/API 一体化并发布 3111、3112，作为兼容启动方式。正式分区部署请使用 `deploy/compose.agent.yaml`：由 `cam-agent` 提供内部 API，由 `cam-agent-web` 提供 Caddy Web 入口。
+
 测试环境复用已有 host-network Caddy 提供 HTTPS 时，`cam-edge-web` 和 `cam-core` 仅绑定宿主机
 回环地址，分别为 `127.0.0.1:8088`、`127.0.0.1:3102` 和 `127.0.0.1:8092`。将
 [`deploy/caddy-cam-sites.Caddyfile`](deploy/caddy-cam-sites.Caddyfile) 中的站点块合并进现有

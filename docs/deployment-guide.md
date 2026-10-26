@@ -8,7 +8,7 @@
 |---|---|---|---|
 | Edge | `deploy/compose.edge.yaml` | `deploy/edge.env.example` | Edge Web（默认宿主机 8088），Edge API（默认仅回环 3101） |
 | Core | `deploy/compose.core.yaml` | `deploy/core.env.example` | Core Web（默认宿主机 8092），Core API（默认仅回环 3102） |
-| Agent | `deploy/compose.agent.yaml` | `deploy/agent.env.example` | Agent Web/API（默认宿主机 3111；页面和 API 同端口） |
+| Agent | `deploy/compose.agent.yaml` | `deploy/agent.env.example` | Agent API（仅 Compose 内部 3103）+ Agent Web（默认宿主机 3111） |
 
 根目录的 `compose.yaml` 和 `compose.direct.yaml` 保留给开发、联调和测试环境。正式分区部署不要用它们，因为它们会把多个安全区组件组合到同一 Compose 网络中。
 
@@ -33,6 +33,7 @@ VERSION=1.2.0
 docker build --build-arg SERVICE=cam-edge -t cam-edge:$VERSION -f Dockerfile .
 docker build --build-arg SERVICE=cam-core -t cam-core:$VERSION -f Dockerfile .
 docker build --build-arg SERVICE=cam-agent -t cam-agent:$VERSION -f Dockerfile .
+docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-agent-web:$VERSION -f agent-web.Dockerfile .
 docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-edge-web:$VERSION -f edge-web.Dockerfile .
 docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-core-web:$VERSION -f core-web.Dockerfile .
 ```
@@ -106,7 +107,7 @@ chmod 600 deploy/edge.env deploy/core.env deploy/agent.env
 | `CAM_GATE_TLS_*` | 只有映射 HTTPS 使用私有 CA 或指定证书名时设置；CA 文件须通过只读挂载等方式提供给容器，不能仅写一个容器内不存在的路径 |
 | `CAM_CLOUD_*` | 仅 Core 使用。填写云管 API 基址、认证用户、密钥及当前环境工单字典/部门/处理人等值；密钥仅保存在 Core 的受限配置文件或后续 Core 配置管理中 |
 | `CAM_AAA_*` | Core、Agent 各自连接 AAA 时分别配置。按模块设置 API 地址、租户、认证设备和共享密钥；证书验证保持开启，不把普通用户密码放入配置文件 |
-| `CAM_AGENT_UPSTREAM` | 仅 Core Web 使用，填写从 Core Web 容器可达的 Agent 页面/API 地址。默认示例通过宿主机 `3111` 访问单台 Agent；多云中心按实际入口配置可路由的 Agent 地址或外部反代地址 |
+| `CAM_AGENT_UPSTREAM` | Core Web 或其他受控反代使用，填写从反代容器可达的 Agent Web 地址。默认示例通过宿主机 `3111` 访问单台 Agent Web；多云中心按实际入口配置可路由的 Agent Web 地址 |
 | `CAM_SOURCE_ALLOWLIST` | 仅 Edge 使用，配置允许拉取研发内网文件的来源地址/网段策略，按现网实际值收紧；不要照搬模板占位值 |
 
 业务字典、人员匹配结果、密钥轮换和网闸映射配置中，适合日常调整的内容优先使用相应管理页面；`.env` 用于部署基础参数和首次启动默认值，不作为日常业务操作界面。
@@ -146,7 +147,7 @@ docker compose --env-file deploy/core.env -f deploy/compose.core.yaml exec -it c
 
 初始口令在终端隐藏输入；登录后按要求修改密码。日常账号与角色管理由安全管理员完成。不要把账号密码写入 Compose 文件、镜像、命令行参数或版本库。
 
-Core 页面中的 Agent 功能通过 `/agent/` 反代到 `CAM_AGENT_UPSTREAM`。单机联调可把 Agent 发布端口限制在 Core 主机回环地址，使用默认 `host.docker.internal:3111`；跨主机部署时，将 Agent 的 `CAM_AGENT_API_BIND` 改为专用内网接口地址，并在 Core `.env` 中把 `CAM_AGENT_UPSTREAM` 改为该 Agent 主机的内网 DNS 名称/地址和端口。主机防火墙只允许 Core Web 主机访问 Agent 端口，并保证路由和 TLS 反代策略正确。Core 与 Agent 无须共享 Docker 网络。
+Core 页面中的 Agent 功能通过 `/agent/` 反代到 `CAM_AGENT_UPSTREAM`。单机联调可把 Agent Web 发布端口限制在 Core 主机回环地址，使用默认 `host.docker.internal:3111`；跨主机部署时，将 Agent Web 的 `CAM_AGENT_WEB_BIND` 改为专用内网接口地址，并在 Core `.env` 中把 `CAM_AGENT_UPSTREAM` 改为该 Agent Web 主机的内网 DNS 名称/地址和端口。主机防火墙只允许受控反代主机访问 Agent Web 端口；Agent API 端口 3103 不发布到宿主机。Core 与 Agent 无须共享 Docker 网络。
 
 Core 的云管、AAA 和网闸地址必须从 Core 所在网络可达。云管工单配置和 Agent/Edge 间的审批状态通过 Core 后端流程完成；不要让 Edge 直接携带云管认证信息。
 
@@ -158,7 +159,6 @@ Core 的云管、AAA 和网闸地址必须从 Core 所在网络可达。云管�
 docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml config
 docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml up -d
 docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml ps
-curl -fsS http://127.0.0.1:3111/health/ready
 curl -fsS http://127.0.0.1:3111/
 ```
 
@@ -169,7 +169,7 @@ docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml exec -it
 docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-security-admin.js
 ```
 
-Agent 的 Web 页面和 API 共用 3103 容器端口，默认发布到宿主机回环地址 3111。由云中心已有 HTTPS 反向代理发布页面；Core Web 如果需要代用户打开该 Agent 页面，必须把 `CAM_AGENT_UPSTREAM` 配置成 Core Web 可达的地址。Agent 本身直接连接 AAA；Core 负责 Agent 身份注册、授权和正式制品分发，不代理 Agent 用户登录。
+Agent 由两个容器组成：`cam-agent` 只监听 Compose 内部的 3103，负责 API、认证、任务调度、缓存和传输；`cam-agent-web` 负责 Caddy、静态入口、TLS/反向代理和外部访问，默认发布到宿主机回环地址 3111。由云中心已有 HTTPS 入口发布页面；Core Web 如果需要代用户打开该 Agent 页面，必须把 `CAM_AGENT_UPSTREAM` 配置成 Core Web 可达的 Agent Web 地址。Agent 本身直接连接 AAA；Core 负责 Agent 身份注册、授权和正式制品分发，不代理 Agent 用户登录。
 
 Core 与 Agent 完成双向服务身份配对后，再验证 Agent 在线、任务领取和文件摘要校验。若 Agent 经由外部反代连接 Core，需确保反代完整转发 Agent 身份认证请求头、响应签名头及二进制分块响应，并关闭会改变请求路径/响应正文的代理功能。
 
