@@ -1,7 +1,6 @@
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentPage } from './page.js';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputRoot = resolve(process.argv[2] ?? resolve(projectRoot, 'agent-web', 'dist'));
@@ -9,11 +8,7 @@ const assetRoot = resolve(projectRoot, 'web-shared', 'assets');
 const outputAssets = resolve(outputRoot, 'assets');
 
 await mkdir(resolve(outputAssets, 'fonts'), { recursive: true });
-const page = agentPage().replace(
-  '<script type="module" src="/assets/table-pagination.js">',
-  '<script src="/assets/download-grant-ui.js?v=20261026-shared-grant-ui"></script><script type="module" src="/assets/table-pagination.js">'
-);
-await writeFile(resolve(outputRoot, 'index.html'), page, 'utf8');
+await copyFile(resolve(projectRoot, 'agent-web', 'index.html'), resolve(outputRoot, 'index.html'));
 
 for (const file of ['bootstrap.min.css', 'bootstrap-icons.min.css', 'adminlte.min.css']) {
   await copyFile(resolve(assetRoot, file), resolve(outputAssets, file));

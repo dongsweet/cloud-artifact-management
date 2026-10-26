@@ -129,12 +129,12 @@ test('Agent account page serves the shared Core role and account presentation as
 test('Agent delivery navigation is declared in the business menu template', async () => {
   const { readFile } = await import('node:fs/promises');
   const [webSource, deliverySource] = await Promise.all([
-    readFile(new URL('../../../agent-web/page.js', import.meta.url), 'utf8'),
+    readFile(new URL('../../../agent-web/index.html', import.meta.url), 'utf8'),
     readFile(new URL('../../../agent-web/delivery.js', import.meta.url), 'utf8')
   ]);
   assert.match(webSource, /data-agent-menu-group-item="business" data-agent-permission="deliveryRead"><a href="#delivery"/);
   assert.match(webSource, /data-agent-mobile-group="business"[\s\S]*?href="#delivery"[\s\S]{0,160}下载授权/);
-  assert.match(webSource, /\$\{agentDeliverySection\(\)\}/);
+  assert.match(webSource, /<section id="page-delivery"/);
   assert.doesNotMatch(deliverySource, /businessHeader\?\.insertAdjacentHTML/);
   assert.doesNotMatch(deliverySource, /mobileBusiness\?\.insertAdjacentHTML/);
   assert.doesNotMatch(deliverySource, /document\.querySelector\('#page-tasks'\)\.insertAdjacentHTML/);

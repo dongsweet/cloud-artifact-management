@@ -140,7 +140,8 @@ cloud-artifact-management/
 │  ├─ core.js                   # 页面交互和云管审批操作
 │  └─ core.css                  # 页面定制样式
 ├─ agent-web/                   # cam-agent-web 静态页面和反向代理工程
-│  ├─ build.mjs                 # 构建时生成 Agent 静态入口和复制共享资源
+│  ├─ index.html                # Agent 静态页面入口
+│  ├─ build.mjs                 # 构建时复制页面和共享资源
 │  └─ Caddyfile                 # 静态文件服务及 Agent API 反向代理
 ├─ edge-web.Dockerfile          # Edge 管理页面静态资源和反向代理镜像
 ├─ core-web.Dockerfile          # Core 管理页面静态资源和反向代理镜像
