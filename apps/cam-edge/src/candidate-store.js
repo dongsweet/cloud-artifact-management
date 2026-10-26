@@ -444,9 +444,11 @@ export class CandidateStore {
       EXISTS (SELECT 1 FROM round_freezes pending WHERE pending.round_id IN (SELECT member.round_id FROM release_rounds member WHERE member.release_id = r.release_id) AND pending.status = 'PENDING_APPROVAL') AS approval_pending,
       base_round.round_no AS base_round_no, base_round.release_id AS base_release_id, base_release.version AS base_release_version, base_release.revision AS base_release_revision,
       (SELECT COUNT(*) FROM round_candidates rc WHERE rc.round_id = rr.round_id) AS candidate_count,
-      (SELECT COUNT(*) FROM round_candidates rc JOIN candidates c ON c.candidate_id = rc.candidate_id WHERE rc.round_id = rr.round_id AND c.status = 'COMPLETED') AS completed_candidate_count
+      (SELECT COUNT(*) FROM round_candidates rc JOIN candidates c ON c.candidate_id = rc.candidate_id WHERE rc.round_id = rr.round_id AND c.status = 'COMPLETED') AS completed_candidate_count,
+      approved_freeze.freeze_id AS approved_freeze_id
       FROM release_rounds rr JOIN releases r ON r.release_id = rr.release_id JOIN products p ON p.product_id = r.product_id
       LEFT JOIN release_rounds base_round ON base_round.round_id = rr.base_round_id LEFT JOIN releases base_release ON base_release.release_id = base_round.release_id
+      LEFT JOIN round_freezes approved_freeze ON approved_freeze.round_id = rr.round_id AND approved_freeze.status = 'APPROVED'
       WHERE rr.round_id = ?`).get(roundId);
     if (!row) return null;
     const item = {
@@ -466,16 +468,21 @@ export class CandidateStore {
       baseReleaseDisplayVersion: row.base_release_version ? (row.base_release_revision > 0 ? `${row.base_release_version}-r${row.base_release_revision}` : row.base_release_version) : null,
       releaseStatus: row.release_status,
       approvalPending: Boolean(row.approval_pending),
+      roundSealed: Boolean(row.approved_freeze_id),
       changeNote: row.change_note ?? '',
       createdBy: row.created_by ?? null,
       status: row.status,
-      // A round keeps its own lifecycle status for write guards, while the
-      // status shown to users follows the release-level approval lifecycle.
-      // Approval seals the release as a whole, so every round in that release
-      // must be shown as sealed instead of remaining misleadingly "open".
-      effectiveStatus: row.release_status === 'SEALED'
+      // Keep the release-level seal for write guards, but show which round
+      // actually produced the approved baseline. Earlier rounds are history,
+      // not independently sealed baselines.
+      supersededByRoundNo: row.release_status === 'SEALED' && !row.approved_freeze_id
+        ? this.db.prepare('SELECT MAX(round_no) AS roundNo FROM release_rounds WHERE release_id = ? AND round_no > ?').get(row.release_id, row.round_no)?.roundNo ?? null
+        : null,
+      effectiveStatus: row.approved_freeze_id
         ? 'SEALED'
-        : row.approval_pending
+        : row.release_status === 'SEALED'
+          ? 'SUPERSEDED'
+          : row.approval_pending
           ? 'PENDING_APPROVAL'
           : row.status,
       candidateCount: row.candidate_count ?? 0,

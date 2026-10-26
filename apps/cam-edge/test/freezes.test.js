@@ -82,6 +82,41 @@ test('freeze requires every candidate to have completed integrity verification',
   await app.close();
 });
 
+test('only the round that was approved is sealed; earlier rounds are marked superseded', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-round-status-'));
+  const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'operator', type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] }) });
+  try {
+    const product = (await app.inject({ method: 'POST', url: '/api/v1/products', payload: { name: 'Round status product' } })).json();
+    const release = (await app.inject({ method: 'POST', url: `/api/v1/products/${product.productId}/releases`, payload: { version: '8.0.6.2' } })).json();
+    const first = release.initialRound;
+    const candidate = (await app.inject({ method: 'POST', url: `/api/v1/rounds/${first.roundId}/candidates`, payload: { packageKey: 'core', sourceUrl: 'https://example.invalid/core.tar', fileName: 'core.tar', size: 0 } })).json();
+    const timestamp = new Date().toISOString();
+    app.candidateStore.db.prepare("UPDATE candidates SET status = 'COMPLETED', final_sha256 = ?, completed_at = ? WHERE candidate_id = ?").run('a'.repeat(64), timestamp, candidate.candidateId);
+    const second = (await app.inject({ method: 'POST', url: `/api/v1/releases/${release.releaseId}/rounds`, payload: { baseRoundId: first.roundId, changeNote: '第二轮验证修订' } })).json();
+    const freezeId = 'FREEZE-ROUND-2';
+    app.candidateStore.db.prepare(`INSERT INTO round_freezes
+      (freeze_id, round_id, status, report_title, conclusion, environment, manifest_json, manifest_sha256, submitted_by, submitted_at, created_at, updated_at)
+      VALUES (?, ?, 'APPROVED', '第二轮验证报告', 'PASS', '测试环境', ?, ?, 'validator', ?, ?, ?)`)
+      .run(freezeId, second.roundId, JSON.stringify({ items: [] }), 'b'.repeat(64), timestamp, timestamp, timestamp);
+    app.candidateStore.db.prepare("UPDATE releases SET status = 'SEALED', updated_at = ? WHERE release_id = ?").run(timestamp, release.releaseId);
+
+    const roundsResponse = await app.inject({ method: 'GET', url: `/api/v1/releases/${release.releaseId}/rounds` });
+    assert.equal(roundsResponse.statusCode, 200, roundsResponse.body);
+    const rounds = roundsResponse.json().items;
+    assert.equal(rounds.length, 2);
+    const round1 = rounds.find((round) => round.roundNo === 1);
+    const round2 = rounds.find((round) => round.roundNo === 2);
+    assert.equal(round2.effectiveStatus, 'SEALED');
+    assert.equal(round2.roundSealed, true);
+    assert.equal(round1.effectiveStatus, 'SUPERSEDED');
+    assert.equal(round1.roundSealed, false);
+    assert.equal(round1.supersededByRoundNo, 2);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('Edge accepts only authenticated, idempotent Core approval-result callbacks', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-core-result-'));
   const app = await buildEdgeApp({ dataDir, principalProvider: () => ({ id: 'test-admin', type: 'TEST_IDP', roles: ['EDGE_SYSTEM_ADMIN', 'EDGE_OPERATOR'] }) });
