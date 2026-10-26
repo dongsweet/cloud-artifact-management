@@ -217,7 +217,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || result.accepted !== true || result.requestId !== task.request_id || result.transferTaskId !== task.transfer_task_id) {
-        throw Object.assign(new Error(result.error?.message ?? `Edge 未确认接收恢复指令（HTTP ${response.status}）`), { code: result.error?.code ?? 'edge_recovery_ack_invalid' });
+        throw Object.assign(new Error(result.error?.message ?? `重试指令未送达 Edge（HTTP ${response.status}）`), { code: result.error?.code ?? 'edge_recovery_ack_invalid' });
       }
       const updated = store.markEdgeRecoveryDispatchResult(task.transfer_task_id, { ok: true, edgeState: result.status, ...config });
       return { ...updated, edgeStatus: result.status, idempotent: Boolean(result.idempotent || updated.idempotent) };
