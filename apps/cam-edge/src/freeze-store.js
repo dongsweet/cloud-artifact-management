@@ -384,6 +384,9 @@ export class FreezeStore {
   listTransferPending() {
     return this.db.prepare("SELECT * FROM round_freezes WHERE status = 'APPROVED' AND transfer_task_id IS NOT NULL AND (transfer_status IN ('READY','RECEIVED') OR (transfer_status = 'FAILED' AND transfer_retry_exhausted = 0 AND (transfer_retry_at IS NULL OR transfer_retry_at <= ?))) ORDER BY decided_at ASC").all(now()).map((row) => this.parse(row));
   }
+  listTransferFailures() {
+    return this.db.prepare("SELECT * FROM round_freezes WHERE status = 'APPROVED' AND transfer_task_id IS NOT NULL AND transfer_status = 'FAILED' AND transfer_attempts > 0 ORDER BY updated_at DESC").all().map((row) => this.parse(row));
+  }
   markTransferAttempt(freezeId) {
     this.db.prepare("UPDATE round_freezes SET transfer_status = 'SENDING', transfer_attempts = transfer_attempts + 1, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('READY','FAILED')").run(now(), freezeId);
     return this.get(freezeId);

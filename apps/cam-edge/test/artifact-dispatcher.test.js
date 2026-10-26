@@ -137,3 +137,32 @@ test('artifact dispatcher stops after retryLimit and reports the terminal error 
     assert.equal(reports.at(-1).code, 'ENOSPC');
   } finally { await dispatcher.close(); }
 });
+
+test('artifact dispatcher replays persisted failures to Core after startup', async () => {
+  const state = {
+    freezeId: 'FREEZE-RECONCILE', status: 'APPROVED', transferTaskId: 'TASK-RECONCILE',
+    manifestSha256: 'f'.repeat(64), transferStatus: 'FAILED', transferAttempts: 3,
+    transferLastError: 'The operation was aborted due to timeout', transferErrorCode: '23',
+    transferRetryAt: null, transferRetryExhausted: true
+  };
+  const reports = [];
+  const dispatcher = createArtifactDispatcher({
+    freezes: { listTransferFailures: () => [state], listTransferPending: () => [], get: () => state },
+    candidates: { get() { throw new Error('unexpected source lookup'); } },
+    gateConfig: { get: () => ({ coreControlUrl: 'http://core.example', connectTimeoutMs: 1_000, transferTimeoutMs: 1_000 }) },
+    keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
+    fetchImpl: async (url, options = {}) => {
+      reports.push({ url, payload: JSON.parse(options.body) });
+      return { ok: true, json: async () => ({ accepted: true }) };
+    },
+    logger: { warn() {} }, intervalMs: 60_000
+  });
+  try {
+    dispatcher.start();
+    for (let i = 0; i < 20 && reports.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].payload.attempt, 3);
+    assert.equal(reports[0].payload.terminal, true);
+    assert.equal(reports[0].payload.message, state.transferLastError);
+  } finally { await dispatcher.close(); }
+});

@@ -161,6 +161,27 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
     return Object.assign(new Error(body.error?.message ?? `${fallback}（HTTP ${response.status}）`), { code: body.error?.code ?? 'artifact_transfer_failed', statusCode: response.status });
   }
 
+  async function reconcileFailures() {
+    if (typeof freezes.listTransferFailures !== 'function') return;
+    let config;
+    try { config = gateConfig.get(); } catch { return; }
+    if (!config?.coreControlUrl) return;
+    for (const freeze of freezes.listTransferFailures()) {
+      if (!freeze.transferAttempts || !freeze.transferLastError) continue;
+      const error = Object.assign(new Error(freeze.transferLastError), { code: freeze.transferErrorCode ?? 'artifact_transfer_failed' });
+      try {
+        await reportFailure(freeze, error, {
+          attempt: freeze.transferAttempts,
+          retryAt: freeze.transferRetryAt,
+          terminal: Boolean(freeze.transferRetryExhausted),
+          config
+        });
+      } catch (reportError) {
+        logger.warn?.({ freezeId: freeze.freezeId, attempt: freeze.transferAttempts, code: reportError.code, message: reportError.message }, 'CAM Edge 启动时回告传输失败状态失败');
+      }
+    }
+  }
+
   async function pump() {
     if (busy || closed) return;
     busy = true;
@@ -178,6 +199,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
     if (timer || closed) return;
     timer = setInterval(() => { void pump(); }, intervalMs);
     timer.unref?.();
+    void reconcileFailures();
     void pump();
   }
 
