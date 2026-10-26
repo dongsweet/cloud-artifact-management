@@ -1204,7 +1204,12 @@ export class CoreStore {
     if (!task) throw Object.assign(new Error('传输任务不存在'), { code: 'transfer_task_not_found' });
     if (task.edge_status === 'RECEIVED') return { item: current, idempotent: true };
     const timestamp = now();
-    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RETRY_WAIT', edge_retry_at = NULL, edge_failure_terminal = 0, updated_at = ? WHERE request_id = ? AND transfer_task_id = ?").run(timestamp, requestId, current.transferTaskId);
+    // Edge has accepted the manual retry and starts the dispatcher
+    // asynchronously. Mark the task as receiving immediately so Core does not
+    // keep presenting the old failure as "waiting for retry" while Edge is
+    // already working. The previous error remains available until a new
+    // failure report or the receipt clears it.
+    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECEIVING', edge_retry_at = NULL, edge_failure_terminal = 0, updated_at = ? WHERE request_id = ? AND transfer_task_id = ?").run(timestamp, requestId, current.transferTaskId);
     return { item: this.get(requestId), idempotent: false };
   }
 
