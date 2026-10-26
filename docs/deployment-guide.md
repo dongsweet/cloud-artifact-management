@@ -106,7 +106,7 @@ chmod 600 deploy/edge.env deploy/core.env deploy/agent.env
 | `CAM_GATE_TLS_*` | 只有映射 HTTPS 使用私有 CA 或指定证书名时设置；CA 文件须通过只读挂载等方式提供给容器，不能仅写一个容器内不存在的路径 |
 | `CAM_CLOUD_*` | 仅 Core 使用。填写云管 API 基址、认证用户、密钥及当前环境工单字典/部门/处理人等值；密钥仅保存在 Core 的受限配置文件或后续 Core 配置管理中 |
 | `CAM_AAA_*` | Core、Agent 各自连接 AAA 时分别配置。按模块设置 API 地址、租户、认证设备和共享密钥；证书验证保持开启，不把普通用户密码放入配置文件 |
-| `CAM_CORE_URL` | 仅 Agent 使用，填写 Agent 所在云中心可访问的 Core 服务地址；不能填 Docker 内部的 `cam-core` 名称，除非两者确实加入了同一个受控外部网络 |
+| `CAM_CORE_URL` | 旧版本兼容变量；新部署不再由 Compose 注入。首次部署后在 Agent“Agent 接入”页面填写 Core 地址并保存到本机 SQLite |
 | `CAM_CORE_PUBLIC_KEY_B64` | 旧版本兼容变量；新部署不再配置。Core 公钥由 Agent 页面首次配对后写入 `agent.sqlite`，轮换状态也只保存在数据库和本机身份文件中 |
 | `CAM_AGENT_UPSTREAM` | 仅 Core Web 使用，填写从 Core Web 容器可达的 Agent 页面/API 地址。默认示例通过宿主机 `3111` 访问单台 Agent；多云中心按实际入口配置可路由的 Agent 地址或外部反代地址 |
 | `CAM_SOURCE_ALLOWLIST` | 仅 Edge 使用，配置允许拉取研发内网文件的来源地址/网段策略，按现网实际值收紧；不要照搬模板占位值 |
