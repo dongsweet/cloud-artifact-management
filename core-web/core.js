@@ -265,7 +265,7 @@ async function loadDistribution() {
   } catch (error) { message(error.message, 'danger'); }
 }
 const monitorStatusLabels = {
-  WAITING_AUTHORIZATION: '等待授权', WAITING_EDGE: '等待 Edge', RETRY_WAIT: '重试等待', RECEIVING: '接收中', ASSEMBLY_PENDING: '恢复组装中', ASSEMBLING: '组装中', VERIFYING: '校验中', VERIFY_FAILED: '校验不通过', FAILED: '失败', COMPLETED: '已完成',
+  WAITING_AUTHORIZATION: '等待授权', WAITING_EDGE: '等待 Edge', RETRY_WAIT: '重试等待', RECEIVING: '接收中', ASSEMBLY_PENDING: '已收齐，准备组装', ASSEMBLING: '组装中', VERIFYING: '校验中', VERIFY_FAILED: '校验不通过', FAILED: '失败', COMPLETED: '已完成',
   SCHEDULED: '已计划', QUEUED: '排队中', RUNNING: '传输中', PAUSE_REQUESTED: '等待暂停', PAUSED: '已暂停', CANCEL_REQUESTED: '等待取消', CANCELLED: '已取消'
 };
 const monitorStatusColors = { WAITING_AUTHORIZATION: 'secondary', WAITING_EDGE: 'warning', RETRY_WAIT: 'danger', RECEIVING: 'primary', ASSEMBLY_PENDING: 'warning', ASSEMBLING: 'info', VERIFYING: 'info', VERIFY_FAILED: 'danger', FAILED: 'danger', COMPLETED: 'success', SCHEDULED: 'info', QUEUED: 'warning', RUNNING: 'primary', PAUSE_REQUESTED: 'warning', PAUSED: 'secondary', CANCEL_REQUESTED: 'danger', CANCELLED: 'secondary' };
@@ -320,18 +320,29 @@ async function loadTransferMonitor() {
 }
 async function retryEdgeTransfer(requestId, button) {
   button.disabled = true;
-  try { await api(`/api/v1/approval-requests/${encodeURIComponent(requestId)}/transfer/retry`, { method: 'POST', body: '{}' }); message('已向 Edge 下发传输重试指令'); await loadTransferMonitor(); }
-  catch (error) { message(error.message, 'danger'); button.disabled = false; }
+  try {
+    await api(`/api/v1/approval-requests/${encodeURIComponent(requestId)}/transfer/retry`, { method: 'POST', body: '{}' });
+    await loadTransferMonitor();
+    message('已向 Edge 下发传输重试指令');
+  } catch (error) { message(error.message, 'danger'); button.disabled = false; }
 }
 async function controlDistributionTask(taskId, action, button) {
   button.disabled = true;
-  try { await api(`/api/v1/distribution-tasks/${encodeURIComponent(taskId)}/${action}`, { method: 'POST', body: '{}' }); message(action === 'start' ? '已将任务放入可领取队列' : '已将任务立即放回重试队列'); await loadTransferMonitor(); await loadDistribution(); }
-  catch (error) { message(error.message, 'danger'); button.disabled = false; }
+  try {
+    await api(`/api/v1/distribution-tasks/${encodeURIComponent(taskId)}/${action}`, { method: 'POST', body: '{}' });
+    await loadTransferMonitor();
+    await loadDistribution();
+    message(action === 'start' ? '已将任务放入可领取队列' : '已将任务立即放回重试队列');
+  } catch (error) { message(error.message, 'danger'); button.disabled = false; }
 }
 async function controlDistributionState(taskId, action, button) {
   if (action === 'cancel' && !await confirmDialog({ title: '取消传输任务', text: '取消后任务将停止领取，已完成的文件会保留，但任务不能继续或重试。确认取消吗？', confirmLabel: '取消任务', confirmClass: 'btn-danger' })) return;
   button.disabled = true;
-  try { await api(`/api/v1/distribution-tasks/${encodeURIComponent(taskId)}/control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }) }); message(action === 'pause' ? '已请求暂停任务' : action === 'resume' ? '任务已继续排队' : '已请求取消任务'); await loadTransferMonitor(); }
+  try {
+    await api(`/api/v1/distribution-tasks/${encodeURIComponent(taskId)}/control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }) });
+    await loadTransferMonitor();
+    message(action === 'pause' ? '已请求暂停任务' : action === 'resume' ? '任务已继续排队' : '已请求取消任务');
+  }
   catch (error) { message(error.message, 'danger'); button.disabled = false; }
 }
 async function createDistributionTask(event) {
@@ -387,7 +398,7 @@ function formatTransferBytes(value) {
   return `${amount.toFixed(amount >= 100 || unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 function transferProgressLabel(status) {
-  return { WAITING_AUTHORIZATION: '等待 Core 授权', WAITING_EDGE: '等待 Edge 开始传输', RETRY_WAIT: '等待重试', FAILED: '传输失败', RECEIVING: 'Edge → Core 接收中', ASSEMBLY_PENDING: '恢复组装中', ASSEMBLING: '组装中', VERIFYING: '校验并准备回执', VERIFY_FAILED: '校验不通过', COMPLETED: '已完成' }[status] ?? status ?? '未开始';
+  return { WAITING_AUTHORIZATION: '等待 Core 授权', WAITING_EDGE: '等待 Edge 开始传输', RETRY_WAIT: '等待重试', FAILED: '传输失败', RECEIVING: 'Edge → Core 接收中', ASSEMBLY_PENDING: '已收齐，准备组装', ASSEMBLING: '组装中', VERIFYING: '校验并准备回执', VERIFY_FAILED: '校验不通过', COMPLETED: '已完成' }[status] ?? status ?? '未开始';
 }
 function transferProgressColor(status) {
   return status === 'COMPLETED' ? 'success' : status === 'FAILED' || status === 'VERIFY_FAILED' ? 'danger' : status === 'RETRY_WAIT' || status === 'WAITING_EDGE' || status === 'ASSEMBLY_PENDING' ? 'warning' : ['RECEIVING', 'ASSEMBLING', 'VERIFYING'].includes(status) ? 'primary' : 'secondary';
@@ -400,14 +411,14 @@ function transferProgressMarkup(progress) {
   const summary = progress.summary ?? {};
   const percent = Number(summary.percent ?? 0);
   const files = progress.files ?? [];
-  const fileStatus = { COMPLETED: '已入库', ASSEMBLY_PENDING: '恢复组装中', ASSEMBLING: '组装中', VERIFYING: '校验中', VERIFY_FAILED: '校验不通过', RECEIVING: '接收中', WAITING: '待接收' };
+  const fileStatus = { COMPLETED: '已入库', ASSEMBLY_PENDING: '已收齐，准备组装', ASSEMBLING: '组装中', VERIFYING: '校验中', VERIFY_FAILED: '校验不通过', RECEIVING: '接收中', WAITING: '待接收' };
   const fileColor = { COMPLETED: 'success', ASSEMBLY_PENDING: 'warning', ASSEMBLING: 'info', VERIFYING: 'info', VERIFY_FAILED: 'danger', RECEIVING: 'primary', WAITING: 'secondary' };
   const detailRows = files.length ? files.map((file) => {
     const receivedChunks = file.chunkCount ? `${escapeHtml(file.receivedParts)} / ${escapeHtml(file.chunkCount)} 个分块` : (file.stored ? '完整文件' : '尚未开始');
     const assemblyProgress = file.status === 'ASSEMBLY_PENDING'
       ? '<div class="small text-warning-emphasis mt-1">分块已齐，等待 Core 组装</div>'
       : file.status === 'ASSEMBLING'
-        ? `<div class="small text-info-emphasis mt-1">恢复进度：${escapeHtml(file.assemblyParts ?? 0)} / ${escapeHtml(file.chunkCount ?? 0)} 个分块 · ${escapeHtml(formatTransferBytes(file.assemblyBytes ?? 0))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div>`
+        ? `<div class="small text-info-emphasis mt-1">组装进度：${escapeHtml(file.assemblyParts ?? 0)} / ${escapeHtml(file.chunkCount ?? 0)} 个分块 · ${escapeHtml(formatTransferBytes(file.assemblyBytes ?? 0))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div>`
         : file.status === 'VERIFYING' ? '<div class="small text-info-emphasis mt-1">完整文件已组装，正在校验</div>' : '';
     const error = file.lastError ? `<div class="small text-danger mt-1">${escapeHtml(file.lastError)}</div>` : '';
     return `<tr><td><div class="fw-semibold">${escapeHtml(file.fileName)}</div><div class="small text-body-secondary">${escapeHtml(file.packageKey ?? '')}${file.reused ? ' · 本机已缓存，可复用' : ''}</div></td><td>${escapeHtml(formatTransferBytes(file.sizeBytes))}</td><td><span class="badge text-bg-${fileColor[file.status] ?? 'secondary'}">${escapeHtml(fileStatus[file.status] ?? file.status ?? '-')}</span><div class="small text-body-secondary mt-1">${receivedChunks}</div>${assemblyProgress}${error}</td><td><div>${escapeHtml(formatTransferBytes(file.receivedBytes))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div><code class="small cam-break-anywhere">${escapeHtml(file.sha256)}</code></td></tr>`;
@@ -417,7 +428,7 @@ function transferProgressMarkup(progress) {
   const edgeFailure = progress.edgeFailure;
   const failurePanel = edgeFailure ? `<div class="alert alert-danger py-2 mt-2 mb-0"><div><strong>Edge 传输失败${edgeFailure.code ? `（${escapeHtml(transferFailureCodeLabel(edgeFailure.code))}）` : ''}</strong>${edgeFailure.status === 'RECEIVING' ? '，已重新发起传输' : edgeFailure.status === 'RETRY_WAIT' && !edgeFailure.retryAt ? '，已请求 Core 重试' : edgeFailure.terminal ? '，已停止自动重试' : '，等待自动重试'}</div><div class="text-break mt-1">${escapeHtml(edgeFailure.message)}</div><div class="small mt-1">已尝试 ${escapeHtml(edgeFailure.attempts ?? 0)} 次${edgeFailure.retryAt ? `；下次重试：${escapeHtml(displayTime(edgeFailure.retryAt))}` : ''}</div></div>` : '';
   const storedGap = Number(summary.receivedBytes ?? 0) > Number(summary.storedBytes ?? 0);
-  const storageHint = storedGap ? `<div class="small text-body-secondary mt-2"><i class="bi bi-info-circle me-1"></i>分块已接收 ${escapeHtml(formatTransferBytes(summary.receivedBytes))}，其中 ${escapeHtml(formatTransferBytes(summary.storedBytes))} 已完成组装、校验并入库；其余文件正在恢复组装或等待校验。</div>` : '';
+  const storageHint = storedGap ? `<div class="small text-body-secondary mt-2"><i class="bi bi-info-circle me-1"></i>分块已接收 ${escapeHtml(formatTransferBytes(summary.receivedBytes))}，其中 ${escapeHtml(formatTransferBytes(summary.storedBytes))} 已完成组装、校验并入库；其余文件正在组装或等待校验。</div>` : '';
   return `<div class="cam-transfer-progress-summary"><div class="cam-transfer-progress-stat"><span>已入库文件</span><strong>${escapeHtml(summary.completedFiles ?? 0)} / ${escapeHtml(summary.fileCount ?? 0)}</strong></div><div class="cam-transfer-progress-stat"><span>已接收字节</span><strong>${escapeHtml(formatTransferBytes(summary.receivedBytes))} / ${escapeHtml(formatTransferBytes(summary.totalBytes))}</strong></div><div class="cam-transfer-progress-stat"><span>验证报告</span><strong>${progress.report?.received ? '已接收' : '待接收'}</strong></div><div class="cam-transfer-progress-stat"><span>任务通知</span><strong>${escapeHtml(notificationText)}</strong></div></div><div class="progress cam-transfer-progress-bar" role="progressbar" aria-label="Edge 到 Core 制品入库进度" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar progress-bar-striped ${['RECEIVING', 'ASSEMBLY_PENDING', 'ASSEMBLING', 'VERIFYING'].includes(progress.status) ? 'progress-bar-animated' : ''}" style="width:${percent}%">${percent}%</div></div>${storageHint}<div class="d-flex justify-content-between align-items-center small text-body-secondary mt-2"><span><span class="badge text-bg-${transferProgressColor(progress.status)}">${escapeHtml(transferProgressLabel(progress.status))}</span>${progress.transferTaskId ? ` <code>${escapeHtml(progress.transferTaskId)}</code>` : ''}</span><span>${escapeHtml(progress.updatedAt ? displayTime(progress.updatedAt) : '-')}</span></div>${failurePanel}<details class="cam-transfer-files" data-detail-key="transfer-files"><summary><i class="bi bi-chevron-right me-2"></i>文件与分块明细</summary><div class="table-responsive mt-2"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>文件</th><th>大小</th><th>状态 / 分块</th><th>已接收 / SHA-256</th></tr></thead><tbody>${detailRows}</tbody></table></div></details>`;
 }
 async function showDetail(id) {
@@ -502,9 +513,9 @@ async function showDetail(id) {
     button.textContent = '正在提交…';
     try {
       const result = await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/retry`, { method: 'POST', body: '{}' });
-      message(result.inProgress ? '云管提交已在处理中' : '已触发云管提交重试');
       await load();
       await showDetail(id);
+      message(result.inProgress ? '云管提交已在处理中' : '已触发云管提交重试');
     } catch (error) {
       message(error.message, 'danger');
       button.disabled = false;
@@ -512,14 +523,14 @@ async function showDetail(id) {
     }
   });
   $('#sync-button')?.addEventListener('click', async () => {
-    try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/sync`, { method: 'POST' }); message('已同步云管状态'); await load(); await showDetail(id); }
+    try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/sync`, { method: 'POST' }); await load(); await showDetail(id); message('已同步云管状态'); }
     catch (error) { message(error.message, 'danger'); }
   });
   $('#withdraw-button')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
     if (!await confirmDialog({ title: '撤回固化申请', text: '撤回只改变 Core 本地审批状态，不会调用云管撤回接口；撤回后 Core 不再提交或查询该云管流程。确认撤回吗？', confirmLabel: '撤回申请', confirmClass: 'btn-danger' })) return;
     button.disabled = true;
-    try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/withdraw`, { method: 'POST', body: '{}' }); message('固化申请已撤回，Core 将不再处理云管流程'); await load(); await showDetail(id); }
+    try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/withdraw`, { method: 'POST', body: '{}' }); await load(); await showDetail(id); message('固化申请已撤回，Core 将不再处理云管流程'); }
     catch (error) { message(error.message, 'danger'); button.disabled = false; }
   });
   $('#prepare-transfer-button')?.addEventListener('click', async (event) => {
@@ -530,9 +541,9 @@ async function showDetail(id) {
       await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/transfer-authorize`, {
         method: 'POST', body: JSON.stringify({ manifestSha256: item.manifestSha256, transferTaskId: item.cloudTransferTaskId })
       });
-      message('已准备正式制品传输。传输任务已绑定获批清单，等待网闸发送与接收回执。');
       await load();
       await showDetail(id);
+      message('已准备正式制品传输。传输任务已绑定获批清单，等待网闸发送与接收回执。');
     } catch (error) {
       message(error.message, 'danger');
       button.disabled = false;
@@ -545,9 +556,9 @@ async function showDetail(id) {
     button.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>正在请求 Edge 重试…';
     try {
       const result = await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/transfer/retry`, { method: 'POST', body: '{}' });
-      message(result.idempotent ? 'Edge 已在处理该传输任务' : '已通知 Edge 重试 Edge → Core 传输');
       await load();
       await showDetail(id);
+       message(result.idempotent ? 'Edge 已在处理该传输任务' : '已通知 Edge 重试 Edge → Core 传输');
     } catch (error) {
       message(error.message, 'danger');
       button.disabled = false;
@@ -556,7 +567,7 @@ async function showDetail(id) {
   });
   $('#close-button')?.addEventListener('click', async () => {
     if (!await confirmDialog({ title: '确认关单', text: '确认将该审批工单关单？', confirmLabel: '确认关单', confirmClass: 'btn-success' })) return;
-    try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/close`, { method: 'POST', body: '{}' }); message('已完成关单'); await load(); await showDetail(id); }
+    try { await api(`/api/v1/approval-requests/${encodeURIComponent(id)}/close`, { method: 'POST', body: '{}' }); await load(); await showDetail(id); message('已完成关单'); }
     catch (error) { message(error.message, 'danger'); }
   });
 }

@@ -25,13 +25,14 @@ test('Core approval details keep the primary workflow visible and the file list 
   assert.match(script, /transfer-progress/u);
   assert.match(script, /Edge → Core 接收进度/u);
   assert.match(script, /文件与分块明细/u);
-  assert.match(script, /ASSEMBLY_PENDING: '恢复组装中'/u);
+  assert.match(script, /ASSEMBLY_PENDING: '已收齐，准备组装'/u);
   assert.match(script, /ASSEMBLING: '组装中'/u);
   assert.match(script, /VERIFY_FAILED: '校验不通过'/u);
   assert.match(script, /已入库文件/u);
   assert.match(script, /正式制品未全部入库/u);
   assert.match(script, /分块已齐，等待 Core 组装/u);
-  assert.match(script, /恢复进度/u);
+  assert.match(script, /组装进度/u);
+  assert.doesNotMatch(script, /恢复组装中|恢复进度/u);
   assert.match(script, /startDetailPolling/u);
   assert.match(script, /detailPollTimer/u);
   assert.match(script, /detail.*addEventListener\('close', stopDetailPolling/u);
@@ -39,6 +40,8 @@ test('Core approval details keep the primary workflow visible and the file list 
   assert.doesNotMatch(transferPanel, /Edge 最近错误|transferEdgeLastError|Edge 传输失败/u);
   assert.match(script, /edge-transfer-retry-button/u);
   assert.match(script, /approval-requests\/\$\{encodeURIComponent\(id\)\}\/transfer\/retry/u);
+  assert.match(script, /await load\(\);\s*await showDetail\(id\);\s*message\(result\.idempotent/u);
+  assert.match(script, /await loadTransferMonitor\(\);\s*message\('已向 Edge 下发传输重试指令'/u);
   assert.match(css, /\.cam-detail-advanced > summary \{[\s\S]*?cursor: pointer/u);
   assert.match(css, /\.cam-transfer-progress-summary/u);
 });
