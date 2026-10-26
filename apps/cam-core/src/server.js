@@ -1,3 +1,4 @@
+import { access } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildServer } from '../../../libs/cam-server/src/server.js';
@@ -16,8 +17,10 @@ const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'prod
 
 export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = new CloudAdapter(), enableAuth = true, enableKeyRotation = process.env.NODE_ENV === 'production', cloudRetryDelayMs, cloudStatusPollMs, approvalResultRetryBaseMs, workerIntervalMs, fetchImpl = fetch, aaaAdapter = undefined } = {}) {
   const db = await openDatabase(join(dataDir, 'core.sqlite'));
-  const agentServiceIdentity = await loadAgentServiceIdentity(join(dataDir, 'core-agent-identity.json'));
   const agentServiceIdentityPath = join(dataDir, 'core-agent-identity.json');
+  let agentServiceIdentityCreatedAtStartup = false;
+  try { await access(agentServiceIdentityPath); } catch (error) { if (error.code === 'ENOENT') agentServiceIdentityCreatedAtStartup = true; else throw error; }
+  const agentServiceIdentity = await loadAgentServiceIdentity(agentServiceIdentityPath);
   const store = new CoreStore(db, { dataDir });
   let cancelRotationDeadline;
   let rotationActivation;
@@ -59,7 +62,7 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
   const app = await buildServer({
     service: 'cam-core',
     configure: async (server) => {
-      registerCoreRoutes(server, { store, cloud: cloudAdapter, gateConfig, keyring, agentServiceIdentity, agentServiceIdentityPath, rotateAgentServiceIdentity: async () => { const next = await rotateAgentServiceIdentity(agentServiceIdentityPath, agentServiceIdentity); Object.assign(agentServiceIdentity, next); return { publicKey: next.publicKeyPem, fingerprint: next.fingerprint, previousPublicKey: next.previousPublicKeyPem, previousFingerprint: next.previousFingerprint, previousKeyExpiresAt: next.previousKeyExpiresAt }; }, stageAgentServiceIdentityRotation: async () => { const policy = store.getAgentRotationPolicy(); const pendingIdentity = await stageAgentServiceIdentityRotation(agentServiceIdentityPath, agentServiceIdentity, policy.graceHours); const status = store.getCoreIdentityRotationStatus(pendingIdentity.rotationId); if (!status.total) { await activatePendingIdentity({ pending: 0 }); return { pending: false, publicKey: agentServiceIdentity.publicKeyPem, fingerprint: agentServiceIdentity.fingerprint, skippedAgentCount: 0 }; } scheduleRotationDeadline(server.log); return { pending: status.pending, pendingRotation: true, rotationId: pendingIdentity.rotationId, publicKey: pendingIdentity.publicKeyPem, fingerprint: pendingIdentity.fingerprint, activationDeadlineAt: new Date(pendingDeadline(pendingIdentity)).toISOString(), graceHours: pendingIdentity.graceHours ?? policy.graceHours, ...status }; }, activateStagedAgentServiceIdentity: activatePendingIdentity, enableKeyRotation, cloudRetryDelayMs, cloudStatusPollMs, approvalResultRetryBaseMs, workerIntervalMs, fetchImpl });
+      registerCoreRoutes(server, { store, cloud: cloudAdapter, gateConfig, keyring, agentServiceIdentity, agentServiceIdentityPath, agentServiceIdentityCreatedAtStartup, rotateAgentServiceIdentity: async () => { const next = await rotateAgentServiceIdentity(agentServiceIdentityPath, agentServiceIdentity); Object.assign(agentServiceIdentity, next); return { publicKey: next.publicKeyPem, fingerprint: next.fingerprint, previousPublicKey: next.previousPublicKeyPem, previousFingerprint: next.previousFingerprint, previousKeyExpiresAt: next.previousKeyExpiresAt }; }, stageAgentServiceIdentityRotation: async () => { const policy = store.getAgentRotationPolicy(); const pendingIdentity = await stageAgentServiceIdentityRotation(agentServiceIdentityPath, agentServiceIdentity, policy.graceHours); const status = store.getCoreIdentityRotationStatus(pendingIdentity.rotationId); if (!status.total) { await activatePendingIdentity({ pending: 0 }); return { pending: false, publicKey: agentServiceIdentity.publicKeyPem, fingerprint: agentServiceIdentity.fingerprint, skippedAgentCount: 0 }; } scheduleRotationDeadline(server.log); return { pending: status.pending, pendingRotation: true, rotationId: pendingIdentity.rotationId, publicKey: pendingIdentity.publicKeyPem, fingerprint: pendingIdentity.fingerprint, activationDeadlineAt: new Date(pendingDeadline(pendingIdentity)).toISOString(), graceHours: pendingIdentity.graceHours ?? policy.graceHours, ...status }; }, activateStagedAgentServiceIdentity: activatePendingIdentity, enableKeyRotation, cloudRetryDelayMs, cloudStatusPollMs, approvalResultRetryBaseMs, workerIntervalMs, fetchImpl });
       scheduleRotationDeadline(server.log);
       server.addHook('onSend', async (request, reply, payload) => {
         if (!request.url.startsWith('/api/v1/agent/')) return payload;

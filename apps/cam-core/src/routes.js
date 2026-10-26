@@ -44,7 +44,7 @@ async function rotateEdgeKey({ keyring, gateConfig, fetchImpl = fetch }) {
   return keyring.activateIdentityRotation(receipt);
 }
 
-export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, agentServiceIdentity, agentServiceIdentityPath = null, rotateAgentServiceIdentity, stageAgentServiceIdentityRotation, activateStagedAgentServiceIdentity, enableKeyRotation = false, cloudRetryDelayMs = 30_000, cloudStatusPollMs = 30_000, approvalResultRetryBaseMs = 5_000, workerIntervalMs = 5_000, fetchImpl = fetch }) {
+export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, agentServiceIdentity, agentServiceIdentityPath = null, agentServiceIdentityCreatedAtStartup = false, rotateAgentServiceIdentity, stageAgentServiceIdentityRotation, activateStagedAgentServiceIdentity, enableKeyRotation = false, cloudRetryDelayMs = 30_000, cloudStatusPollMs = 30_000, approvalResultRetryBaseMs = 5_000, workerIntervalMs = 5_000, fetchImpl = fetch }) {
   let rotationInFlight;
   const rotateKey = () => {
     if (rotationInFlight) return rotationInFlight;
@@ -255,7 +255,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     const pendingIdentity = agentServiceIdentity?.pendingIdentity;
     let fileStatus = 'unknown';
     if (agentServiceIdentityPath) { try { await stat(agentServiceIdentityPath); fileStatus = 'available'; } catch (error) { if (error.code === 'ENOENT') fileStatus = 'missing'; else fileStatus = 'unreadable'; } }
-    return { publicKey: agentServiceIdentity?.publicKeyPem ?? null, fingerprint: agentServiceIdentity?.fingerprint ?? null, previousPublicKey: agentServiceIdentity?.previousPublicKeyPem ?? null, previousFingerprint: agentServiceIdentity?.previousFingerprint ?? null, lastRotationSkippedAgentCount: agentServiceIdentity?.lastRotationSkippedAgentCount ?? 0, agentRotationPolicy: store.getAgentRotationPolicy(), identityFile: { status: fileStatus, path: agentServiceIdentityPath ? '[Core 数据目录]/core-agent-identity.json' : null }, pendingRotation: pendingIdentity ? { rotationId: pendingIdentity.rotationId, publicKey: pendingIdentity.publicKeyPem, fingerprint: pendingIdentity.fingerprint, activationDeadlineAt: pendingIdentity.activationDeadlineAt ?? null, graceHours: pendingIdentity.graceHours ?? store.getAgentRotationPolicy().graceHours, ...store.getCoreIdentityRotationStatus(pendingIdentity.rotationId) } : null };
+    return { publicKey: agentServiceIdentity?.publicKeyPem ?? null, fingerprint: agentServiceIdentity?.fingerprint ?? null, previousPublicKey: agentServiceIdentity?.previousPublicKeyPem ?? null, previousFingerprint: agentServiceIdentity?.previousFingerprint ?? null, lastRotationSkippedAgentCount: agentServiceIdentity?.lastRotationSkippedAgentCount ?? 0, agentRotationPolicy: store.getAgentRotationPolicy(), identityFile: { status: fileStatus, generatedAtStartup: agentServiceIdentityCreatedAtStartup, path: agentServiceIdentityPath ? '[Core 数据目录]/core-agent-identity.json' : null }, pendingRotation: pendingIdentity ? { rotationId: pendingIdentity.rotationId, publicKey: pendingIdentity.publicKeyPem, fingerprint: pendingIdentity.fingerprint, activationDeadlineAt: pendingIdentity.activationDeadlineAt ?? null, graceHours: pendingIdentity.graceHours ?? store.getAgentRotationPolicy().graceHours, ...store.getCoreIdentityRotationStatus(pendingIdentity.rotationId) } : null };
   });
   app.put('/api/v1/agent-rotation-policy', { bodyLimit: 4096 }, async (request, reply) => {
     if (requireCorePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
