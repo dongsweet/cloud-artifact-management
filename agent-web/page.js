@@ -1,7 +1,7 @@
-import { coreConnectionCard, coreConnectionScript } from './core-connection-web.js';
-import { agentDeliverySection, agentDeliveryScript } from './delivery-web.js';
-import { agentAccountAdminSection, agentAccountAdminScript } from './account-admin-web.js';
-import { auditEventsMarkup } from '../../../web-shared/audit-events.js';
+import { coreConnectionCard, coreConnectionScript } from './core-connection.js';
+import { agentDeliverySection, agentDeliveryScript } from './delivery.js';
+import { agentAccountAdminSection, agentAccountAdminScript } from './account-admin.js';
+import { auditEventsMarkup } from '../web-shared/audit-events.js';
 
 export function agentPage() {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CAM Agent · 制品缓存</title><link rel="stylesheet" href="assets/bootstrap.min.css"><link rel="stylesheet" href="assets/bootstrap-icons.min.css"><link rel="stylesheet" href="assets/adminlte.min.css"><link rel="stylesheet" href="assets/layout.css?v=20261026-detail-modal"><link rel="stylesheet" href="assets/transfer-file-table.css?v=20261026-transfer-file-table"><link rel="stylesheet" href="assets/role-display.css?v=20261023-account-roles"><style>

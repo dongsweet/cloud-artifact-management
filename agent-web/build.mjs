@@ -1,7 +1,7 @@
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentPage } from '../apps/cam-agent/src/web.js';
+import { agentPage } from './page.js';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputRoot = resolve(process.argv[2] ?? resolve(projectRoot, 'agent-web', 'dist'));

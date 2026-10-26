@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { agentPage } from '../src/web.js';
+import { agentPage } from '../../../agent-web/page.js';
 
 const source = (path) => new URL(path, import.meta.url);
 

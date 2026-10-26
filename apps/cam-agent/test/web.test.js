@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { agentPage } from '../src/web.js';
+import { agentPage } from '../../../agent-web/page.js';
 
 test('Agent identity page makes trust direction and Core-owned rotation policy explicit', () => {
   const html = agentPage();
@@ -129,8 +129,8 @@ test('Agent account page serves the shared Core role and account presentation as
 test('Agent delivery navigation is declared in the business menu template', async () => {
   const { readFile } = await import('node:fs/promises');
   const [webSource, deliverySource] = await Promise.all([
-    readFile(new URL('../src/web.js', import.meta.url), 'utf8'),
-    readFile(new URL('../src/delivery-web.js', import.meta.url), 'utf8')
+    readFile(new URL('../../../agent-web/page.js', import.meta.url), 'utf8'),
+    readFile(new URL('../../../agent-web/delivery.js', import.meta.url), 'utf8')
   ]);
   assert.match(webSource, /data-agent-menu-group-item="business" data-agent-permission="deliveryRead"><a href="#delivery"/);
   assert.match(webSource, /data-agent-mobile-group="business"[\s\S]*?href="#delivery"[\s\S]{0,160}下载授权/);

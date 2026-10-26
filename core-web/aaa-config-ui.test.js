@@ -6,7 +6,7 @@ const read = (name) => readFile(new URL(name, import.meta.url), 'utf8');
 
 test('Core and Agent use a single AAA config UI module', async () => {
   const [coreScript, sharedUi, coreCss, agentScript] = await Promise.all([
-    read('./core.js'), read('../web-shared/aaa-config.js'), read('./core.css'), read('../apps/cam-agent/src/web.js')
+    read('./core.js'), read('../web-shared/aaa-config.js'), read('./core.css'), read('../agent-web/page.js')
   ]);
   assert.match(coreScript, /mountAaaConfig\(/u);
   assert.match(agentScript, /mountAaaConfig\(/u);

@@ -5,7 +5,7 @@ WORKDIR /build
 COPY apps ./apps
 COPY libs ./libs
 COPY web-shared ./web-shared
-COPY agent-web/build.mjs ./agent-web/build.mjs
+COPY agent-web ./agent-web
 RUN node agent-web/build.mjs /out
 
 FROM ${CADDY_BASE_IMAGE}
