@@ -202,6 +202,7 @@ test('Edge accepts transfer retry only as a signed Core instruction', async () =
     assert.equal(accepted.statusCode, 202, accepted.body);
     assert.deepEqual(accepted.json(), { accepted: true, requestId: freezeId, transferTaskId, status: 'QUEUED', idempotent: false });
     assert.ok(['READY', 'SENDING', 'FAILED'].includes(app.freezeStore.get(freezeId).transferStatus));
+    assert.ok(app.freezeStore.get(freezeId).transferAttempts <= 1, 'manual retry starts a fresh automatic retry window');
     assert.notEqual(app.freezeStore.get(freezeId).transferLastError, '磁盘空间不足', 'a new attempt clears the previous Edge error before reporting a new result');
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });

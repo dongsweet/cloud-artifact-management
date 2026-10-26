@@ -394,7 +394,11 @@ export class FreezeStore {
     return this.get(freezeId);
   }
   resetTransfer(freezeId) {
-    this.db.prepare("UPDATE round_freezes SET transfer_status = 'READY', transfer_last_error = NULL, transfer_error_code = NULL, transfer_retry_at = ?, transfer_retry_exhausted = 0, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('FAILED','SENDING')").run(now(), now(), freezeId);
+    // A manual retry starts a fresh retry window.  The previous failure is
+    // already reported to Core; reset the counter used by this Edge retry
+    // cycle, otherwise an exhausted task would fail terminally again on its
+    // very first manual retry.
+    this.db.prepare("UPDATE round_freezes SET transfer_status = 'READY', transfer_attempts = 0, transfer_last_error = NULL, transfer_error_code = NULL, transfer_retry_at = ?, transfer_retry_exhausted = 0, updated_at = ? WHERE freeze_id = ? AND status = 'APPROVED' AND transfer_status IN ('FAILED','SENDING')").run(now(), now(), freezeId);
     return this.get(freezeId);
   }
   markTransferFailure(freezeId, error, { retryAt = null, exhausted = false } = {}) {
