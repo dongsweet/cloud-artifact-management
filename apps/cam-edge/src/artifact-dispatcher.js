@@ -133,6 +133,22 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
         const response = await request(`${base}${path}/manifest`, config);
         return { response, body: await response.json().catch(() => ({})) };
       };
+      const waitForCoreAssembly = async (item) => {
+        const pollMs = Math.max(250, Number(config.transferAssemblyPollMs ?? 2_000));
+        const timeoutMs = Math.max(30_000, Number(config.transferAssemblyTimeoutMs ?? 30 * 60_000));
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          const { response, body } = await readManifest();
+          if (!response.ok) throw Object.assign(new Error(body.error?.message ?? `读取 Core 文件校验状态失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'transfer_manifest_failed' });
+          if (body.requestId !== freeze.freezeId || body.transferTaskId !== freeze.transferTaskId || body.manifestSha256 !== freeze.manifestSha256 || !Array.isArray(body.items)) throw Object.assign(new Error('Core 返回的文件校验状态与 Edge 审批记录不一致'), { code: 'transfer_manifest_mismatch' });
+          const current = body.items.find((entry) => String(entry.actualSha256 ?? '').toLowerCase() === String(item.actualSha256 ?? '').toLowerCase());
+          if (!current) throw Object.assign(new Error(`Core 返回的清单缺少文件：${item.fileName}`), { code: 'transfer_manifest_mismatch' });
+          if (current.stored === true) return current;
+          if (current.assemblyStatus === 'VERIFY_FAILED') throw Object.assign(new Error(current.lastError ?? `Core 文件校验不通过：${item.fileName}`), { code: current.errorCode ?? 'artifact_assembly_failed' });
+          await new Promise((resolve) => setTimeout(resolve, pollMs));
+        }
+        throw Object.assign(new Error(`等待 Core 完成文件组装校验超时：${item.fileName}`), { code: 'transfer_assembly_timeout' });
+      };
       let { response: manifestResponse, body: manifestBody } = await readManifest();
       if (!manifestResponse.ok) throw Object.assign(new Error(manifestBody.error?.message ?? `读取 Core 获批清单失败（HTTP ${manifestResponse.status}）`), { code: manifestBody.error?.code ?? 'transfer_manifest_failed' });
       if (manifestBody.requestId !== freeze.freezeId || manifestBody.transferTaskId !== freeze.transferTaskId || manifestBody.manifestSha256 !== freeze.manifestSha256 || !Array.isArray(manifestBody.items)) throw Object.assign(new Error('Core 返回的清单与 Edge 审批记录不一致'), { code: 'transfer_manifest_mismatch' });
@@ -156,6 +172,12 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
         const sha256 = String(item.actualSha256 ?? '').toLowerCase();
         if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(item.sizeBytes) || item.sizeBytes < 0) throw Object.assign(new Error('获批清单包含无效的文件摘要或大小'), { code: 'transfer_manifest_invalid' });
         if (sent.has(sha256) || item.stored) { sent.add(sha256); continue; }
+        const count = item.sizeBytes === 0 ? 1 : Math.ceil(item.sizeBytes / chunkSize);
+        if (item.sizeBytes > 0 && Array.isArray(item.receivedParts) && item.receivedParts.length >= count) {
+          await waitForCoreAssembly(item);
+          sent.add(sha256);
+          continue;
+        }
         const candidate = candidates.get(item.candidateId);
         if (!candidate || candidate.status !== 'COMPLETED' || !candidate.source_path || candidate.final_sha256?.toLowerCase() !== sha256 || candidate.expected_size !== item.sizeBytes) throw Object.assign(new Error(`Edge 找不到已校验的源文件：${item.fileName}`), { code: 'transfer_source_missing' });
         const info = await stat(candidate.source_path);
@@ -172,6 +194,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
         } else {
           const count = Math.ceil(item.sizeBytes / chunkSize);
           const receivedParts = new Set(Array.isArray(item.receivedParts) ? item.receivedParts : []);
+          let assemblyPending = false;
           for (let index = 0; index < count; index += 1) {
             if (receivedParts.has(index)) continue;
             const offset = index * chunkSize;
@@ -190,8 +213,11 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
               }
             });
             if (!response.ok) throw await responseError(response, `制品 ${item.fileName} 第 ${index + 1}/${count} 块上传失败`);
+            const responseBody = await response.json().catch(() => ({}));
+            assemblyPending = assemblyPending || responseBody.assemblyPending === true;
             reportStateLater(freeze, 'PROGRESS', { attempt, config });
           }
+          if (assemblyPending) await waitForCoreAssembly(item);
         }
         sent.add(sha256);
       }

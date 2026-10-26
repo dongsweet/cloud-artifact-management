@@ -49,6 +49,52 @@ test('artifact dispatcher skips stored objects, resumes missing chunks and submi
   }
 });
 
+test('artifact dispatcher waits for Core assembly before starting the next file', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cam-transfer-assembly-'));
+  const sourcePath = join(dir, 'artifact.bin');
+  const bytes = Buffer.from('assembly must be acknowledged');
+  await writeFile(sourcePath, bytes);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const state = { freezeId: 'FREEZE-ASSEMBLY', status: 'APPROVED', transferTaskId: 'TASK-ASSEMBLY', manifestSha256: 'a'.repeat(64), transferStatus: 'READY', transferAttempts: 0 };
+  const freezes = {
+    get: () => state,
+    listTransferPending: () => [state],
+    markTransferAttempt: () => { state.transferStatus = 'SENDING'; state.transferAttempts += 1; },
+    markTransferSuccess: () => { state.transferStatus = 'RECEIVED'; },
+    markTransferFailure: (_id, error) => { state.transferStatus = 'FAILED'; state.transferLastError = error.message; }
+  };
+  const calls = [];
+  let stored = false;
+  const dispatcher = createArtifactDispatcher({
+    freezes,
+    candidates: { get: () => ({ status: 'COMPLETED', source_path: sourcePath, final_sha256: sha256, expected_size: bytes.length }) },
+    gateConfig: { get: () => ({ coreTransferUrl: 'http://core.example', transferTimeoutMs: 1_000, transferAssemblyPollMs: 1, chunkSizeBytes: 1024 * 1024 }) },
+    keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith('/manifest')) return { ok: true, json: async () => ({ requestId: state.freezeId, transferTaskId: state.transferTaskId, manifestSha256: state.manifestSha256, items: [{ candidateId: 'C1', fileName: 'artifact.bin', sizeBytes: bytes.length, actualSha256: sha256, stored }] }) };
+      if (url.includes('/parts/')) {
+        stored = true;
+        return { ok: true, json: async () => ({ assemblyPending: true }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+    logger: { warn() {} }
+  });
+  try {
+    await dispatcher.deliver(state.freezeId);
+    assert.equal(state.transferStatus, 'RECEIVED');
+    const partIndex = calls.findIndex(({ url }) => url.includes('/parts/'));
+    const manifestAfterPart = calls.findIndex(({ url }, index) => index > partIndex && url.endsWith('/manifest'));
+    assert.ok(partIndex >= 0);
+    assert.ok(manifestAfterPart > partIndex, 'Edge must query Core assembly status after the last chunk');
+    assert.match(calls.at(-1).url, /\/receipts$/u);
+  } finally {
+    await dispatcher.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('artifact dispatcher sends independent transfer heartbeats while a request is still running', async () => {
   const state = { freezeId: 'FREEZE-HEARTBEAT', status: 'APPROVED', transferTaskId: 'TASK-HEARTBEAT', manifestSha256: 'h'.repeat(64), transferStatus: 'READY', transferAttempts: 0 };
   const reports = [];

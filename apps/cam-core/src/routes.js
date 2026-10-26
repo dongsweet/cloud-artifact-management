@@ -622,11 +622,14 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   app.get('/api/v1/gate/transfers/:transferTaskId/manifest', async (request, reply) => {
     try {
       const transfer = store.expectedTransferArtifacts(request.params.transferTaskId);
-      const reconciliation = await store.reconcileTransferParts(request.params.transferTaskId);
-      const partsByDigest = new Map();
-      const failedAssembly = new Set((reconciliation.errors ?? []).map((item) => item.sha256));
-      for (const digest of new Set(transfer.items.map((item) => String(item.actualSha256 ?? '').toLowerCase()))) partsByDigest.set(digest, failedAssembly.has(digest) ? [] : store.listTransferParts(request.params.transferTaskId, digest).map((part) => part.partIndex));
-      return reply.send({ transferTaskId: request.params.transferTaskId, requestId: transfer.requestId, manifestSha256: transfer.manifestSha256, items: transfer.items.map((item) => ({ ...item, stored: Boolean(store.artifactPath(String(item.actualSha256 ?? '').toLowerCase())), receivedParts: partsByDigest.get(String(item.actualSha256 ?? '').toLowerCase()) ?? [] })) });
+      // Manifest reads are also used by Edge while it waits for Core to
+      // assemble the file whose final chunk was just accepted.  Reconcile in
+      // the background so this control request remains fast and does not turn
+      // local assembly into a data-plane timeout.
+      void store.reconcileTransferParts(request.params.transferTaskId, { wait: false }).catch((err) => {
+        app.log.warn?.({ transferTaskId: request.params.transferTaskId, code: err.code, message: err.message }, 'CAM Core 后台组装校验失败');
+      });
+      return reply.send({ transferTaskId: request.params.transferTaskId, requestId: transfer.requestId, manifestSha256: transfer.manifestSha256, items: store.transferManifestItems(request.params.transferTaskId) });
     } catch (err) { return error(reply, err.code === 'approval_required' ? 409 : 400, err.code ?? 'artifact_manifest_invalid', err.message); }
   });
 
@@ -696,16 +699,29 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
       output.end();
       await once(output, 'close');
       if (bytes !== size) throw Object.assign(new Error('分块内容大小与声明不一致'), { code: 'artifact_chunk_invalid' });
+      const declaredChunkSha256 = String(request.headers['x-cam-chunk-sha256'] ?? '').toLowerCase();
+      const receivedChunkSha256 = hash.digest('hex');
+      if (!/^[a-f0-9]{64}$/.test(declaredChunkSha256) || receivedChunkSha256 !== declaredChunkSha256) {
+        throw Object.assign(new Error('制品分块 SHA-256 与 Edge 声明不一致'), { code: 'artifact_chunk_integrity_failed' });
+      }
       const saved = await store.saveTransferPart(request.params.transferTaskId, sha256, {
-        index, chunkSize, chunkCount, offset, size, sha256: hash.digest('hex'), temporaryPath: temporary
+        index, chunkSize, chunkCount, offset, size, sha256: receivedChunkSha256, temporaryPath: temporary
       }, gateConfig.get());
       temporary = null;
-      const assembled = saved.complete ? await store.assembleTransferParts(request.params.transferTaskId, sha256) : null;
-      return reply.send({ transferTaskId: request.params.transferTaskId, sha256, ...saved, assembled });
+      if (saved.complete) {
+        // A final chunk only means that Core has received the complete set of
+        // chunks.  Do not hold the upload request open while assembling and
+        // hashing a large file; Edge will poll the manifest before sending the
+        // next file.
+        void store.assembleTransferParts(request.params.transferTaskId, sha256).catch((err) => {
+          app.log.warn?.({ transferTaskId: request.params.transferTaskId, sha256, code: err.code, message: err.message }, 'CAM Core 文件组装校验失败');
+        });
+      }
+      return reply.send({ transferTaskId: request.params.transferTaskId, sha256, ...saved, assemblyPending: saved.complete, assemblyStatus: saved.complete ? 'ASSEMBLY_PENDING' : null });
     } catch (err) {
       output?.destroy();
       if (temporary) await rm(temporary, { force: true });
-      const status = ['approval_required', 'artifact_not_approved', 'artifact_integrity_failed', 'artifact_chunk_invalid', 'artifact_chunk_conflict', 'artifact_chunk_incomplete'].includes(err.code) ? 409 : 400;
+      const status = ['approval_required', 'artifact_not_approved', 'artifact_integrity_failed', 'artifact_chunk_integrity_failed', 'artifact_chunk_invalid', 'artifact_chunk_conflict', 'artifact_chunk_incomplete'].includes(err.code) ? 409 : 400;
       return error(reply, status, err.code ?? 'artifact_chunk_receive_failed', err.message);
     }
   });

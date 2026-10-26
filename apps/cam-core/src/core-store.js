@@ -857,7 +857,7 @@ export class CoreStore {
   clearTransferFileState(transferTaskId, sha256) {
     this.db.prepare('DELETE FROM core_transfer_file_states WHERE transfer_task_id = ? AND sha256 = ?').run(transferTaskId, String(sha256).toLowerCase());
   }
-  async reconcileTransferParts(transferTaskId) {
+  async reconcileTransferParts(transferTaskId, { wait = true } = {}) {
     const transfer = this.expectedTransferArtifacts(transferTaskId);
     const errors = [];
     const assembled = [];
@@ -872,8 +872,16 @@ export class CoreStore {
         continue;
       }
       try {
-        const result = await this.assembleTransferParts(transferTaskId, sha256);
-        if (result.complete) assembled.push(sha256);
+        const operation = this.assembleTransferParts(transferTaskId, sha256);
+        if (wait) {
+          const result = await operation;
+          if (result.complete) assembled.push(sha256);
+        } else {
+          // The data-plane request must not remain open while Core assembles a
+          // potentially multi-gigabyte file.  The caller can observe the
+          // ASSEMBLING/VERIFYING state through the manifest endpoint.
+          void operation.catch(() => {});
+        }
       } catch (error) {
         errors.push({ sha256, code: error.code ?? 'artifact_assembly_failed', message: error.message });
       }
@@ -895,6 +903,34 @@ export class CoreStore {
       }
     }
     return results;
+  }
+  transferManifestItems(transferTaskId) {
+    const transfer = this.expectedTransferArtifacts(transferTaskId);
+    const statusByDigest = new Map();
+    for (const item of transfer.items) {
+      const sha256 = String(item.actualSha256 ?? '').toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(sha256) || statusByDigest.has(sha256)) continue;
+      const stored = Boolean(this.artifactPath(sha256));
+      const parts = stored ? [] : this.listTransferParts(transferTaskId, sha256);
+      const state = this.getTransferFileState(transferTaskId, sha256);
+      const chunkCount = parts[0]?.chunkCount ?? null;
+      const receivedParts = stored ? [] : parts.map((part) => part.partIndex);
+      statusByDigest.set(sha256, {
+        stored,
+        receivedParts,
+        assemblyStatus: stored ? 'COMPLETED' : state?.status ?? (chunkCount && receivedParts.length === chunkCount ? 'ASSEMBLY_PENDING' : null),
+        assemblyBytes: state?.assemblyBytes ?? 0,
+        assemblyParts: state?.assemblyParts ?? 0,
+        errorCode: state?.errorCode ?? null,
+        lastError: state?.lastError ?? null
+      });
+    }
+    return transfer.items.map((item) => ({
+      ...item,
+      ...(statusByDigest.get(String(item.actualSha256 ?? '').toLowerCase()) ?? {
+        stored: false, receivedParts: [], assemblyStatus: null, assemblyBytes: 0, assemblyParts: 0, errorCode: null, lastError: null
+      })
+    }));
   }
   getTransferProgress(requestId, { recoveryLimit = null } = {}) {
     const current = this.get(requestId);

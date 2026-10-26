@@ -559,6 +559,32 @@ test('Core distinguishes complete chunks waiting for assembly from an active rec
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
 
+test('Core rejects a chunk whose body SHA-256 differs from the Edge declaration', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-chunk-digest-'));
+  const bytes = Buffer.from('chunk digest must match');
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const manifest = { schemaVersion: 1, items: [{ packageKey: 'digest', candidateId: 'CAND-DIGEST', fileName: 'digest.bin', sizeBytes: bytes.length, actualSha256: sha256, source: 'OWNED' }] };
+  const manifestSha256 = createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
+  const app = await buildCoreApp({ dataDir, enableAuth: false });
+  await trustTestPeer(app.gateKeyring, dataDir, 'edge');
+  const requestId = 'FREEZE-CHUNK-DIGEST';
+  try {
+    app.coreStore.receiveApproval({ ...envelope, requestId, freezeId: requestId, manifestSha256, manifest });
+    app.coreStore.applyCloudStatus(requestId, { approvalId: 'APR-CHUNK-DIGEST', status: 'APPROVED', transferTaskId: 'TR-CHUNK-DIGEST', manifestSha256 });
+    app.coreStore.authorizeTransfer(requestId, { manifestSha256, transferTaskId: 'TR-CHUNK-DIGEST' });
+    const path = `/api/v1/gate/transfers/TR-CHUNK-DIGEST/artifacts/${sha256}/parts/0`;
+    const wrongDigest = '0'.repeat(64);
+    const headers = await signedTestHeaders(app.gateKeyring, 'PUT', path, bytes, {
+      'content-type': 'application/octet-stream', 'content-length': String(bytes.length),
+      'x-cam-chunk-size': String(bytes.length), 'x-cam-chunk-count': '1', 'x-cam-chunk-offset': '0', 'x-cam-chunk-sha256': wrongDigest
+    });
+    const response = await app.inject({ method: 'PUT', url: path, headers, payload: bytes });
+    assert.equal(response.statusCode, 409, response.body);
+    assert.equal(response.json().error.code, 'artifact_chunk_integrity_failed');
+    assert.deepEqual(app.coreStore.listTransferParts('TR-CHUNK-DIGEST', sha256), []);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('Core serializes direct and recovery assembly for the same file', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-transfer-assembly-lock-'));
   const bytes = Buffer.from('assembly-lock-12');
