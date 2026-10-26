@@ -1207,13 +1207,12 @@ export class CoreStore {
     // Edge has accepted the manual retry and starts the dispatcher
     // asynchronously. Mark the task as receiving immediately so Core does not
     // keep presenting the old failure as "waiting for retry" while Edge is
-    // already working. The previous error remains available until a new
-    // failure report or the receipt clears it.
+    // already working. Clear the old failure because it belongs to the
+    // previous retry window; a new failure report will create a new panel.
     // The Edge starts a fresh retry window as well.  Reset Core's monotonic
     // attempt guard so the next failure report (attempt 1) is not mistaken
-    // for a stale report from the exhausted previous window.  Keep the last
-    // error text until the next chunk or failure report for diagnostics.
-    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECEIVING', edge_attempts = 0, edge_retry_at = NULL, edge_failure_terminal = 0, updated_at = ? WHERE request_id = ? AND transfer_task_id = ?").run(timestamp, requestId, current.transferTaskId);
+    // for a stale report from the exhausted previous window.
+    this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECEIVING', edge_attempts = 0, edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE request_id = ? AND transfer_task_id = ?").run(timestamp, requestId, current.transferTaskId);
     return { item: this.get(requestId), idempotent: false };
   }
 

@@ -163,6 +163,7 @@ test('artifact dispatcher replays persisted failures to Core after startup', asy
     assert.equal(reports.length, 1);
     assert.equal(reports[0].payload.attempt, 3);
     assert.equal(reports[0].payload.terminal, true);
+    assert.equal(reports[0].payload.code, 'ETIMEDOUT');
     assert.equal(reports[0].payload.message, state.transferLastError);
   } finally { await dispatcher.close(); }
 });

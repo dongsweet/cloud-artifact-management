@@ -3,6 +3,9 @@ import { stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 
 const retryDelay = (attempt) => Math.min(300_000, 5_000 * (2 ** Math.min(Math.max(attempt - 1, 0), 6)));
+const errorCode = (error) => error?.name === 'TimeoutError' || error?.code === 23 || error?.code === '23'
+  ? 'ETIMEDOUT'
+  : error?.code ? String(error.code).slice(0, 128) : 'artifact_transfer_failed';
 
 export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyring, fetchImpl = fetch, logger = console, intervalMs = 5_000 }) {
   let timer = null;
@@ -34,7 +37,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
       transferTaskId: freeze.transferTaskId,
       manifestSha256: freeze.manifestSha256,
       attempt,
-      code: error?.code ? String(error.code).slice(0, 128) : 'artifact_transfer_failed',
+      code: errorCode(error),
       message: String(error?.message ?? error).slice(0, 1000),
       retryAt: retryAt ?? null,
       terminal: Boolean(terminal),
