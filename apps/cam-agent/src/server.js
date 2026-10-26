@@ -245,7 +245,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
       await rotation.sync({ ignoreBackoff: true });
       return { ok: true, item: coreConnection.markTest('PASSED') };
     } catch (err) {
-      coreConnection.markTest('FAILED');
+      coreConnection.markTest('FAILED', err.message ?? err.code ?? 'Core 配对失败');
       return fail(reply, err.status ?? 502, err.code ?? 'core_connection_test_failed', err.message);
     } finally { testing = false; }
   });

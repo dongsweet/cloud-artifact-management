@@ -25,7 +25,7 @@ export class CoreConnectionStore {
       previousPublicKey: defaults.previousPublicKey ? normalizeKey(defaults.previousPublicKey, 'Core 过渡公钥') : '',
       previousPublicKeyExpiresAt: defaults.previousPublicKeyExpiresAt ?? '',
       coreIdentityRotationId: null,
-      lastTestAt: null, lastTestState: 'NOT_TESTED'
+      lastTestAt: null, lastTestState: 'NOT_TESTED', lastError: null
     };
   }
   get() {
@@ -53,7 +53,7 @@ export class CoreConnectionStore {
     if (!previousPublicKey) previousPublicKeyExpiresAt = '';
     if (previousPublicKey && !previousPublicKeyExpiresAt) throw Object.assign(new Error('配置旧 Core 公钥时必须设置过期时间'), { code: 'core_previous_key_expiry_required' });
     if (previousPublicKeyExpiresAt && !Number.isFinite(Date.parse(previousPublicKeyExpiresAt))) throw Object.assign(new Error('Core 旧公钥过期时间无效'), { code: 'core_previous_key_expiry_invalid' });
-    const next = { coreUrl, corePublicKey, previousPublicKey, previousPublicKeyExpiresAt, coreIdentityRotationId: null, lastTestAt: null, lastTestState: 'NOT_TESTED' };
+    const next = { coreUrl, corePublicKey, previousPublicKey, previousPublicKeyExpiresAt, coreIdentityRotationId: null, lastTestAt: null, lastTestState: 'NOT_TESTED', lastError: null };
     const timestamp = new Date().toISOString();
     const upsert = this.db.prepare('INSERT INTO agent_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at');
     this.db.exec('BEGIN IMMEDIATE');
@@ -77,7 +77,8 @@ export class CoreConnectionStore {
       previousPublicKeyExpiresAt: new Date(Date.now() + graceHours * 3600_000).toISOString(),
       coreIdentityRotationId: rotationId,
       lastTestAt: null,
-      lastTestState: 'NOT_TESTED'
+      lastTestState: 'NOT_TESTED',
+      lastError: null
     };
     const timestamp = new Date().toISOString();
     const upsert = this.db.prepare('INSERT INTO agent_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at');
@@ -94,9 +95,9 @@ export class CoreConnectionStore {
     this.db.prepare('INSERT INTO agent_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at').run('coreIdentityRotationId', JSON.stringify(null), timestamp);
     return this.get();
   }
-  markTest(state) {
+  markTest(state, error = null) {
     const timestamp = new Date().toISOString();
-    for (const [key, value] of Object.entries({ lastTestAt: timestamp, lastTestState: state })) this.db.prepare('INSERT INTO agent_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at').run(key, JSON.stringify(value), timestamp);
+    for (const [key, value] of Object.entries({ lastTestAt: timestamp, lastTestState: state, lastError: error ? String(error).slice(0, 1000) : null })) this.db.prepare('INSERT INTO agent_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at').run(key, JSON.stringify(value), timestamp);
     return this.get();
   }
 }
