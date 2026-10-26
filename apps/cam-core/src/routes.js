@@ -695,6 +695,8 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
 
   app.get('/api/v1/approval-requests/:requestId/transfer-progress', async (request, reply) => {
     if (requireCorePermission(request, reply, 'businessRead', '需要正式制品业务查看权限')) return;
+    const current = store.get(request.params.requestId);
+    if (current?.transferTaskId) void store.reconcileTransferParts(current.transferTaskId).catch(() => {});
     const item = store.getTransferProgress(request.params.requestId);
     return item ? reply.send({ item }) : error(reply, 404, 'request_not_found', 'approval request not found');
   });
