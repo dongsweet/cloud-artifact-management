@@ -121,6 +121,8 @@ test('Agent account page serves the shared Core role and account presentation as
   const sharedLayout = await readFile(resolve(process.cwd(), 'web-shared/layout.css'), 'utf8');
   assert.match(sharedLayout, /\.cam-account-modal \{/);
   assert.match(sharedLayout, /\.cam-password-modal::backdrop \{ background: rgb\(0 0 0 \/ 55%\); \}/);
+  assert.match(sharedLayout, /\.cam-detail-modal \{[^}]*border: 0;[^}]*background: var\(--bs-body-bg\)/u);
+  assert.match(sharedLayout, /\.cam-detail-modal \.cam-modal-close \{[^}]*right: \.9rem/u);
 });
 
 test('Agent delivery navigation is declared in the business menu template', async () => {
