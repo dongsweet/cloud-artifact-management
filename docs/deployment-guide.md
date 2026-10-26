@@ -45,7 +45,7 @@ docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-core-web:$VERSION 
 docker save \
   cam-edge:$VERSION cam-edge-web:$VERSION \
   cam-core:$VERSION cam-core-web:$VERSION \
-  cam-agent:$VERSION \
+  cam-agent:$VERSION cam-agent-web:$VERSION \
   -o cam-images-$VERSION.tar
 sha256sum cam-images-$VERSION.tar > cam-images-$VERSION.tar.sha256
 ```
