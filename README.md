@@ -44,7 +44,7 @@ docker compose --env-file deploy/.env -f compose.direct.yaml up -d --build
 
 该命令只解除 `cam-edge` 对 Hillstone 网络命名空间的依赖，不会删除业务数据目录。
 
-根目录的 `compose.yaml` / `compose.direct.yaml` 继续用于开发机和测试联调，Agent 保持页面/API 一体化并发布 3111、3112，作为兼容启动方式。正式分区部署请使用 `deploy/compose.agent.yaml`：由 `cam-agent` 提供内部 API，由 `cam-agent-web` 提供 Caddy Web 入口。
+根目录的 `compose.yaml` / `compose.direct.yaml` 也使用与正式部署一致的 Agent 双容器结构：`cam-agent-1/2` 仅提供内部 API，`cam-agent-web-1/2` 提供静态页面和 Caddy 反向代理，分别发布 3111、3112。正式分区部署请使用 `deploy/compose.agent.yaml`，不要把业务 API 端口发布到宿主机。
 
 测试环境复用已有 host-network Caddy 提供 HTTPS 时，`cam-edge-web` 和 `cam-core` 仅绑定宿主机
 回环地址，分别为 `127.0.0.1:8088`、`127.0.0.1:3102` 和 `127.0.0.1:8092`。将
@@ -96,7 +96,7 @@ Docker volume 中。升级镜像或重建容器前先执行 `sudo -E sh deploy/i
 
 `cam-core` 对接统一云管时，先将 `deploy/.env.example` 复制为目标主机的 `deploy/.env`，再使用同一个环境文件启动 Compose：
 
-Core 与 Agent 的应用接口采用双向 Ed25519 签名。首次配对时，在 Core 的“Agent 管理”页面复制“Core 服务公钥”，登录各 Agent 的“Core 身份配对”页面，在顶部“Core 对接配置”填写 Core 地址并粘贴完整 PEM 公钥，点击“保存配置”和“测试配对”。随后复制 Agent 本机公钥到 Core 登记；Agent 首次以公钥指纹发起签名请求后，Core 会返回稳定 Agent 编号并显示在 Agent 页面，无需配置部署变量；旧部署已有的编号变量只作为兼容回填，成功同步后不再依赖。两个 Agent 共用 Core 公钥；每个 Agent 的私钥仍各自保存在本机独立数据目录。缺少 Core 公钥时不会发起业务请求，签名验证失败时拒绝处理响应。
+Core 与 Agent 的应用接口采用双向 Ed25519 签名。首次配对时，在 Core 的“Agent 管理”页面复制“Core 服务公钥”，登录各 Agent 的“Core 身份配对”页面，在顶部“Core 对接配置”填写 Core 地址并粘贴完整 PEM 公钥，点击“保存配置”和“测试配对”。随后复制 Agent 本机公钥到 Core 登记；Agent 首次以公钥指纹发起签名请求后，Core 会返回稳定 Agent 编号并显示在 Agent 页面。两个 Agent 共用 Core 公钥；每个 Agent 的私钥仍各自保存在本机独立数据目录。身份地址、公钥和编号不通过环境变量传递，统一保存在本地持久化数据中。缺少 Core 公钥时不会发起业务请求，签名验证失败时拒绝处理响应。
 
 Agent 页面保存的 Core 地址和信任公钥持久化到本机 `agent.sqlite`，立即生效；运行期只读取数据库，重启或轮换不依赖 `.env` 或 Compose 外部身份变量。首次安装直接在 Agent 接入页面填写并保存。Agent 私钥保存在同一主机绑定数据目录的 `identity.json`（权限 `0600`），不进入镜像、环境变量或数据库。定时刷新不会覆盖正在编辑的内容。
 

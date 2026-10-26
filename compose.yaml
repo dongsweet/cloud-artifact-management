@@ -79,6 +79,8 @@ services:
       - cam-core
       - cam-agent-1
       - cam-agent-2
+    environment:
+      CAM_AGENT_UPSTREAM: ${CAM_AGENT_UPSTREAM:-cam-agent-web-1:8080}
     networks:
       - default
     ports:
@@ -197,8 +199,29 @@ services:
       CAM_AAA_SHARED_SECRET: ${CAM_AAA_SHARED_SECRET:-}
       CAM_AAA_TIMEOUT_MS: ${CAM_AAA_TIMEOUT_MS:-10000}
       CAM_AAA_ALLOW_HTTP: ${CAM_AAA_ALLOW_HTTP:-false}
+    restart: unless-stopped
+
+  cam-agent-web-1:
+    build:
+      context: .
+      dockerfile: agent-web.Dockerfile
+      args:
+        CADDY_BASE_IMAGE: ${CADDY_BASE_IMAGE:-caddy:2.11.4}
+    image: cam-agent-web:dev
+    read_only: true
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+      - /data:size=16m,mode=0700,uid=10001,gid=10001
+      - /config:size=4m,mode=0700,uid=10001,gid=10001
+    environment:
+      CAM_AGENT_UPSTREAM: cam-agent-1:3103
+    depends_on:
+      - cam-agent-1
+    networks:
+      - default
     ports:
-      - "127.0.0.1:3111:3103"
+      - "127.0.0.1:3111:8080"
     restart: unless-stopped
 
   cam-agent-2:
@@ -231,8 +254,29 @@ services:
       CAM_AAA_SHARED_SECRET: ${CAM_AAA_SHARED_SECRET:-}
       CAM_AAA_TIMEOUT_MS: ${CAM_AAA_TIMEOUT_MS:-10000}
       CAM_AAA_ALLOW_HTTP: ${CAM_AAA_ALLOW_HTTP:-false}
+    restart: unless-stopped
+
+  cam-agent-web-2:
+    build:
+      context: .
+      dockerfile: agent-web.Dockerfile
+      args:
+        CADDY_BASE_IMAGE: ${CADDY_BASE_IMAGE:-caddy:2.11.4}
+    image: cam-agent-web:dev
+    read_only: true
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+      - /data:size=16m,mode=0700,uid=10001,gid=10001
+      - /config:size=4m,mode=0700,uid=10001,gid=10001
+    environment:
+      CAM_AGENT_UPSTREAM: cam-agent-2:3103
+    depends_on:
+      - cam-agent-2
+    networks:
+      - default
     ports:
-      - "127.0.0.1:3112:3103"
+      - "127.0.0.1:3112:8080"
     restart: unless-stopped
 
 volumes:

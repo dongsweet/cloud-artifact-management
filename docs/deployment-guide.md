@@ -24,7 +24,8 @@
 | `cam-edge-web:<版本>` | Edge 页面和同源 API 反向代理 |
 | `cam-core:<版本>` | Core API、审批适配和后台任务 |
 | `cam-core-web:<版本>` | Core 页面和 Agent 页面入口反向代理 |
-| `cam-agent:<版本>` | Agent 页面、API、接收任务与本地数据处理 |
+| `cam-agent:<版本>` | Agent API、认证、任务调度、缓存与本地数据处理 |
+| `cam-agent-web:<版本>` | Agent 静态页面、Caddy、TLS/反向代理 |
 
 生产构建在受控构建机上进行。先从可信的软件源取得并审核 Node.js、Caddy 基础镜像和 npm 依赖，再构建并测试应用镜像。示例命令在仓库根目录执行：
 
@@ -169,7 +170,7 @@ docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml exec -it
 docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-security-admin.js
 ```
 
-Agent 由两个容器组成：`cam-agent` 只监听 Compose 内部的 3103，负责 API、认证、任务调度、缓存和传输；`cam-agent-web` 负责 Caddy、静态入口、TLS/反向代理和外部访问，默认发布到宿主机回环地址 3111。由云中心已有 HTTPS 入口发布页面；Core Web 如果需要代用户打开该 Agent 页面，必须把 `CAM_AGENT_UPSTREAM` 配置成 Core Web 可达的 Agent Web 地址。Agent 本身直接连接 AAA；Core 负责 Agent 身份注册、授权和正式制品分发，不代理 Agent 用户登录。
+Agent 由两个容器组成：`cam-agent` 只监听 Compose 内部的 3103，负责 API、认证、任务调度、缓存和传输；`cam-agent-web` 负责直接提供构建时生成的静态页面，并承担 Caddy、TLS/反向代理和外部访问，默认发布到宿主机回环地址 3111。Caddy 只将 `/api/*` 和 `/health/*` 反代到 Agent API，其余请求由静态文件服务处理。由云中心已有 HTTPS 入口发布页面；Core Web 如果需要代用户打开该 Agent 页面，必须把 `CAM_AGENT_UPSTREAM` 配置成 Core Web 可达的 Agent Web 地址。Agent 本身直接连接 AAA；Core 负责 Agent 身份注册、授权和正式制品分发，不代理 Agent 用户登录。
 
 Core 与 Agent 完成双向服务身份配对后，再验证 Agent 在线、任务领取和文件摘要校验。若 Agent 经由外部反代连接 Core，需确保反代完整转发 Agent 身份认证请求头、响应签名头及二进制分块响应，并关闭会改变请求路径/响应正文的代理功能。
 

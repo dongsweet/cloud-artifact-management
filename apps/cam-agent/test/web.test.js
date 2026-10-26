@@ -100,8 +100,13 @@ test('Agent account page serves the shared Core role and account presentation as
   const { readFile } = await import('node:fs/promises');
   const { resolve } = await import('node:path');
   const serverSource = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
-  assert.match(serverSource, /app\.get\('\/assets\/role-display\.css'/);
-  assert.match(serverSource, /app\.get\('\/assets\/role-display\.js'/);
+  assert.doesNotMatch(serverSource, /app\.get\('\/assets\//);
+  assert.doesNotMatch(serverSource, /app\.get\('\/'/);
+  const webDockerfile = await readFile(resolve(process.cwd(), 'agent-web.Dockerfile'), 'utf8');
+  assert.match(webDockerfile, /COPY --from=assets \/out \/srv\/web/);
+  const caddyfile = await readFile(resolve(process.cwd(), 'agent-web/Caddyfile'), 'utf8');
+  assert.match(caddyfile, /file_server/);
+  assert.match(caddyfile, /reverse_proxy \{\$CAM_AGENT_UPSTREAM:cam-agent:3103\}/);
   const sharedLayout = await readFile(resolve(process.cwd(), 'web-shared/layout.css'), 'utf8');
   assert.match(sharedLayout, /\.cam-account-modal \{/);
   assert.match(sharedLayout, /\.cam-password-modal::backdrop \{ background: rgb\(0 0 0 \/ 55%\); \}/);

@@ -7,6 +7,18 @@
     X-Frame-Options SAMEORIGIN
   }
 
-  # Agent 页面由业务容器生成，Caddy 只负责外部访问边界和反向代理。
-  reverse_proxy {$CAM_AGENT_UPSTREAM:cam-agent:3103}
+  root * /srv/web
+
+  handle /api/* {
+    reverse_proxy {$CAM_AGENT_UPSTREAM:cam-agent:3103}
+  }
+
+  handle /health/* {
+    reverse_proxy {$CAM_AGENT_UPSTREAM:cam-agent:3103}
+  }
+
+  handle {
+    try_files {path} /index.html
+    file_server
+  }
 }

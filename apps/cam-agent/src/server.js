@@ -12,7 +12,6 @@ import { queryAuthEvents } from '../../../libs/cam-auth/src/audit-events.js';
 import { AaaConfigStore, DkeyAmAdapter, registerAaaConfigRoutes } from '../../../libs/cam-aaa/src/adapter.js';
 import { fingerprint, randomNonce, signRequest, verifyResponse } from '../../../libs/cam-agent-auth/src/protocol.js';
 import { createIdentityRotation, loadAgentIdentity } from './identity-rotation.js';
-import { agentPage } from './web.js';
 import { CoreConnectionStore } from './core-connection.js';
 import { AgentDeliveryStore } from './delivery-store.js';
 import { bearerToken, parseRange } from '../../../libs/cam-transfer/src/http.js';
@@ -73,25 +72,6 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
   if (!taskColumns.has('scheduled_at')) db.exec("ALTER TABLE agent_tasks ADD COLUMN scheduled_at TEXT");
   if (!taskColumns.has('chunk_concurrency')) db.exec('ALTER TABLE agent_tasks ADD COLUMN chunk_concurrency INTEGER NOT NULL DEFAULT 4');
   const app = await buildServer({ service: 'cam-agent', configure: async (server) => { registerAuth(server, auth); server.addHook('onClose', async () => db.close()); } });
-  const sharedAssetRoot = resolve(process.cwd(), 'web-shared', 'assets');
-  app.get('/assets/:file', async (request, reply) => {
-    const file = request.params.file;
-    if (!/^(bootstrap\.min\.css|bootstrap-icons\.min\.css|adminlte\.min\.css)$/u.test(file)) return reply.code(404).send();
-    return reply.type(file.endsWith('.css') ? 'text/css; charset=utf-8' : 'application/octet-stream').send(await readFile(join(sharedAssetRoot, file)));
-  });
-  app.get('/assets/fonts/:file', async (request, reply) => {
-    if (!/^bootstrap-icons\.woff2?$/u.test(request.params.file)) return reply.code(404).send();
-    return reply.type('font/woff2').send(await readFile(join(sharedAssetRoot, 'fonts', request.params.file)));
-  });
-  app.get('/assets/layout.css', async (_request, reply) => reply.type('text/css; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'layout.css'))));
-  app.get('/assets/role-display.css', async (_request, reply) => reply.type('text/css; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'role-display.css'))));
-  app.get('/assets/role-display.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'role-display.js'))));
-  app.get('/assets/table-pagination.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'table-pagination.js'))));
-  app.get('/assets/artifact-catalog.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'artifact-catalog.js'))));
-  app.get('/assets/task-table.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'task-table.js'))));
-  app.get('/assets/audit-events.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'audit-events.js'))));
-  app.get('/assets/aaa-config.js', async (_request, reply) => reply.type('text/javascript; charset=utf-8').send(await readFile(resolve(process.cwd(), 'web-shared', 'aaa-config.js'))));
-  app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(agentPage()));
   const core = async (path, options = {}, signer = identity) => {
     const config = coreConnection.get();
     if (!config.corePublicKey) throw Object.assign(new Error('请先在 Core 身份配对页面配置 Core 公钥'), { code: 'core_public_key_missing', status: 503 });

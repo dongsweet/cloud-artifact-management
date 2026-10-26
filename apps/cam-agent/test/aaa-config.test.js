@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -48,8 +48,7 @@ test('Agent AAA config uses system-admin RBAC, shared config behavior, persisten
     assert.equal(persisted.baseUrl, body.baseUrl);
     assert.equal(persisted.secretConfigured, true);
     assert.equal(JSON.stringify(persisted).includes(body.sharedSecret), false);
-    const moduleUi = await app.inject({ method: 'GET', url: '/assets/aaa-config.js' });
-    assert.equal(moduleUi.statusCode, 200);
-    assert.match(moduleUi.body, /mountAaaConfig/u);
+    const moduleUi = await readFile(new URL('../../../web-shared/aaa-config.js', import.meta.url), 'utf8');
+    assert.match(moduleUi, /mountAaaConfig/u);
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
