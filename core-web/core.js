@@ -19,6 +19,9 @@ let transferMonitor = { edgeToCore: [], coreToAgent: [], summary: {} };
 let resetUserId = null;
 let cloudMappings = null;
 let requestPollTimer = null;
+let detailPollTimer = null;
+let detailPollRequestId = null;
+let detailRefreshInFlight = false;
 let gatePeerTrusted = false;
 const $ = (selector) => document.querySelector(selector);
 // Keep task dialogs outside page sections so they remain usable when opened from
@@ -79,6 +82,7 @@ function showLogin() {
   currentUser = null;
   csrf = null;
   document.querySelectorAll('dialog[open]').forEach((dialog) => dialog.close('session-expired'));
+  stopDetailPolling();
   document.body.classList.remove('modal-open');
   document.querySelectorAll('.modal-backdrop').forEach((backdrop) => backdrop.remove());
   $('#app').classList.add('d-none');
@@ -136,8 +140,20 @@ function render(items) {
   document.querySelectorAll('.detail-button').forEach((button) => { button.onclick = () => showDetail(button.dataset.id); });
   refreshPaginatedTables($('#page-requests'));
 }
-async function load({ quiet = false } = {}) { try { render((await api('/api/v1/approval-requests')).items); if (!quiet) clearMessage(); if ($('#detail').open && $('#detail').dataset.requestId) await showDetail($('#detail').dataset.requestId); } catch (error) { if (!quiet) message(error.message, 'danger'); } }
+async function load({ quiet = false } = {}) { try { render((await api('/api/v1/approval-requests')).items); if (!quiet) clearMessage(); if ($('#detail').open && $('#detail').dataset.requestId && !detailPollTimer) await showDetail($('#detail').dataset.requestId); } catch (error) { if (!quiet) message(error.message, 'danger'); } }
 function startRequestPolling() { if (requestPollTimer) return; requestPollTimer = setInterval(() => { if (!$('#app').classList.contains('d-none') && !$('#page-requests').classList.contains('d-none') && !document.hidden) void load({ quiet: true }); }, 5000); }
+function stopDetailPolling() { if (detailPollTimer) clearInterval(detailPollTimer); detailPollTimer = null; detailPollRequestId = null; detailRefreshInFlight = false; }
+function startDetailPolling(requestId) {
+  detailPollRequestId = requestId;
+  if (detailPollTimer) return;
+  detailPollTimer = setInterval(() => {
+    const dialog = $('#detail');
+    if (!dialog.open || !detailPollRequestId || $('#app').classList.contains('d-none') || document.hidden) return;
+    if (detailRefreshInFlight) return;
+    detailRefreshInFlight = true;
+    void showDetail(detailPollRequestId).catch(() => {}).finally(() => { detailRefreshInFlight = false; });
+  }, 5000);
+}
 let artifactItems = [];
 let artifactCatalog = null;
 function coreArtifactStatus(item) {
@@ -478,6 +494,7 @@ async function showDetail(id) {
   if (item.status === 'APPROVED' && item.transferTaskId && (item.transferEdgeStatus === 'FAILED' || (item.transferEdgeStatus === 'RETRY_WAIT' && item.transferEdgeRetryAt)) && canCore('businessWrite')) actions.push('<button id="edge-transfer-retry-button" class="btn btn-warning"><i class="bi bi-arrow-repeat me-1"></i>重试 Edge → Core 传输</button>');
   if (item.status === 'APPROVED' && item.transferStatus === 'RECEIVED' && canCore('businessWrite')) actions.push('<button id="close-button" class="btn btn-success">确认关单</button>');
   $('#actions').innerHTML = actions.join('');
+  startDetailPolling(id);
   if (!dialog.open) dialog.showModal();
   $('#retry-cloud-button')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
@@ -724,6 +741,7 @@ $('#password-cancel').addEventListener('click', async () => {
 });
 $('#logout').addEventListener('click', async () => { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); }); $('#refresh').addEventListener('click', load);
 $('#detail-close').addEventListener('click', () => $('#detail').close());
+$('#detail').addEventListener('close', stopDetailPolling);
 $('#detail').addEventListener('click', (event) => { if (event.target === $('#detail')) $('#detail').close(); }); $('#artifacts-refresh').addEventListener('click', loadArtifacts);
 $('#distribution-refresh').addEventListener('click', loadDistribution);
 $('#transfer-monitor-refresh').addEventListener('click', loadTransferMonitor);
