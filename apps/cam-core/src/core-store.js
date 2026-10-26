@@ -308,7 +308,9 @@ export class CoreStore {
     this.db.prepare('UPDATE core_log_collection_jobs SET status = ?, updated_at = ? WHERE job_id = ?').run(pending ? 'COLLECTING' : 'PACKAGING', timestamp, jobId);
     return this.getLogCollection(jobId);
   }
-  listAgentLogCollectionFiles(jobId) { return this.db.prepare("SELECT agent_id AS agentId, bundle_path AS bundlePath, bundle_sha256 AS bundleSha256, bundle_size AS bundleSize FROM core_log_collection_agents WHERE job_id = ? AND status = 'COMPLETED' ORDER BY agent_id").all(jobId); }
+  listAgentLogCollectionFiles(jobId) {
+    return this.db.prepare("SELECT a.agent_id AS agentId, c.center_id AS centerId, c.name AS agentName, a.bundle_path AS bundlePath, a.bundle_sha256 AS bundleSha256, a.bundle_size AS bundleSize FROM core_log_collection_agents a LEFT JOIN core_agents c ON c.agent_id = a.agent_id WHERE a.job_id = ? AND a.status = 'COMPLETED' ORDER BY a.agent_id").all(jobId);
+  }
   setLogCollectionBundle(jobId, { status, path = null, sha256 = null, size = null, error = null } = {}) { this.db.prepare('UPDATE core_log_collection_jobs SET status = ?, bundle_path = ?, bundle_sha256 = ?, bundle_size = ?, last_error = ?, updated_at = ? WHERE job_id = ?').run(status, path, sha256, size, error, now(), jobId); return this.getLogCollection(jobId); }
   getLogCollectionBundle(jobId) { const row = this.db.prepare("SELECT bundle_path AS path, bundle_sha256 AS sha256, bundle_size AS size, expires_at AS expiresAt FROM core_log_collection_jobs WHERE job_id = ? AND status = 'READY'").get(jobId); return row ?? null; }
   expireLogCollections(at = now()) {
