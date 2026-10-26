@@ -403,9 +403,9 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
   app.get('/api/v1/agent/available-artifacts', async (request, reply) => {
     const taskByArtifact = store.listLatestAgentDistributionTasks(request.agentPrincipal.agentId);
-    return reply.send({ items: store.listArtifacts({ includeRoundMetadata: true }).map(({ artifactId, productName, displayVersion, version, revision, releaseId, roundId, roundNo, manifestSha256, cloudApprovalId, transferTaskId, files, receivedAt }) => {
+    return reply.send({ items: store.listArtifacts().map(({ artifactId, productName, displayVersion, version, revision, releaseId, manifestSha256, cloudApprovalId, transferTaskId, files, receivedAt }) => {
       const task = taskByArtifact.get(artifactId);
-      return { artifactId, productName, displayVersion, version, revision, releaseId, roundId, roundNo, manifestSha256, cloudApprovalId, transferTaskId, distributionAuthorized: Boolean(task), distributionTask: task ? { taskId: task.taskId, status: task.status, scheduledAt: task.scheduledAt, chunkConcurrency: task.chunkConcurrency, attempts: task.attempts, retryAt: task.retryAt, lastError: task.lastError, updatedAt: task.updatedAt, completedAt: task.completedAt } : null, files: files.map(({ packageKey, fileName, sizeBytes, sha256, source, stored }) => ({ packageKey, fileName, sizeBytes, sha256, source, stored })), receivedAt };
+      return { artifactId, productName, displayVersion, version, revision, releaseId, manifestSha256, cloudApprovalId, transferTaskId, distributionAuthorized: Boolean(task), distributionTask: task ? { taskId: task.taskId, status: task.status, scheduledAt: task.scheduledAt, chunkConcurrency: task.chunkConcurrency, attempts: task.attempts, retryAt: task.retryAt, lastError: task.lastError, updatedAt: task.updatedAt, completedAt: task.completedAt } : null, files: files.map(({ packageKey, fileName, sizeBytes, sha256, source, stored }) => ({ packageKey, fileName, sizeBytes, sha256, source, stored })), receivedAt };
     }) });
   });
   app.post('/api/v1/agent/distribution-tasks', { bodyLimit: 8192 }, async (request, reply) => {

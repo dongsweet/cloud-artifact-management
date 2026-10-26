@@ -408,8 +408,6 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
     const user = responsibleId ? auth.getUser(responsibleId) : null;
     return {
       ...grant,
-      roundId: grant.roundId ?? artifact?.roundId ?? null,
-      roundNo: grant.roundNo ?? (Number.isSafeInteger(artifact?.roundNo) ? artifact.roundNo : null),
       productName: artifact?.productName ?? null,
       displayVersion: artifact?.displayVersion ?? artifact?.version ?? null,
       responsiblePerson: user
