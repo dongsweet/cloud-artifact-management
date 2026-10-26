@@ -109,7 +109,8 @@ export class CoreStore {
       CREATE TABLE IF NOT EXISTS core_transfer_file_states (
         transfer_task_id TEXT NOT NULL, sha256 TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('ASSEMBLY_PENDING', 'ASSEMBLING', 'VERIFYING', 'VERIFY_FAILED')),
-        error_code TEXT, last_error TEXT, updated_at TEXT NOT NULL,
+        error_code TEXT, last_error TEXT, assembly_bytes INTEGER NOT NULL DEFAULT 0,
+        assembly_parts INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
         PRIMARY KEY (transfer_task_id, sha256)
       );
       CREATE TABLE IF NOT EXISTS core_cloud_config (
@@ -233,6 +234,10 @@ export class CoreStore {
     const transferTaskColumns = new Set(db.prepare('PRAGMA table_info(core_transfer_tasks)').all().map((column) => column.name));
     for (const [name, definition] of Object.entries({ edge_status: "TEXT NOT NULL DEFAULT 'IDLE'", edge_attempts: 'INTEGER NOT NULL DEFAULT 0', edge_retry_at: 'TEXT', edge_error_code: 'TEXT', edge_last_error: 'TEXT', edge_failure_terminal: 'INTEGER NOT NULL DEFAULT 0' })) {
       if (!transferTaskColumns.has(name)) db.exec(`ALTER TABLE core_transfer_tasks ADD COLUMN ${name} ${definition}`);
+    }
+    const transferFileStateColumns = new Set(db.prepare('PRAGMA table_info(core_transfer_file_states)').all().map((column) => column.name));
+    for (const [name, definition] of Object.entries({ assembly_bytes: 'INTEGER NOT NULL DEFAULT 0', assembly_parts: 'INTEGER NOT NULL DEFAULT 0' })) {
+      if (!transferFileStateColumns.has(name)) db.exec(`ALTER TABLE core_transfer_file_states ADD COLUMN ${name} ${definition}`);
     }
     if (!columns.has('cloud_mapping_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_mapping_json TEXT');
     if (!columns.has('cloud_request_json')) db.exec('ALTER TABLE core_approval_requests ADD COLUMN cloud_request_json TEXT');
@@ -771,15 +776,22 @@ export class CoreStore {
       .all(transferTaskId, String(sha256).toLowerCase());
   }
   getTransferFileState(transferTaskId, sha256) {
-    return this.db.prepare('SELECT status, error_code AS errorCode, last_error AS lastError, updated_at AS updatedAt FROM core_transfer_file_states WHERE transfer_task_id = ? AND sha256 = ?').get(transferTaskId, String(sha256).toLowerCase()) ?? null;
+    return this.db.prepare('SELECT status, error_code AS errorCode, last_error AS lastError, assembly_bytes AS assemblyBytes, assembly_parts AS assemblyParts, updated_at AS updatedAt FROM core_transfer_file_states WHERE transfer_task_id = ? AND sha256 = ?').get(transferTaskId, String(sha256).toLowerCase()) ?? null;
   }
-  setTransferFileState(transferTaskId, sha256, status, error = null) {
+  setTransferFileState(transferTaskId, sha256, status, error = null, { assemblyBytes = 0, assemblyParts = 0 } = {}) {
     if (!['ASSEMBLY_PENDING', 'ASSEMBLING', 'VERIFYING', 'VERIFY_FAILED'].includes(status)) throw Object.assign(new Error('invalid transfer file state'), { code: 'transfer_file_state_invalid' });
     const timestamp = now();
-    this.db.prepare(`INSERT INTO core_transfer_file_states (transfer_task_id, sha256, status, error_code, last_error, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(transfer_task_id, sha256) DO UPDATE SET status = excluded.status,
-      error_code = excluded.error_code, last_error = excluded.last_error, updated_at = excluded.updated_at`)
-      .run(transferTaskId, String(sha256).toLowerCase(), status, error?.code ?? null, error?.message ? String(error.message).slice(0, 1000) : null, timestamp);
+    this.db.prepare(`INSERT INTO core_transfer_file_states (transfer_task_id, sha256, status, error_code, last_error, assembly_bytes, assembly_parts, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(transfer_task_id, sha256) DO UPDATE SET status = excluded.status,
+      error_code = excluded.error_code, last_error = excluded.last_error, assembly_bytes = excluded.assembly_bytes,
+      assembly_parts = excluded.assembly_parts, updated_at = excluded.updated_at`)
+      .run(transferTaskId, String(sha256).toLowerCase(), status, error?.code ?? null, error?.message ? String(error.message).slice(0, 1000) : null,
+        Math.max(0, Number(assemblyBytes) || 0), Math.max(0, Number(assemblyParts) || 0), timestamp);
+  }
+  updateTransferFileAssemblyProgress(transferTaskId, sha256, assemblyBytes, assemblyParts) {
+    this.db.prepare(`UPDATE core_transfer_file_states SET assembly_bytes = ?, assembly_parts = ?, updated_at = ?
+      WHERE transfer_task_id = ? AND sha256 = ? AND status = 'ASSEMBLING'`)
+      .run(Math.max(0, Number(assemblyBytes) || 0), Math.max(0, Number(assemblyParts) || 0), now(), transferTaskId, String(sha256).toLowerCase());
   }
   clearTransferFileState(transferTaskId, sha256) {
     this.db.prepare('DELETE FROM core_transfer_file_states WHERE transfer_task_id = ? AND sha256 = ?').run(transferTaskId, String(sha256).toLowerCase());
@@ -858,14 +870,20 @@ export class CoreStore {
         sizeBytes: Number(item.sizeBytes ?? 0), sha256, source: item.source ?? null,
         inheritedFromRoundId: item.inheritedFromRoundId ?? null, stored, reused,
         status, errorCode: fileState?.errorCode ?? null, lastError: fileState?.lastError ?? null,
-        receivedParts, chunkCount, receivedBytes, updatedAt: fileState?.updatedAt ?? task?.updated_at ?? current.updatedAt
+        receivedParts, chunkCount, receivedBytes,
+        assemblyBytes: Math.min(Number(item.sizeBytes ?? 0), Number(fileState?.assemblyBytes ?? 0)),
+        assemblyParts: Math.min(chunkCount ?? 0, Number(fileState?.assemblyParts ?? 0)),
+        updatedAt: fileState?.updatedAt ?? task?.updated_at ?? current.updatedAt
       };
     });
     const totalBytes = files.reduce((total, file) => total + file.sizeBytes, 0);
     const receivedBytes = files.reduce((total, file) => total + Math.min(file.sizeBytes, file.receivedBytes), 0);
+    const storedBytes = files.reduce((total, file) => total + (file.stored ? file.sizeBytes : 0), 0);
     const completedFiles = files.filter((file) => file.stored).length;
     const receivingFiles = files.filter((file) => file.status === 'RECEIVING').length;
+    const assemblyPendingFiles = files.filter((file) => file.status === 'ASSEMBLY_PENDING').length;
     const assemblingFiles = files.filter((file) => ['ASSEMBLY_PENDING', 'ASSEMBLING'].includes(file.status)).length;
+    const activeAssemblyFiles = files.filter((file) => file.status === 'ASSEMBLING').length;
     const verifyingFiles = files.filter((file) => file.status === 'VERIFYING').length;
     const failedFiles = files.filter((file) => file.status === 'VERIFY_FAILED').length;
     const allStored = files.length > 0 && completedFiles === files.length;
@@ -873,15 +891,24 @@ export class CoreStore {
     if (taskId) {
       if (task?.status === 'RECEIVED') status = 'COMPLETED';
       else if (task?.edge_status === 'FAILED' && task.edge_failure_terminal) status = 'FAILED';
+      // Once every chunk is present, Core is doing local assembly/verification.
+      // Keep that visible even if Edge has already reported the previous retry
+      // window; otherwise the page falsely suggests that Core is idle.
+      else if (activeAssemblyFiles || assemblyPendingFiles || verifyingFiles || allStored) status = 'VERIFYING';
       else if (task?.edge_status === 'RETRY_WAIT') status = 'RETRY_WAIT';
-      else status = allStored ? 'VERIFYING' : failedFiles ? 'FAILED' : receivingFiles ? 'RECEIVING' : (assemblingFiles || verifyingFiles) ? 'VERIFYING' : 'WAITING_EDGE';
+      else status = failedFiles ? 'FAILED' : receivingFiles ? 'RECEIVING' : 'WAITING_EDGE';
     }
+    // receivedBytes tracks chunks on disk, while storedBytes tracks files
+    // that passed assembly and verification. The progress bar is an
+    // ingestion (stored) progress bar, so it cannot reach 100% early just
+    // because all chunks have arrived.
+    const percent = totalBytes ? Math.round(storedBytes * 100 / totalBytes) : (allStored ? 100 : 0);
     return {
       requestId, transferTaskId: taskId, status, updatedAt: task?.updated_at ?? current.updatedAt,
       notification: { state: current.transferNotificationState, attempts: current.transferNotificationAttempts, lastError: current.transferNotificationLastError, nextAttemptAt: current.transferNotificationNextAttemptAt },
       edgeFailure: task?.edge_last_error ? { status: task.edge_status, attempts: task.edge_attempts ?? 0, retryAt: task.edge_retry_at ?? null, code: task.edge_error_code ?? null, message: task.edge_last_error, terminal: Boolean(task.edge_failure_terminal) } : null,
       report: { received: current.reportReceived, fileName: current.reportFileName, sizeBytes: current.reportSize },
-      summary: { fileCount: files.length, completedFiles, assemblingFiles, verifyingFiles, failedFiles, receivingFiles, totalBytes, receivedBytes, percent: totalBytes ? Math.min(100, Math.round(receivedBytes * 100 / totalBytes)) : 0 },
+      summary: { fileCount: files.length, completedFiles, assemblingFiles, assemblyPendingFiles, activeAssemblyFiles, verifyingFiles, failedFiles, receivingFiles, totalBytes, receivedBytes, storedBytes, percent },
       files
     };
   }
@@ -918,7 +945,7 @@ export class CoreStore {
     if (!expected) throw Object.assign(new Error('artifact digest is not in the approved manifest'), { code: 'artifact_not_approved' });
     const rows = this.db.prepare('SELECT * FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ? ORDER BY part_index').all(transferTaskId, digestValue);
     if (!rows.length || rows.length !== rows[0].chunk_count) return { complete: false, receivedParts: rows.length, chunkCount: rows[0]?.chunk_count ?? 0 };
-    this.setTransferFileState(transferTaskId, digestValue, 'ASSEMBLING');
+    this.setTransferFileState(transferTaskId, digestValue, 'ASSEMBLING', null, { assemblyBytes: 0, assemblyParts: 0 });
     const temporaryPath = join(this.dataDir, 'tmp', `artifact-${randomUUID()}.assembled`);
     await mkdir(dirname(temporaryPath), { recursive: true });
     const output = createWriteStream(temporaryPath, { flags: 'wx', mode: 0o600 });
@@ -935,6 +962,7 @@ export class CoreStore {
           if (!output.write(chunk)) await once(output, 'drain');
         }
         if (partSize !== row.size_bytes || partHash.digest('hex') !== row.part_sha256) throw Object.assign(new Error(`制品分块 ${index} 文件校验失败`), { code: 'artifact_chunk_integrity_failed' });
+        this.updateTransferFileAssemblyProgress(transferTaskId, digestValue, totalSize, index + 1);
       }
       output.end();
       await once(output, 'close');

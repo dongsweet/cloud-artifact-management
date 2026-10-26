@@ -549,6 +549,8 @@ test('Core distinguishes complete chunks waiting for assembly from an active rec
     assert.equal(progress.files[0].chunkCount, 2);
     assert.equal(progress.summary.assemblingFiles, 1);
     assert.equal(progress.summary.receivingFiles, 0);
+    assert.equal(progress.summary.percent, 0, 'complete chunks are not shown as stored before assembly');
+    assert.equal(progress.summary.storedBytes, 0);
     const reconciled = await app.coreStore.reconcileTransferParts('TR-CHUNKED');
     assert.deepEqual(reconciled.errors, []);
     assert.deepEqual(reconciled.assembled, [sha256]);
