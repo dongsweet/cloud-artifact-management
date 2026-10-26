@@ -116,7 +116,7 @@ export async function initAccountUI(options) {
     if (!candidateIds.length) throw new Error('请选择已完成文件');
     exported = await api('/api/v1/download-grants', { method: 'POST', body: JSON.stringify({ candidateIds, roundId: grantScopeRoundId || $('#grant-round').value || null, expiresAt: new Date(Date.now() + Number($('#grant-days').value) * 86400000).toISOString(), maxSessionsPerFile: Number($('#grant-per-file').value) }) });
     exported.items.forEach((i) => { i.downloadUrl = new URL(i.downloadUrl, window.location.origin).href; });
-    $('#grant-links').innerHTML = exported.items.map((i) => `<div class="mb-2"><a href="${esc(i.downloadUrl)}" referrerpolicy="no-referrer">${esc(i.fileName)}</a><div class="small font-monospace text-break">SHA-256: ${esc(i.sha256)}</div></div>`).join('');
+    window.CamDownloadGrantUI.exportLinks(exported, $('#grant-links'), { hashField: 'sha256' });
     modal('grant').hide(); modal('grant-export').show(); if (context().view === 'grants') await renderAccountView('grants');
   }, 'grant'); };
   $('#export-grant-json').onclick = () => saveExport('json'); $('#export-grant-text').onclick = () => saveExport('txt');
@@ -208,12 +208,7 @@ function renderGrantFiles(completed) {
   updateGrantTotal();
 }
 function updateGrantTotal() { const selectedCount = document.querySelectorAll('#grant-files input:checked').length; const perFile = Number($('#grant-per-file')?.value || 2); $('#grant-total').value = selectedCount * (Number.isSafeInteger(perFile) && perFile > 0 ? perFile : 0); }
-function saveExport(type) {
-  if (!exported) return;
-  const text = type === 'json' ? JSON.stringify(exported, null, 2) : exported.items.map((i) => `${i.downloadUrl}\n# ${i.fileName} SHA-256=${i.sha256}`).join('\n');
-  const url = URL.createObjectURL(new Blob([text], { type: type === 'json' ? 'application/json' : 'text/plain;charset=utf-8' }));
-  const link = document.createElement('a'); link.href = url; link.download = `${exported.grantId}.${type}`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
+function saveExport(type) { window.CamDownloadGrantUI.saveExport(exported, type, { hashField: 'sha256' }); }
 export async function renderAccountView(view) {
   if (view !== 'grants') stopGrantDetailPolling();
   if (view === 'users') {
@@ -247,15 +242,6 @@ function stopGrantDetailPolling() {
   const detail = $('#grant-detail-modal');
   if (detail) bootstrap.Modal.getInstance(detail)?.hide();
 }
-function bytes(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return '-';
-  if (n < 1024) return `${n} B`;
-  const units = ['KB', 'MB', 'GB', 'TB']; let amount = n; let i = -1;
-  while (amount >= 1024 && i < units.length - 1) { amount /= 1024; i += 1; }
-  return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${units[i]}`;
-}
-function sessionStatus(status) { return { ACTIVE: '发送中', INTERRUPTED: '已中断', COMPLETED: '已完成', FAILED: '失败' }[status] ?? status; }
 async function showGrantDetail(grantId) {
   selectedGrantId = grantId;
   if (grantDetailTimer) window.clearInterval(grantDetailTimer);
@@ -265,15 +251,12 @@ async function showGrantDetail(grantId) {
     try {
       const g = await api(`/api/v1/download-grants/${encodeURIComponent(grantId)}`);
       if (selectedGrantId !== grantId) return;
-      const itemMap = new Map(g.items.map((item) => [item.candidateId, item]));
-      const sessions = g.sessions ?? [];
       const roundTitle = [g.productName, g.displayVersion, g.roundNo == null ? null : `第 ${g.roundNo} 轮`]
         .filter(Boolean)
         .join(' · ');
       const detailTitle = roundTitle ? `传输明细：${roundTitle} · 授权 ID：${g.grantId}` : `传输明细 · 授权 ID：${g.grantId}`;
       $('#grant-detail-title').textContent = detailTitle;
-      const responsible = g.responsiblePerson?.displayName && g.responsiblePerson?.username ? `${g.responsiblePerson.displayName}（${g.responsiblePerson.username}）` : g.responsiblePerson?.displayName || g.responsiblePerson?.username || '未知账号';
-      $('#grant-detail-content').innerHTML = `<p class="small text-body-secondary">累计传输表示服务器已写入连接的字节数；文件进度表示已连续接收的文件前缀。Token 下载无法识别实际操作者，下载人显示为 Token 持有者，并同时标明授权责任人。</p>${sessions.length ? `<div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>文件</th><th>状态</th><th>文件进度</th><th>累计传输</th><th>下载人</th><th>来源 / 更新时间</th></tr></thead><tbody>${sessions.map((s) => { const item = itemMap.get(s.candidate_id); const size = Number(item?.size ?? 0); const covered = Number(s.covered_bytes ?? 0); const percent = size > 0 ? Math.min(100, Math.round((covered / size) * 100)) : 0; const downloader = s.downloadedBy?.type === 'TOKEN' ? `Token 持有者（责任人：${responsible}）` : s.downloadedBy?.label || '未知账号'; return `<tr><td class="text-break">${esc(item?.fileName ?? s.candidate_id)}</td><td>${esc(sessionStatus(s.status))}</td><td style="min-width:180px"><div class="progress" role="progressbar" aria-label="文件接收进度" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar ${s.status === 'COMPLETED' ? 'bg-success' : ''}" style="width:${percent}%">${percent}%</div></div><div class="small text-body-secondary mt-1">${bytes(covered)} / ${bytes(size)}</div></td><td>${bytes(s.bytes_sent)}</td><td class="small text-break">${esc(downloader)}</td><td class="small text-break">${esc(s.source_address ?? '-')}<br>开始：${esc(s.started_at ?? '-')}<br>更新：${esc(s.updated_at ?? '-')} ${s.completed_at ? `<br>结束：${esc(s.completed_at)}` : ''}${s.error_message ? `<br><span class="text-danger">${esc(s.error_message)}</span>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="alert alert-light border">暂无传输会话。HEAD 探测、被拒绝的连接和零字节中断不会计入次数。</div>'}`;
+      $('#grant-detail-content').innerHTML = window.CamDownloadGrantUI.detailBody(g, { sessionItemKey: 'candidate_id', itemKey: 'candidateId' });
       bootstrap.Modal.getOrCreateInstance($('#grant-detail-modal')).show();
     } catch (e) { if (selectedGrantId === grantId) alert(e.message, 'danger'); }
     finally { grantDetailLoading = false; }

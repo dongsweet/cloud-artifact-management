@@ -9,7 +9,11 @@ const assetRoot = resolve(projectRoot, 'web-shared', 'assets');
 const outputAssets = resolve(outputRoot, 'assets');
 
 await mkdir(resolve(outputAssets, 'fonts'), { recursive: true });
-await writeFile(resolve(outputRoot, 'index.html'), agentPage(), 'utf8');
+const page = agentPage().replace(
+  '<script type="module" src="/assets/table-pagination.js">',
+  '<script src="/assets/download-grant-ui.js?v=20261026-shared-grant-ui"></script><script type="module" src="/assets/table-pagination.js">'
+);
+await writeFile(resolve(outputRoot, 'index.html'), page, 'utf8');
 
 for (const file of ['bootstrap.min.css', 'bootstrap-icons.min.css', 'adminlte.min.css']) {
   await copyFile(resolve(assetRoot, file), resolve(outputAssets, file));
@@ -21,7 +25,7 @@ for (const file of ['bootstrap-icons.woff', 'bootstrap-icons.woff2']) {
 }
 for (const file of [
   'layout.css', 'transfer-file-table.css', 'role-display.css', 'role-display.js', 'table-pagination.js',
-  'artifact-catalog.js', 'task-table.js', 'audit-events.js', 'aaa-config.js'
+  'artifact-catalog.js', 'task-table.js', 'audit-events.js', 'aaa-config.js', 'download-grant-ui.js'
 ]) {
   await copyFile(resolve(projectRoot, 'web-shared', file), resolve(outputAssets, file));
 }
