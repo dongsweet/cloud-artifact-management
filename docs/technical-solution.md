@@ -139,8 +139,12 @@ cloud-artifact-management/
 │  ├─ index.html                # 统一运维内网管理页面入口
 │  ├─ core.js                   # 页面交互和云管审批操作
 │  └─ core.css                  # 页面定制样式
+├─ agent-web/                   # cam-agent-web 静态页面和反向代理工程
+│  ├─ build.mjs                 # 构建时生成 Agent 静态入口和复制共享资源
+│  └─ Caddyfile                 # 静态文件服务及 Agent API 反向代理
 ├─ edge-web.Dockerfile          # Edge 管理页面静态资源和反向代理镜像
 ├─ core-web.Dockerfile          # Core 管理页面静态资源和反向代理镜像
+├─ agent-web.Dockerfile         # Agent 静态页面和反向代理镜像
 ├─ deploy/
 │  ├─ docker/                   # Dockerfile、启动脚本和健康检查
 │  ├─ compose/                  # edge、core、agent 部署文件
@@ -159,7 +163,9 @@ cloud-artifact-management/
 |---|---|---|---|
 | `cam-edge-web` | 统一运维外部交换区 | AdminLTE 管理页面、静态资源和 `/api/*` 反向代理到 `cam-edge` | 业务数据持久化、跨区传输和审批决策 |
 | `cam-edge` | 统一运维外部交换区 | 研发候选制品获取、候选版本留档、扫描验证、发布申请、审批结果接收、网闸发送包准备 | 正式制品库、内网分发、云中心升级 |
+| `cam-core-web` | 统一运维内网 | AdminLTE 管理页面、静态资源、Agent 页面入口和 `/api/*` 反向代理 | 审批业务、正式制品处理和云管适配 |
 | `cam-core` | 统一运维内网 | 网闸接收、正式制品登记、版本管理、分发编排、权限、审计和云管回执 | 研发地址访问、外部候选验证 |
+| `cam-agent-web` | 每个云中心升级服务器 | Agent 静态页面、Caddy、TLS/反向代理；仅将 `/api/*`、`/health/*` 转发给 `cam-agent` | 业务数据、认证决策和任务调度 |
 | `cam-agent` | 每个云中心升级服务器 | 任务拉取、分块下载、缓存、校验、向控制节点提供正式文件和结果回报 | 修改正式制品、跨中心调度、替代现有升级程序 |
 
 `cam-agent` 是中心升级服务器上的制品接收与缓存服务。控制节点仍使用已有升级脚本或升级程序读取校验通过的缓存文件，不新增一个独立的“控制节点升级执行器”平台。
