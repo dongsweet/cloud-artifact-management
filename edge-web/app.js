@@ -4,6 +4,7 @@ import { refreshPaginatedTables } from './table-pagination.js?v=20261020-table-p
 import { canEdgePage } from './role-permissions.js?v=20261023-auditor-scope';
 const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, currentRoundCandidates: [], currentRoundQueue: [], batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null, nextRoundPreview: null };
 document.querySelector('#gate-pairing-mount').innerHTML = renderGatePairing('edge');
+document.querySelector('#view-log-collections .alert-info')?.remove();
 let importPreviewRequestId = 0;
 let revisionBaseReleaseId = null;
 const $ = (selector) => document.querySelector(selector);
