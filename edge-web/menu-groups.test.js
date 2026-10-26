@@ -8,13 +8,10 @@ test('Edge sidebar groups business, management, security and audit pages like Co
   const [html, script] = await Promise.all([read('./index.html'), read('./account-ui.js')]);
   assert.match(html, /<span class="brand-text">CAM Edge<\/span>/u);
   assert.doesNotMatch(html, /<span class="brand-text fw-light">CAM Edge<\/span>/u);
-  for (const [group, label] of [['business', '业务'], ['management', '系统管理']]) {
+  for (const [group, label] of [['business', '业务'], ['management', '系统管理'], ['security', '账号安全'], ['audit', '审计']]) {
     assert.match(html, new RegExp(`<li class="nav-header" data-menu-group="${group}">${label}</li>`, 'u'));
   }
-  for (const [group, label] of [['security', '账号安全'], ['audit', '审计']]) {
-    assert.match(script, new RegExp(`data-menu-group="${group}">${label}</li>`, 'u'));
-  }
-  for (const route of ['products', 'releases', 'rounds', 'candidates']) {
+  for (const route of ['products', 'releases', 'rounds', 'candidates', 'grants']) {
     assert.match(html, new RegExp(`data-menu-group-item="business"><a href="#${route}"`, 'u'));
   }
   assert.match(html, /id="gate-config-nav" data-menu-group-item="management"/u);
@@ -23,9 +20,11 @@ test('Edge sidebar groups business, management, security and audit pages like Co
   assert.doesNotMatch((await read('../apps/cam-edge/src/routes.js')), /freezes\/:freezeId\/transfer\/retry/u);
   assert.match(html, /id="candidate-summary"/u);
   assert.match(html, /只读文件资产总览/u);
-  assert.match(script, /id="grants-nav" data-menu-group-item="business"/u);
-  assert.match(script, /id="users-nav" data-menu-group-item="security"/u);
-  assert.match(script, /id="audit-nav" data-menu-group-item="audit"/u);
+  assert.match(html, /id="grants-nav" data-menu-group-item="business"/u);
+  assert.match(html, /id="users-nav" data-menu-group-item="security"/u);
+  assert.match(html, /id="audit-nav" data-menu-group-item="audit"/u);
+  assert.doesNotMatch(script, /sidebar-menu'\)\.insertAdjacentHTML/u);
+  assert.doesNotMatch(script, /before\(\$\('#grants-nav'\)\)/u);
   assert.match(script, /\[data-menu-group\][\s\S]*?header\.classList\.toggle\('d-none', !items\.some\(\(item\) => !item\.classList\.contains\('d-none'\)\)\)/u);
 });
 
