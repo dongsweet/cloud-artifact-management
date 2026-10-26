@@ -585,6 +585,12 @@ test('Core watches Edge start and idle deadlines, coordinates recovery, and stop
     assert.equal(started.transferEdgeStartDeadlineAt, null);
     assert.ok(started.transferEdgeIdleDeadlineAt, 'started transfer changes to the idle watchdog');
 
+    app.coreStore.db.prepare("UPDATE core_transfer_tasks SET edge_idle_deadline_at = '1970-01-01T00:00:00.000Z' WHERE transfer_task_id = ?").run(transferTaskId);
+    status('HEARTBEAT', 0);
+    const heartbeat = app.coreStore.get(requestId);
+    assert.equal(heartbeat.transferEdgeStatus, 'STARTED', 'a heartbeat does not pretend that a chunk completed');
+    assert.ok(Date.parse(heartbeat.transferEdgeIdleDeadlineAt) > Date.now(), 'a heartbeat extends the idle watchdog');
+
     // The delayed HTTP acknowledgement must not regress an already-started
     // transfer back into the start watchdog state.
     app.coreStore.markTransferDelivered(delivery.event_id, { transferStartTimeoutMs: 60_000 });

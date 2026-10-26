@@ -4,8 +4,9 @@ const DEFAULTS = Object.freeze({
   mode: 'mapping',
   connectTimeoutMs: 10000,
   transferTimeoutMs: 60000,
-  transferStartTimeoutMs: 300000,
-  transferIdleTimeoutMs: 300000,
+  transferStartTimeoutMs: 120000,
+  transferIdleTimeoutMs: 90000,
+  transferHeartbeatMs: 15000,
   chunkSizeBytes: 268435456,
   retryLimit: 5,
   maxInFlightChunks: 1,
@@ -16,7 +17,7 @@ const DEFAULTS = Object.freeze({
 
 const URL_FIELDS = ['coreControlUrl', 'coreTransferUrl', 'edgeControlUrl', 'edgeTransferUrl'];
 const STRING_FIELDS = [...URL_FIELDS, 'tlsCaFile', 'tlsServerName'];
-const NUMBER_FIELDS = ['connectTimeoutMs', 'transferTimeoutMs', 'transferStartTimeoutMs', 'transferIdleTimeoutMs', 'chunkSizeBytes', 'retryLimit', 'maxInFlightChunks', 'requestTtlSeconds'];
+const NUMBER_FIELDS = ['connectTimeoutMs', 'transferTimeoutMs', 'transferStartTimeoutMs', 'transferIdleTimeoutMs', 'transferHeartbeatMs', 'chunkSizeBytes', 'retryLimit', 'maxInFlightChunks', 'requestTtlSeconds'];
 
 function clean(value) { return typeof value === 'string' ? value.trim() : value; }
 function urlValue(value, field) {
@@ -39,7 +40,7 @@ export function normalizeGateConfig(input = {}, { requireUrls = false, requiredU
     output[field] = value;
   }
   if (output.chunkSizeBytes < 1024 * 1024 || output.chunkSizeBytes > 1024 * 1024 * 1024) throw Object.assign(new Error('chunkSizeBytes 必须在 1 MiB 到 1 GiB 之间'), { code: 'gate_config_invalid' });
-  if (output.transferStartTimeoutMs < output.connectTimeoutMs || output.transferIdleTimeoutMs < output.transferTimeoutMs) throw Object.assign(new Error('传输开始超时不能小于连接超时，传输空闲超时不能小于单次传输超时'), { code: 'gate_config_invalid' });
+  if (output.transferStartTimeoutMs < output.connectTimeoutMs || output.transferIdleTimeoutMs < output.transferTimeoutMs || output.transferHeartbeatMs >= output.transferIdleTimeoutMs) throw Object.assign(new Error('传输开始超时不能小于连接超时，传输空闲超时不能小于单次传输超时，心跳间隔必须小于空闲超时'), { code: 'gate_config_invalid' });
   if (output.transferStartTimeoutMs > 7 * 86400_000 || output.transferIdleTimeoutMs > 7 * 86400_000 || output.maxInFlightChunks > 32 || output.retryLimit > 20 || output.requestTtlSeconds > 7 * 86400) throw Object.assign(new Error('传输超时、分块并发、重试次数或请求有效期超过安全上限'), { code: 'gate_config_invalid' });
   if (output.mode !== 'mapping') throw Object.assign(new Error('当前只支持 mapping（映射模式）'), { code: 'gate_config_invalid' });
   if (requireUrls && requiredUrlFields.some((field) => !output[field])) throw Object.assign(new Error('请填写本端需要访问的受控映射通道地址'), { code: 'gate_config_invalid' });
@@ -57,6 +58,7 @@ export function gateConfigFromEnv(env = process.env) {
     transferTimeoutMs: env.CAM_GATE_TRANSFER_TIMEOUT_MS,
     transferStartTimeoutMs: env.CAM_GATE_TRANSFER_START_TIMEOUT_MS,
     transferIdleTimeoutMs: env.CAM_GATE_TRANSFER_IDLE_TIMEOUT_MS,
+    transferHeartbeatMs: env.CAM_GATE_TRANSFER_HEARTBEAT_MS,
     chunkSizeBytes: env.CAM_GATE_CHUNK_SIZE_BYTES,
     retryLimit: env.CAM_GATE_RETRY_LIMIT,
     maxInFlightChunks: env.CAM_GATE_MAX_IN_FLIGHT_CHUNKS,

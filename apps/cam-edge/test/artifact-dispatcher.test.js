@@ -49,6 +49,40 @@ test('artifact dispatcher skips stored objects, resumes missing chunks and submi
   }
 });
 
+test('artifact dispatcher sends independent transfer heartbeats while a request is still running', async () => {
+  const state = { freezeId: 'FREEZE-HEARTBEAT', status: 'APPROVED', transferTaskId: 'TASK-HEARTBEAT', manifestSha256: 'h'.repeat(64), transferStatus: 'READY', transferAttempts: 0 };
+  const reports = [];
+  const freezes = {
+    get: () => state,
+    listTransferPending: () => [state],
+    markTransferAttempt: () => { state.transferStatus = 'SENDING'; state.transferAttempts += 1; },
+    markTransferSuccess: () => { state.transferStatus = 'RECEIVED'; },
+    markTransferFailure: (_id, error) => { state.transferStatus = 'FAILED'; state.transferLastError = error.message; }
+  };
+  const dispatcher = createArtifactDispatcher({
+    freezes,
+    candidates: { get() { throw new Error('stored object must not resolve a source'); } },
+    gateConfig: { get: () => ({ coreControlUrl: 'http://core.example', coreTransferUrl: 'http://core.example', connectTimeoutMs: 1_000, transferTimeoutMs: 1_000, transferHeartbeatMs: 5, chunkSizeBytes: 1024 * 1024 }) },
+    keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
+    fetchImpl: async (url, options = {}) => {
+      if (url.endsWith('/transfer-status')) { reports.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ accepted: true }) }; }
+      if (url.endsWith('/manifest')) {
+        await new Promise((resolve) => setTimeout(resolve, 35));
+        return { ok: true, json: async () => ({ requestId: state.freezeId, transferTaskId: state.transferTaskId, manifestSha256: state.manifestSha256, items: [{ candidateId: 'C1', fileName: 'cached.bin', sizeBytes: 1, actualSha256: 'c'.repeat(64), stored: true, receivedParts: [0] }] }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+    logger: { warn() {} }
+  });
+  try {
+    await dispatcher.deliver(state.freezeId);
+    assert.equal(state.transferStatus, 'RECEIVED');
+    assert.equal(reports.some((report) => report.state === 'STARTED'), true);
+    assert.equal(reports.some((report) => report.state === 'HEARTBEAT'), true);
+    assert.equal(reports.some((report) => report.state === 'COMPLETED'), true);
+  } finally { await dispatcher.close(); }
+});
+
 test('artifact dispatcher registers the local manifest and repairs a legacy Core task', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cam-transfer-'));
   const sourcePath = join(dir, 'legacy.bin');

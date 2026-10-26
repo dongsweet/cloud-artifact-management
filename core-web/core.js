@@ -667,11 +667,15 @@ function ensureGateTransferTimeoutFields() {
   const start = document.createElement('div');
   start.className = 'col-md-4';
   start.innerHTML = '<label class="form-label">等待 Edge 开始超时（毫秒）</label><input name="transferStartTimeoutMs" type="number" class="form-control" required>';
+  const heartbeat = document.createElement('div');
+  heartbeat.className = 'col-md-4';
+  heartbeat.innerHTML = '<label class="form-label">传输心跳间隔（毫秒）</label><input name="transferHeartbeatMs" type="number" class="form-control" required>';
   const idle = document.createElement('div');
   idle.className = 'col-md-4';
   idle.innerHTML = '<label class="form-label">传输空闲超时（毫秒）</label><input name="transferIdleTimeoutMs" type="number" class="form-control" required>';
   anchor.insertAdjacentElement('afterend', start);
-  start.insertAdjacentElement('afterend', idle);
+  start.insertAdjacentElement('afterend', heartbeat);
+  heartbeat.insertAdjacentElement('afterend', idle);
 }
 async function loadGateKeys({ preserveInputs = false } = {}) {
   const result = await api('/api/v1/gate/keys');

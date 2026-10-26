@@ -21,6 +21,7 @@ test('gate configuration enforces bounded transfer settings', () => {
   assert.throws(() => normalizeGateConfig({ chunkSizeBytes: 1024 }), /1 MiB/);
   assert.throws(() => normalizeGateConfig({ connectTimeoutMs: 10_000, transferStartTimeoutMs: 9_999 }), /开始超时/);
   assert.throws(() => normalizeGateConfig({ transferTimeoutMs: 60_000, transferIdleTimeoutMs: 59_999 }), /空闲超时/);
+  assert.throws(() => normalizeGateConfig({ transferIdleTimeoutMs: 90_000, transferHeartbeatMs: 90_000 }), /心跳间隔/);
   assert.throws(() => normalizeGateConfig({ maxInFlightChunks: 33 }), /安全上限/);
   assert.throws(() => normalizeGateConfig({ mode: 'bridge' }), /mapping/);
 });

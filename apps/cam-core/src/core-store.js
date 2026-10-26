@@ -713,7 +713,7 @@ export class CoreStore {
     this.db.prepare("UPDATE core_approval_requests SET transfer_notification_state = 'SENDING', transfer_notification_attempts = transfer_notification_attempts + 1, updated_at = ? WHERE request_id = (SELECT request_id FROM core_transfer_outbox WHERE event_id = ?)").run(now(), eventId);
     return this.db.prepare('SELECT * FROM core_transfer_outbox WHERE event_id = ?').get(eventId);
   }
-  markTransferDelivered(eventId, { transferStartTimeoutMs = 300_000 } = {}) {
+  markTransferDelivered(eventId, { transferStartTimeoutMs = 120_000 } = {}) {
     const timestamp = now();
     this.db.prepare('UPDATE core_transfer_outbox SET delivered_at = ?, last_error = NULL, updated_at = ? WHERE event_id = ?').run(timestamp, timestamp, eventId);
     this.db.prepare("UPDATE core_approval_requests SET transfer_notification_state = 'DELIVERED', updated_at = ? WHERE request_id = (SELECT request_id FROM core_transfer_outbox WHERE event_id = ?)").run(timestamp, eventId);
@@ -998,7 +998,7 @@ export class CoreStore {
       files
     };
   }
-  async saveTransferPart(transferTaskId, sha256, part, { transferIdleTimeoutMs = 300_000 } = {}) {
+  async saveTransferPart(transferTaskId, sha256, part, { transferIdleTimeoutMs = 90_000 } = {}) {
     const transfer = this.expectedTransferArtifacts(transferTaskId);
     const digestValue = String(sha256).toLowerCase();
     const expected = transfer.items.find((item) => String(item.actualSha256 ?? '').toLowerCase() === digestValue);
@@ -1115,7 +1115,7 @@ export class CoreStore {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return { requestId: task.request_id, transferTaskId, manifestSha256: task.manifest_sha256, fileCount: manifest.items.length };
   }
-  async receiveArtifact(transferTaskId, sha256, temporaryPath, actualSize, actualSha256, { transferIdleTimeoutMs = 300_000 } = {}) {
+  async receiveArtifact(transferTaskId, sha256, temporaryPath, actualSize, actualSha256, { transferIdleTimeoutMs = 90_000 } = {}) {
     const transfer = this.expectedTransferArtifacts(transferTaskId);
     const digestValue = String(sha256).toLowerCase();
     const expected = transfer.items.filter((item) => String(item.actualSha256 ?? '').toLowerCase() === digestValue);
@@ -1353,7 +1353,7 @@ export class CoreStore {
     return { transferTaskId, requestId, status: 'READY', manifestSha256: current.manifestSha256, idempotent: false };
   }
 
-  recordEdgeTransferStatus(input = {}, { transferStartTimeoutMs = 300_000, transferIdleTimeoutMs = 300_000, retryLimit = 5 } = {}) {
+  recordEdgeTransferStatus(input = {}, { transferStartTimeoutMs = 120_000, transferIdleTimeoutMs = 90_000, retryLimit = 5 } = {}) {
     const requestId = required(input.requestId, 'requestId');
     const freezeId = required(input.freezeId, 'freezeId');
     const transferTaskId = required(input.transferTaskId, 'transferTaskId');
@@ -1362,7 +1362,7 @@ export class CoreStore {
     const attempt = Number(input.attempt);
     const code = typeof input.code === 'string' && input.code.trim() ? input.code.trim().slice(0, 128) : null;
     const message = typeof input.message === 'string' && input.message.trim() ? input.message.trim().slice(0, 1000) : null;
-    const states = new Set(['ACCEPTED', 'STARTED', 'PROGRESS', 'RETRY_WAIT', 'FAILED', 'COMPLETED']);
+    const states = new Set(['ACCEPTED', 'STARTED', 'HEARTBEAT', 'PROGRESS', 'RETRY_WAIT', 'FAILED', 'COMPLETED']);
     const failedState = ['RETRY_WAIT', 'FAILED'].includes(state);
     if (requestId !== freezeId || !/^[a-f0-9]{64}$/.test(manifestSha256) || !states.has(state) || !Number.isSafeInteger(attempt) || attempt < 0 || attempt > 100000 || (failedState && (!code || !message))) {
       throw Object.assign(new Error('Edge 传输状态报告格式无效'), { code: 'invalid_transfer_status' });
@@ -1386,10 +1386,11 @@ export class CoreStore {
       && code === task.edge_error_code && message === task.edge_last_error) return { item: this.get(requestId), idempotent: true };
     // Control messages are delivered independently from data chunks. Never let
     // an older ACCEPTED/STARTED message overwrite a later progress/completion
-    // fact from the same Edge attempt.
-    const stateRank = { ACCEPTED: 0, STARTED: 1, PROGRESS: 2, COMPLETED: 3, RETRY_WAIT: 4, FAILED: 5 };
+    // fact from the same Edge attempt. Heartbeats are the exception: they may
+    // refresh the idle deadline without changing the visible transfer state.
+    const stateRank = { ACCEPTED: 0, STARTED: 1, HEARTBEAT: 2, PROGRESS: 3, COMPLETED: 4, RETRY_WAIT: 5, FAILED: 6 };
     const currentRank = { ACCEPTED: 0, STARTED: 1, RECEIVING: 2, WAITING_RECEIPT: 3, RETRY_WAIT: 4, FAILED: 5, RECEIVED: 6 }[task.edge_status];
-    if (attempt === Number(task.edge_attempts ?? 0) && currentRank !== undefined && stateRank[state] !== undefined && stateRank[state] < currentRank) {
+    if (state !== 'HEARTBEAT' && attempt === Number(task.edge_attempts ?? 0) && currentRank !== undefined && stateRank[state] !== undefined && stateRank[state] < currentRank) {
       return { item: this.get(requestId), idempotent: true };
     }
     const timestamp = now();
@@ -1398,6 +1399,13 @@ export class CoreStore {
         .run(attempt, timestamp, deadlineAfter(transferStartTimeoutMs), timestamp, transferTaskId);
     } else if (state === 'STARTED') {
       this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'STARTED', edge_attempts = ?, edge_attempt_started_at = COALESCE(edge_attempt_started_at, ?), edge_last_activity_at = ?, edge_start_deadline_at = NULL, edge_idle_deadline_at = ?, edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ?")
+        .run(attempt, timestamp, timestamp, deadlineAfter(transferIdleTimeoutMs), timestamp, transferTaskId);
+    } else if (state === 'HEARTBEAT') {
+      // A heartbeat proves that Edge is still working, but it does not prove
+      // that a new chunk has completed. Keep STARTED/RECEIVING visible and
+      // only extend the idle watchdog; actual chunk progress remains driven
+      // by the data plane or a PROGRESS report.
+      this.db.prepare("UPDATE core_transfer_tasks SET edge_status = CASE WHEN edge_status IN ('ACCEPTED', 'STARTED') THEN 'STARTED' ELSE edge_status END, edge_attempts = ?, edge_attempt_started_at = COALESCE(edge_attempt_started_at, ?), edge_last_activity_at = ?, edge_start_deadline_at = NULL, edge_idle_deadline_at = ?, edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ?")
         .run(attempt, timestamp, timestamp, deadlineAfter(transferIdleTimeoutMs), timestamp, transferTaskId);
     } else if (state === 'PROGRESS') {
       // Data-plane progress proves that a coordinated recovery genuinely
@@ -1451,7 +1459,7 @@ export class CoreStore {
     return { item: this.get(requestId), idempotent: false, task: { ...task, edge_status: 'RECOVERY_SENDING' } };
   }
 
-  expireEdgeTransferTimeouts({ transferStartTimeoutMs = 300_000, retryLimit = 5 } = {}) {
+  expireEdgeTransferTimeouts({ transferStartTimeoutMs = 120_000, retryLimit = 5 } = {}) {
     const timestamp = now();
     const recoveryDispatchCutoff = new Date(Date.now() - transferStartTimeoutMs).toISOString();
     const due = this.db.prepare(`SELECT * FROM core_transfer_tasks
@@ -1490,7 +1498,7 @@ export class CoreStore {
     return claimed;
   }
 
-  markEdgeRecoveryDispatchResult(transferTaskId, { ok, error = null, edgeState = null, transferStartTimeoutMs = 300_000, transferIdleTimeoutMs = 300_000, retryLimit = 5 } = {}) {
+  markEdgeRecoveryDispatchResult(transferTaskId, { ok, error = null, edgeState = null, transferStartTimeoutMs = 120_000, transferIdleTimeoutMs = 90_000, retryLimit = 5 } = {}) {
     const task = this.db.prepare('SELECT * FROM core_transfer_tasks WHERE transfer_task_id = ?').get(transferTaskId);
     if (!task) throw Object.assign(new Error('传输任务不存在'), { code: 'transfer_task_not_found' });
     if (task.status === 'RECEIVED') return { item: this.get(task.request_id), idempotent: true };

@@ -12,6 +12,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
   let closed = false;
   const reconciled = new Set();
   const reportedStates = new Map();
+  const heartbeatStops = new Map();
 
   async function request(url, config, options = {}) {
     const method = options.method ?? 'GET';
@@ -33,7 +34,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
     const stateKey = `${freeze.freezeId}:${freeze.transferTaskId}:${state}:${attempt}:${code ?? ''}:${retryAt ?? ''}:${terminal ? '1' : '0'}`;
     // Progress is deliberately not deduplicated: every completed chunk is a
     // liveness signal for Core's idle timeout watchdog.
-    if (state !== 'PROGRESS' && reportedStates.get(freeze.freezeId) === stateKey) return;
+    if (!['PROGRESS', 'HEARTBEAT'].includes(state) && reportedStates.get(freeze.freezeId) === stateKey) return;
     const payload = {
       requestId: freeze.freezeId,
       freezeId: freeze.freezeId,
@@ -73,9 +74,43 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
     });
   }
 
+  function startHeartbeat(freezeId, config) {
+    const controlUrl = config?.coreControlUrl;
+    const intervalMs = Number(config?.transferHeartbeatMs ?? 15_000);
+    if (!controlUrl || !Number.isSafeInteger(intervalMs) || intervalMs <= 0) return () => {};
+    heartbeatStops.get(freezeId)?.();
+    let stopped = false;
+    let sending = false;
+    const send = async () => {
+      if (stopped || sending) return;
+      const current = freezes.get(freezeId);
+      if (!current || current.transferStatus !== 'SENDING') return;
+      sending = true;
+      try {
+        await reportState(current, 'HEARTBEAT', { attempt: Number(current.transferAttempts ?? 0), config });
+      } catch (error) {
+        // A missed heartbeat is tolerated; the next tick retries it. Core's
+        // idle watchdog remains the final authority if the control link stays
+        // unavailable.
+        logger.warn?.({ freezeId, state: 'HEARTBEAT', code: error.code, message: error.message }, 'CAM Edge 传输心跳回告 Core 失败');
+      } finally { sending = false; }
+    };
+    const timer = setInterval(() => { void send(); }, intervalMs);
+    timer.unref?.();
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(timer);
+      if (heartbeatStops.get(freezeId) === stop) heartbeatStops.delete(freezeId);
+    };
+    heartbeatStops.set(freezeId, stop);
+    return stop;
+  }
+
   async function deliver(freezeId) {
     let freeze = freezes.get(freezeId);
     if (!freeze || freeze.status !== 'APPROVED' || !freeze.transferTaskId) return freeze;
+    let stopHeartbeat = () => {};
     const repairingReceipt = freeze.transferStatus === 'RECEIVED';
     if (!repairingReceipt) {
       // Stores return the persisted row, but keep the dispatcher compatible
@@ -87,6 +122,11 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
       const config = gateConfig.get();
       if (!config.coreTransferUrl) throw Object.assign(new Error('请先配置 Edge 外侧访问 Core 的制品传输地址'), { code: 'gate_address_missing' });
       reportStateLater(freeze, 'STARTED', { attempt, config });
+      // Liveness is independent from chunk completion. The heartbeat keeps
+      // Core informed while Edge is reading, assembling a request or waiting
+      // for a slow local/network write; PROGRESS remains reserved for chunks
+      // that the Core data plane has actually accepted.
+      stopHeartbeat = startHeartbeat(freezeId, config);
       const base = config.coreTransferUrl.replace(/\/$/u, '');
       const path = `/api/v1/gate/transfers/${encodeURIComponent(freeze.transferTaskId)}`;
       const readManifest = async () => {
@@ -183,7 +223,7 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
       }
       logger.warn?.({ freezeId, attempt, code: error.code, message: error.message }, 'CAM 正式制品传输失败，已回告 Core，等待协调恢复');
       return freezes.get(freezeId);
-    }
+    } finally { stopHeartbeat(); }
   }
 
   async function responseError(response, fallback) {
