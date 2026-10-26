@@ -544,10 +544,10 @@ test('Core distinguishes complete chunks waiting for assembly from an active rec
     await app.coreStore.saveTransferPart('TR-CHUNKED', sha256, { index: 0, chunkSize: 8, chunkCount: 2, offset: 0, size: first.length, sha256: createHash('sha256').update(first).digest('hex'), temporaryPath: join(dataDir, 'chunk-0') });
     await app.coreStore.saveTransferPart('TR-CHUNKED', sha256, { index: 1, chunkSize: 8, chunkCount: 2, offset: 8, size: second.length, sha256: createHash('sha256').update(second).digest('hex'), temporaryPath: join(dataDir, 'chunk-1') });
     const progress = app.coreStore.getTransferProgress(requestId);
-    assert.equal(progress.files[0].status, 'VERIFYING');
+    assert.equal(progress.files[0].status, 'ASSEMBLY_PENDING');
     assert.equal(progress.files[0].receivedParts, 2);
     assert.equal(progress.files[0].chunkCount, 2);
-    assert.equal(progress.summary.verifyingFiles, 1);
+    assert.equal(progress.summary.assemblingFiles, 1);
     assert.equal(progress.summary.receivingFiles, 0);
     const reconciled = await app.coreStore.reconcileTransferParts('TR-CHUNKED');
     assert.deepEqual(reconciled.errors, []);

@@ -25,7 +25,9 @@ test('Core approval details keep the primary workflow visible and the file list 
   assert.match(script, /transfer-progress/u);
   assert.match(script, /Edge → Core 接收进度/u);
   assert.match(script, /文件与分块明细/u);
-  assert.match(script, /VERIFYING: '校验中'/u);
+  assert.match(script, /ASSEMBLY_PENDING: '待组装'/u);
+  assert.match(script, /ASSEMBLING: '组装中'/u);
+  assert.match(script, /VERIFY_FAILED: '校验不通过'/u);
   const transferPanel = script.match(/const transferPanel = ([\s\S]*?)const transferProgressPanel/u)?.[1] ?? '';
   assert.doesNotMatch(transferPanel, /Edge 最近错误|transferEdgeLastError|Edge 传输失败/u);
   assert.match(script, /edge-transfer-retry-button/u);

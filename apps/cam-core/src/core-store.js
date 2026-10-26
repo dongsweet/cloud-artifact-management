@@ -106,6 +106,12 @@ export class CoreStore {
         PRIMARY KEY (transfer_task_id, sha256, part_index)
       );
       CREATE INDEX IF NOT EXISTS core_transfer_parts_digest_idx ON core_transfer_parts(transfer_task_id, sha256);
+      CREATE TABLE IF NOT EXISTS core_transfer_file_states (
+        transfer_task_id TEXT NOT NULL, sha256 TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('ASSEMBLY_PENDING', 'ASSEMBLING', 'VERIFYING', 'VERIFY_FAILED')),
+        error_code TEXT, last_error TEXT, updated_at TEXT NOT NULL,
+        PRIMARY KEY (transfer_task_id, sha256)
+      );
       CREATE TABLE IF NOT EXISTS core_cloud_config (
         config_id INTEGER PRIMARY KEY CHECK (config_id = 1),
         config_json TEXT NOT NULL,
@@ -764,6 +770,20 @@ export class CoreStore {
     return this.db.prepare('SELECT part_index AS partIndex, chunk_size AS chunkSize, chunk_count AS chunkCount, byte_offset AS offset, size_bytes AS size, part_sha256 AS sha256 FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ? ORDER BY part_index')
       .all(transferTaskId, String(sha256).toLowerCase());
   }
+  getTransferFileState(transferTaskId, sha256) {
+    return this.db.prepare('SELECT status, error_code AS errorCode, last_error AS lastError, updated_at AS updatedAt FROM core_transfer_file_states WHERE transfer_task_id = ? AND sha256 = ?').get(transferTaskId, String(sha256).toLowerCase()) ?? null;
+  }
+  setTransferFileState(transferTaskId, sha256, status, error = null) {
+    if (!['ASSEMBLY_PENDING', 'ASSEMBLING', 'VERIFYING', 'VERIFY_FAILED'].includes(status)) throw Object.assign(new Error('invalid transfer file state'), { code: 'transfer_file_state_invalid' });
+    const timestamp = now();
+    this.db.prepare(`INSERT INTO core_transfer_file_states (transfer_task_id, sha256, status, error_code, last_error, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(transfer_task_id, sha256) DO UPDATE SET status = excluded.status,
+      error_code = excluded.error_code, last_error = excluded.last_error, updated_at = excluded.updated_at`)
+      .run(transferTaskId, String(sha256).toLowerCase(), status, error?.code ?? null, error?.message ? String(error.message).slice(0, 1000) : null, timestamp);
+  }
+  clearTransferFileState(transferTaskId, sha256) {
+    this.db.prepare('DELETE FROM core_transfer_file_states WHERE transfer_task_id = ? AND sha256 = ?').run(transferTaskId, String(sha256).toLowerCase());
+  }
   async reconcileTransferParts(transferTaskId) {
     const existing = this.transferAssemblyLocks.get(transferTaskId);
     if (existing) return existing;
@@ -776,6 +796,11 @@ export class CoreStore {
         const parts = this.listTransferParts(transferTaskId, sha256);
         const chunkCount = parts[0]?.chunkCount;
         if (!Number.isInteger(chunkCount) || chunkCount <= 0 || parts.length !== chunkCount) continue;
+        const state = this.getTransferFileState(transferTaskId, sha256);
+        if (state?.status === 'VERIFY_FAILED') {
+          errors.push({ sha256, code: state.errorCode ?? 'artifact_assembly_failed', message: state.lastError ?? '制品校验不通过' });
+          continue;
+        }
         try {
           const result = await this.assembleTransferParts(transferTaskId, sha256);
           if (result.complete) assembled.push(sha256);
@@ -824,34 +849,39 @@ export class CoreStore {
       // verifies the file. It is not another active upload; keep that state
       // distinct from RECEIVING so the UI does not suggest file concurrency.
       const chunksComplete = !stored && Number.isInteger(chunkCount) && chunkCount > 0 && receivedParts === chunkCount;
-      const status = stored ? 'COMPLETED' : chunksComplete ? 'VERIFYING' : parts.length ? 'RECEIVING' : 'WAITING';
+      const fileState = taskId ? this.getTransferFileState(taskId, sha256) : null;
+      const status = stored ? 'COMPLETED' : fileState?.status ?? (chunksComplete ? 'ASSEMBLY_PENDING' : parts.length ? 'RECEIVING' : 'WAITING');
       const reused = stored && (seenDigests.has(sha256) || Boolean(this.db.prepare('SELECT 1 FROM core_artifacts WHERE sha256 = ? AND received_at < ?').get(sha256, task?.created_at ?? now())));
       seenDigests.add(sha256);
       return {
         packageKey: item.packageKey ?? null, candidateId: item.candidateId ?? null, fileName: item.fileName ?? item.packageKey ?? sha256,
         sizeBytes: Number(item.sizeBytes ?? 0), sha256, source: item.source ?? null,
         inheritedFromRoundId: item.inheritedFromRoundId ?? null, stored, reused,
-        status, receivedParts, chunkCount, receivedBytes, updatedAt: task?.updated_at ?? current.updatedAt
+        status, errorCode: fileState?.errorCode ?? null, lastError: fileState?.lastError ?? null,
+        receivedParts, chunkCount, receivedBytes, updatedAt: fileState?.updatedAt ?? task?.updated_at ?? current.updatedAt
       };
     });
     const totalBytes = files.reduce((total, file) => total + file.sizeBytes, 0);
     const receivedBytes = files.reduce((total, file) => total + Math.min(file.sizeBytes, file.receivedBytes), 0);
     const completedFiles = files.filter((file) => file.stored).length;
     const receivingFiles = files.filter((file) => file.status === 'RECEIVING').length;
+    const assemblingFiles = files.filter((file) => ['ASSEMBLY_PENDING', 'ASSEMBLING'].includes(file.status)).length;
+    const verifyingFiles = files.filter((file) => file.status === 'VERIFYING').length;
+    const failedFiles = files.filter((file) => file.status === 'VERIFY_FAILED').length;
     const allStored = files.length > 0 && completedFiles === files.length;
     let status = 'WAITING_AUTHORIZATION';
     if (taskId) {
       if (task?.status === 'RECEIVED') status = 'COMPLETED';
       else if (task?.edge_status === 'FAILED' && task.edge_failure_terminal) status = 'FAILED';
       else if (task?.edge_status === 'RETRY_WAIT') status = 'RETRY_WAIT';
-      else status = allStored ? 'VERIFYING' : receivingFiles ? 'RECEIVING' : 'WAITING_EDGE';
+      else status = allStored ? 'VERIFYING' : failedFiles ? 'FAILED' : receivingFiles ? 'RECEIVING' : (assemblingFiles || verifyingFiles) ? 'VERIFYING' : 'WAITING_EDGE';
     }
     return {
       requestId, transferTaskId: taskId, status, updatedAt: task?.updated_at ?? current.updatedAt,
       notification: { state: current.transferNotificationState, attempts: current.transferNotificationAttempts, lastError: current.transferNotificationLastError, nextAttemptAt: current.transferNotificationNextAttemptAt },
       edgeFailure: task?.edge_last_error ? { status: task.edge_status, attempts: task.edge_attempts ?? 0, retryAt: task.edge_retry_at ?? null, code: task.edge_error_code ?? null, message: task.edge_last_error, terminal: Boolean(task.edge_failure_terminal) } : null,
       report: { received: current.reportReceived, fileName: current.reportFileName, sizeBytes: current.reportSize },
-      summary: { fileCount: files.length, completedFiles, verifyingFiles: files.filter((file) => file.status === 'VERIFYING').length, receivingFiles, totalBytes, receivedBytes, percent: totalBytes ? Math.min(100, Math.round(receivedBytes * 100 / totalBytes)) : 0 },
+      summary: { fileCount: files.length, completedFiles, assemblingFiles, verifyingFiles, failedFiles, receivingFiles, totalBytes, receivedBytes, percent: totalBytes ? Math.min(100, Math.round(receivedBytes * 100 / totalBytes)) : 0 },
       files
     };
   }
@@ -876,6 +906,7 @@ export class CoreStore {
       chunk_size = excluded.chunk_size, chunk_count = excluded.chunk_count, byte_offset = excluded.byte_offset,
       size_bytes = excluded.size_bytes, part_sha256 = excluded.part_sha256, file_path = excluded.file_path, updated_at = excluded.updated_at`)
       .run(transferTaskId, digestValue, part.index, part.chunkSize, part.chunkCount, part.offset, part.size, part.sha256, path, now());
+    this.clearTransferFileState(transferTaskId, digestValue);
     this.db.prepare("UPDATE core_transfer_tasks SET edge_status = 'RECEIVING', edge_retry_at = NULL, edge_error_code = NULL, edge_last_error = NULL, edge_failure_terminal = 0, updated_at = ? WHERE transfer_task_id = ? AND status <> 'RECEIVED'").run(now(), transferTaskId);
     const count = this.db.prepare('SELECT COUNT(*) AS count FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ?').get(transferTaskId, digestValue).count;
     return { path, receivedParts: count, chunkCount: part.chunkCount, complete: count === part.chunkCount };
@@ -887,6 +918,7 @@ export class CoreStore {
     if (!expected) throw Object.assign(new Error('artifact digest is not in the approved manifest'), { code: 'artifact_not_approved' });
     const rows = this.db.prepare('SELECT * FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ? ORDER BY part_index').all(transferTaskId, digestValue);
     if (!rows.length || rows.length !== rows[0].chunk_count) return { complete: false, receivedParts: rows.length, chunkCount: rows[0]?.chunk_count ?? 0 };
+    this.setTransferFileState(transferTaskId, digestValue, 'ASSEMBLING');
     const temporaryPath = join(this.dataDir, 'tmp', `artifact-${randomUUID()}.assembled`);
     await mkdir(dirname(temporaryPath), { recursive: true });
     const output = createWriteStream(temporaryPath, { flags: 'wx', mode: 0o600 });
@@ -906,13 +938,16 @@ export class CoreStore {
       }
       output.end();
       await once(output, 'close');
+      this.setTransferFileState(transferTaskId, digestValue, 'VERIFYING');
       const fullDigest = hash.digest('hex');
       if (totalSize !== Number(expected.sizeBytes) || fullDigest !== digestValue) throw Object.assign(new Error('组装后的制品大小或 SHA-256 与获批清单不一致'), { code: 'artifact_integrity_failed' });
       const received = await this.receiveArtifact(transferTaskId, digestValue, temporaryPath, totalSize, fullDigest);
       for (const row of rows) await rm(row.file_path, { force: true });
       this.db.prepare('DELETE FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ?').run(transferTaskId, digestValue);
+      this.clearTransferFileState(transferTaskId, digestValue);
       return { complete: true, ...received };
     } catch (error) {
+      this.setTransferFileState(transferTaskId, digestValue, 'VERIFY_FAILED', error);
       output.destroy();
       await rm(temporaryPath, { force: true });
       throw error;
