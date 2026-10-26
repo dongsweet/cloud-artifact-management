@@ -384,8 +384,8 @@ function transferProgressMarkup(progress) {
   const summary = progress.summary ?? {};
   const percent = Number(summary.percent ?? 0);
   const files = progress.files ?? [];
-  const fileStatus = { COMPLETED: '已入库', RECEIVING: '接收中', WAITING: '待接收' };
-  const fileColor = { COMPLETED: 'success', RECEIVING: 'primary', WAITING: 'secondary' };
+  const fileStatus = { COMPLETED: '已入库', VERIFYING: '校验中', RECEIVING: '接收中', WAITING: '待接收' };
+  const fileColor = { COMPLETED: 'success', VERIFYING: 'info', RECEIVING: 'primary', WAITING: 'secondary' };
   const detailRows = files.length ? files.map((file) => `<tr><td><div class="fw-semibold">${escapeHtml(file.fileName)}</div><div class="small text-body-secondary">${escapeHtml(file.packageKey ?? '')}${file.reused ? ' · 本机已缓存，可复用' : ''}</div></td><td>${escapeHtml(formatTransferBytes(file.sizeBytes))}</td><td><span class="badge text-bg-${fileColor[file.status] ?? 'secondary'}">${escapeHtml(fileStatus[file.status] ?? file.status ?? '-')}</span><div class="small text-body-secondary mt-1">${file.chunkCount ? `${escapeHtml(file.receivedParts)} / ${escapeHtml(file.chunkCount)} 个分块` : (file.stored ? '完整文件' : '尚未开始')}</div></td><td><div>${escapeHtml(formatTransferBytes(file.receivedBytes))} / ${escapeHtml(formatTransferBytes(file.sizeBytes))}</div><code class="small cam-break-anywhere">${escapeHtml(file.sha256)}</code></td></tr>`).join('') : '<tr><td colspan="4" class="text-center text-body-secondary py-3">Edge 尚未同步正式制品清单</td></tr>';
   const notification = progress.notification ?? {};
   const notificationText = notification.state === 'DELIVERED' ? 'Edge 已确认接收传输任务' : notification.state === 'RETRY_WAIT' ? `Edge 通知等待重试${notification.lastError ? `：${notification.lastError}` : ''}` : notification.state === 'SENDING' ? '正在通知 Edge' : progress.transferTaskId ? '等待通知 Edge' : '尚未创建传输任务';

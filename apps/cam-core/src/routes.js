@@ -582,8 +582,10 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   app.get('/api/v1/gate/transfers/:transferTaskId/manifest', async (request, reply) => {
     try {
       const transfer = store.expectedTransferArtifacts(request.params.transferTaskId);
+      const reconciliation = await store.reconcileTransferParts(request.params.transferTaskId);
       const partsByDigest = new Map();
-      for (const digest of new Set(transfer.items.map((item) => String(item.actualSha256 ?? '').toLowerCase()))) partsByDigest.set(digest, store.listTransferParts(request.params.transferTaskId, digest).map((part) => part.partIndex));
+      const failedAssembly = new Set((reconciliation.errors ?? []).map((item) => item.sha256));
+      for (const digest of new Set(transfer.items.map((item) => String(item.actualSha256 ?? '').toLowerCase()))) partsByDigest.set(digest, failedAssembly.has(digest) ? [] : store.listTransferParts(request.params.transferTaskId, digest).map((part) => part.partIndex));
       return reply.send({ transferTaskId: request.params.transferTaskId, requestId: transfer.requestId, manifestSha256: transfer.manifestSha256, items: transfer.items.map((item) => ({ ...item, stored: Boolean(store.artifactPath(String(item.actualSha256 ?? '').toLowerCase())), receivedParts: partsByDigest.get(String(item.actualSha256 ?? '').toLowerCase()) ?? [] })) });
     } catch (err) { return error(reply, err.code === 'approval_required' ? 409 : 400, err.code ?? 'artifact_manifest_invalid', err.message); }
   });

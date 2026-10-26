@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -522,5 +522,36 @@ test('Core stores approved files by SHA-256 and lets multiple package entries sh
     const download = await app.inject({ method: 'GET', url: `/api/v1/artifacts/${sha256}/content` });
     assert.equal(download.statusCode, 200);
     assert.deepEqual(download.rawPayload, bytes);
+  } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('Core distinguishes complete chunks waiting for assembly from an active receive', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-core-transfer-progress-'));
+  const bytes = Buffer.from('chunked artifact');
+  const first = bytes.subarray(0, 8);
+  const second = bytes.subarray(8);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const manifest = { schemaVersion: 1, items: [{ packageKey: 'chunked', candidateId: 'CAND-CHUNKED', fileName: 'chunked.bin', sizeBytes: bytes.length, actualSha256: sha256, source: 'OWNED' }] };
+  const manifestSha256 = createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
+  const app = await buildCoreApp({ dataDir, enableAuth: false });
+  const requestId = 'FREEZE-CHUNKED';
+  try {
+    app.coreStore.receiveApproval({ ...envelope, requestId, freezeId: requestId, manifestSha256, manifest });
+    app.coreStore.applyCloudStatus(requestId, { approvalId: 'APR-CHUNKED', status: 'APPROVED', transferTaskId: 'TR-CHUNKED', manifestSha256 });
+    app.coreStore.authorizeTransfer(requestId, { manifestSha256, transferTaskId: 'TR-CHUNKED' });
+    await writeFile(join(dataDir, 'chunk-0'), first);
+    await writeFile(join(dataDir, 'chunk-1'), second);
+    await app.coreStore.saveTransferPart('TR-CHUNKED', sha256, { index: 0, chunkSize: 8, chunkCount: 2, offset: 0, size: first.length, sha256: createHash('sha256').update(first).digest('hex'), temporaryPath: join(dataDir, 'chunk-0') });
+    await app.coreStore.saveTransferPart('TR-CHUNKED', sha256, { index: 1, chunkSize: 8, chunkCount: 2, offset: 8, size: second.length, sha256: createHash('sha256').update(second).digest('hex'), temporaryPath: join(dataDir, 'chunk-1') });
+    const progress = app.coreStore.getTransferProgress(requestId);
+    assert.equal(progress.files[0].status, 'VERIFYING');
+    assert.equal(progress.files[0].receivedParts, 2);
+    assert.equal(progress.files[0].chunkCount, 2);
+    assert.equal(progress.summary.verifyingFiles, 1);
+    assert.equal(progress.summary.receivingFiles, 0);
+    const reconciled = await app.coreStore.reconcileTransferParts('TR-CHUNKED');
+    assert.deepEqual(reconciled.errors, []);
+    assert.deepEqual(reconciled.assembled, [sha256]);
+    assert.equal(app.coreStore.getTransferProgress(requestId).files[0].status, 'COMPLETED');
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });

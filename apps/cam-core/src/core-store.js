@@ -56,6 +56,7 @@ export class CoreStore {
   constructor(db, { dataDir = join(process.cwd(), 'data', 'core') } = {}) {
     this.db = db;
     this.dataDir = dataDir;
+    this.transferAssemblyLocks = new Map();
     this.reportDir = join(dataDir, 'verification-reports');
     this.artifactDir = join(dataDir, 'artifacts', 'sha256');
     db.exec(`
@@ -763,6 +764,33 @@ export class CoreStore {
     return this.db.prepare('SELECT part_index AS partIndex, chunk_size AS chunkSize, chunk_count AS chunkCount, byte_offset AS offset, size_bytes AS size, part_sha256 AS sha256 FROM core_transfer_parts WHERE transfer_task_id = ? AND sha256 = ? ORDER BY part_index')
       .all(transferTaskId, String(sha256).toLowerCase());
   }
+  async reconcileTransferParts(transferTaskId) {
+    const existing = this.transferAssemblyLocks.get(transferTaskId);
+    if (existing) return existing;
+    const operation = (async () => {
+      const transfer = this.expectedTransferArtifacts(transferTaskId);
+      const errors = [];
+      const assembled = [];
+      for (const sha256 of new Set(transfer.items.map((item) => String(item.actualSha256 ?? '').toLowerCase()))) {
+        if (!/^[a-f0-9]{64}$/.test(sha256) || this.artifactPath(sha256)) continue;
+        const parts = this.listTransferParts(transferTaskId, sha256);
+        const chunkCount = parts[0]?.chunkCount;
+        if (!Number.isInteger(chunkCount) || chunkCount <= 0 || parts.length !== chunkCount) continue;
+        try {
+          const result = await this.assembleTransferParts(transferTaskId, sha256);
+          if (result.complete) assembled.push(sha256);
+        } catch (error) {
+          errors.push({ sha256, code: error.code ?? 'artifact_assembly_failed', message: error.message });
+        }
+      }
+      return { assembled, errors };
+    })();
+    this.transferAssemblyLocks.set(transferTaskId, operation);
+    try { return await operation; }
+    finally {
+      if (this.transferAssemblyLocks.get(transferTaskId) === operation) this.transferAssemblyLocks.delete(transferTaskId);
+    }
+  }
   getTransferProgress(requestId) {
     const current = this.get(requestId);
     if (!current) return null;
@@ -792,7 +820,11 @@ export class CoreStore {
       const chunkCount = stored ? (parts[0]?.chunkCount ?? Math.max(1, Math.ceil(Number(item.sizeBytes ?? 0) / chunkSize))) : (parts[0]?.chunkCount ?? null);
       const receivedParts = stored ? (chunkCount ?? 1) : parts.length;
       const receivedBytes = stored ? Number(item.sizeBytes ?? 0) : parts.reduce((total, part) => total + Number(part.size ?? 0), 0);
-      const status = stored ? 'COMPLETED' : parts.length ? 'RECEIVING' : 'WAITING';
+      // A complete set of chunks can remain briefly while Core assembles and
+      // verifies the file. It is not another active upload; keep that state
+      // distinct from RECEIVING so the UI does not suggest file concurrency.
+      const chunksComplete = !stored && Number.isInteger(chunkCount) && chunkCount > 0 && receivedParts === chunkCount;
+      const status = stored ? 'COMPLETED' : chunksComplete ? 'VERIFYING' : parts.length ? 'RECEIVING' : 'WAITING';
       const reused = stored && (seenDigests.has(sha256) || Boolean(this.db.prepare('SELECT 1 FROM core_artifacts WHERE sha256 = ? AND received_at < ?').get(sha256, task?.created_at ?? now())));
       seenDigests.add(sha256);
       return {
@@ -819,7 +851,7 @@ export class CoreStore {
       notification: { state: current.transferNotificationState, attempts: current.transferNotificationAttempts, lastError: current.transferNotificationLastError, nextAttemptAt: current.transferNotificationNextAttemptAt },
       edgeFailure: task?.edge_last_error ? { status: task.edge_status, attempts: task.edge_attempts ?? 0, retryAt: task.edge_retry_at ?? null, code: task.edge_error_code ?? null, message: task.edge_last_error, terminal: Boolean(task.edge_failure_terminal) } : null,
       report: { received: current.reportReceived, fileName: current.reportFileName, sizeBytes: current.reportSize },
-      summary: { fileCount: files.length, completedFiles, receivingFiles, totalBytes, receivedBytes, percent: totalBytes ? Math.min(100, Math.round(receivedBytes * 100 / totalBytes)) : 0 },
+      summary: { fileCount: files.length, completedFiles, verifyingFiles: files.filter((file) => file.status === 'VERIFYING').length, receivingFiles, totalBytes, receivedBytes, percent: totalBytes ? Math.min(100, Math.round(receivedBytes * 100 / totalBytes)) : 0 },
       files
     };
   }
