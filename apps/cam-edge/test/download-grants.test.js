@@ -92,6 +92,7 @@ test('cam-edge serves completed packages through principal-bound, resumable gran
     const grantState = await app.inject({ method: 'GET', url: `/api/v1/download-grants/${grant.grantId}`, headers: { 'x-test-user': 'validator-1' } });
     assert.equal(grantState.json().usedTotalSessions, 1);
     assert.ok(grantState.json().sessions.length);
+    assert.equal(grantState.json().sessions[0].downloadedBy.label, 'Token 持有者（未登录）');
     assert.equal(Object.hasOwn(grantState.json(), 'events'), false);
     assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/download-grants/${grant.grantId}`, headers: { 'x-test-user': 'validator-1' } })).statusCode, 200);
     assert.equal((await app.inject({ method: 'GET', url: grant.items[0].downloadUrl })).statusCode, 403);

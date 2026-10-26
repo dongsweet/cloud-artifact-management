@@ -294,6 +294,13 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     try {
       const result = freezes.applyTransferReady(request.body ?? {});
       const item = result.item;
+      // Acknowledge synchronously so Core can durably mark the dispatch as
+      // delivered. The dispatcher then reports ACCEPTED before it starts the
+      // data plane, so a missing first byte has an explicit deadline.
+      queueMicrotask(() => { void (async () => {
+        await artifactDispatcher.accepted(item.freezeId);
+        await artifactDispatcher.deliver(item.freezeId);
+      })(); });
       return reply.send({ accepted: true, requestId: item.freezeId, transferTaskId: item.transferTaskId, eventId: request.body?.eventId, idempotent: result.idempotent });
     } catch (err) {
       const status = err.code === 'freeze_not_found' ? 404 : ['transfer_request_conflict', 'transfer_event_conflict'].includes(err.code) ? 409 : 400;
@@ -312,11 +319,21 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     const freeze = freezes.get(freezeId);
     if (!freeze) return error(reply, 404, 'freeze_not_found', '固化申请不存在');
     if (freeze.status !== 'APPROVED' || freeze.transferTaskId !== transferTaskId || freeze.manifestSha256.toLowerCase() !== manifestSha256) return error(reply, 409, 'transfer_retry_conflict', '传输重试指令与 Edge 审批记录不匹配');
-    if (freeze.transferStatus === 'RECEIVED') return reply.send({ accepted: true, requestId, transferTaskId, status: 'RECEIVED', idempotent: true });
+    if (freeze.transferStatus === 'RECEIVED') {
+      // Core may have persisted all data but missed Edge's final receipt. Ask
+      // the dispatcher to repair that idempotently instead of leaving Core in
+      // a permanent "waiting for receipt" state.
+      queueMicrotask(() => { void artifactDispatcher.deliver(freezeId); });
+      return reply.send({ accepted: true, requestId, transferTaskId, status: 'RECEIVED', idempotent: true });
+    }
     if (freeze.transferStatus === 'SENDING') return reply.code(202).send({ accepted: true, requestId, transferTaskId, status: 'SENDING', idempotent: true });
+    if (freeze.transferStatus === 'READY') {
+      queueMicrotask(() => { void (async () => { await artifactDispatcher.accepted(freezeId); await artifactDispatcher.deliver(freezeId); })(); });
+      return reply.code(202).send({ accepted: true, requestId, transferTaskId, status: 'QUEUED', idempotent: true });
+    }
     if (freeze.transferStatus !== 'FAILED') return error(reply, 409, 'transfer_retry_unavailable', '当前传输状态不支持重试');
     freezes.resetTransfer(freezeId);
-    void artifactDispatcher.deliver(freezeId).catch(() => {});
+    queueMicrotask(() => { void (async () => { await artifactDispatcher.accepted(freezeId); await artifactDispatcher.deliver(freezeId); })(); });
     return reply.code(202).send({ accepted: true, requestId, transferTaskId, status: 'QUEUED', idempotent: false });
   });
   app.get('/api/v1/rounds/:roundId/freezes', async (request, reply) => {
@@ -452,7 +469,13 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       const actor = principal(request);
       const grant = downloadGrants.getGrant(request.params.grantId);
       if (!grant || (grant.createdBy !== actor.principalId && grant.principalId !== actor.principalId && !request.principal.roles?.includes('EDGE_AUDITOR'))) return error(reply, 404, 'download_grant_not_found', 'download grant not found');
-      return reply.send({ ...grantResponse(grant), sessions: downloadGrants.db.prepare('SELECT session_id, candidate_id, status, bytes_sent, covered_bytes, source_address, started_at, updated_at FROM download_sessions WHERE grant_id = ? ORDER BY rowid DESC LIMIT 200').all(grant.grantId) });
+      const sessions = downloadGrants.db.prepare('SELECT session_id, candidate_id, downloaded_by, status, bytes_sent, covered_bytes, source_address, user_agent, started_at, updated_at, completed_at, error_message FROM download_sessions WHERE grant_id = ? ORDER BY rowid DESC LIMIT 200').all(grant.grantId).map((session) => {
+        const downloadedBy = String(session.downloaded_by ?? '');
+        if (downloadedBy.startsWith('TOKEN:')) return { ...session, downloadedBy: { type: 'TOKEN', label: 'Token 持有者（未登录）' } };
+        const user = auth.getUser(downloadedBy);
+        return { ...session, downloadedBy: user ? { type: 'ACCOUNT', id: user.id, displayName: user.displayName, username: user.username, label: `${user.displayName}（${user.username}）` } : { type: 'ACCOUNT', label: '已认证账号' } };
+      });
+      return reply.send({ ...grantResponse(grant), sessions });
     } catch (err) {
       return error(reply, err.code === 'principal_required' ? 401 : 400, err.code ?? 'download_grant_query_failed', err.message);
     }

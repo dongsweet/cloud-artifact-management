@@ -436,7 +436,13 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
       const grant = delivery.getGrant(request.params.grantId);
       if (!grant || (!hasAgentPermission(request.principal.user.roles, 'auditRead') && grant.createdBy !== request.principal.id && grant.principalId !== request.principal.id)) return fail(reply, 404, 'delivery_grant_not_found', '交付授权不存在');
       const artifacts = await deliveryArtifactMetadata();
-      return reply.send({ ...decorateDeliveryGrant(grant, artifacts), sessions: delivery.getSessions(grant.grantId) });
+      const sessions = delivery.getSessions(grant.grantId).map((session) => {
+        const downloadedBy = String(session.downloaded_by ?? '');
+        if (downloadedBy.startsWith('TOKEN:')) return { ...session, downloadedBy: { type: 'TOKEN', label: 'Token 持有者（未登录）' } };
+        const user = auth.getUser(downloadedBy);
+        return { ...session, downloadedBy: user ? { type: 'ACCOUNT', id: user.id, displayName: user.displayName, username: user.username, label: `${user.displayName}（${user.username}）` } : { type: 'ACCOUNT', label: '已认证账号' } };
+      });
+      return reply.send({ ...decorateDeliveryGrant(grant, artifacts), sessions });
     } catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_grant_query_failed', err.message); }
   });
   app.get('/api/v1/delivery-grants/:grantId/manifest', async (request, reply) => {
