@@ -144,5 +144,7 @@ test('Agent delivery navigation is declared in the business menu template', asyn
   assert.match(deliverySource, /id="delivery-total"[^>]*readonly/);
   assert.match(deliverySource, /id="delivery-product"/);
   assert.match(deliverySource, /id="delivery-artifact"/);
+  assert.match(deliverySource, /id="delivery-create-dialog" class="cam-detail-modal cam-form-modal"/);
+  assert.match(deliverySource, /id="delivery-create-dialog"[\s\S]*?type="submit">确定<\/button>/);
   assert.match(deliverySource, /function updateDeliveryTotal\(\)/);
 });
