@@ -312,6 +312,7 @@ test('Core sends a signed Edge transfer retry instruction from the Core API', as
     assert.equal(typeof calls[0].options.headers['x-cam-gate-signature'], 'string');
     assert.deepEqual(calls[0].payload, { requestId, freezeId: requestId, transferTaskId: 'TR-TRANSFER-RETRY', manifestSha256 });
     assert.equal(app.coreStore.get(requestId).transferEdgeStatus, 'RECEIVING', 'an accepted manual retry is shown as active immediately');
+    assert.equal(app.coreStore.get(requestId).transferEdgeAttempts, 0, 'manual retry starts a fresh Core attempt window');
     assert.equal(app.coreStore.get(requestId).transferEdgeLastError, '磁盘空间不足', 'the previous Edge error remains visible until a new report arrives');
   } finally { await app.close(); await rm(dataDir, { recursive: true, force: true }); }
 });
