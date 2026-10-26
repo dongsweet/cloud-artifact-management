@@ -56,11 +56,11 @@
   font-size: .82rem;
   font-weight: 700;
 }
-.cam-distribution-footer { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
-.cam-distribution-footer .btn { flex: 0 0 auto; }
+.cam-distribution-footer { display: flex; align-items: center; justify-content: flex-start; gap: 1rem; }
+.cam-distribution-footer .btn { flex: 0 0 auto; margin-left: auto; }
 @media (max-width: 768px) {
   .cam-distribution-intro, .cam-distribution-footer { align-items: flex-start; flex-direction: column; }
-  .cam-distribution-footer .btn { width: 100%; }
+  .cam-distribution-footer .btn { width: 100%; margin-left: 0; }
 }
 
 /* Keep the login screen above AdminLTE's fixed shell and sidebar. */
