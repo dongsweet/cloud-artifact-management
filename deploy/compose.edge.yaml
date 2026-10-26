@@ -10,6 +10,7 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp:size=256m,noexec,nosuid,nodev
+    # 主机绑定目录必须持久化：包含 edge.sqlite、gate-keyring.json 和制品文件。
     volumes:
       - ${CAM_EDGE_DATA_DIR:-/var/lib/cloud-artifact-management/edge}:/data
     environment:

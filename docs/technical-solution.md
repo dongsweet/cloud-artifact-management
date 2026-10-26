@@ -540,6 +540,8 @@ transfer-bundle/
 
 ### cam-agent 首期分发详细设计
 
+身份持久化约束（覆盖本节早期兼容描述）：本项目不保留历史部署兼容逻辑。Agent 的 Core 地址、公钥、过渡公钥和配对状态只存入 Agent 本地 `agent.sqlite`；Agent 私钥只存入主机绑定数据目录的 `identity.json`（`0600`）。Core 私钥只存入 Core 主机绑定数据目录的 `core-agent-identity.json`（`0600`）。不得通过 `.env`、Compose 外部变量、镜像或数据库传递任何私钥或 Core 身份公钥；Compose 只负责挂载持久化数据目录。
+
 采用 Core 编排、Agent 主动拉取的模式。Core 管理员登记中心标识、Agent 名称和公钥完成身份配对，不再设置单独的安全域字段；Core 不下发固定服务令牌。各隔离网络仍独立部署 Agent，授权以中心、Agent 身份和分发任务为准。停用 Agent 会立即拒绝轮询、清单、进度和文件请求。Core 管理员按 Agent 单独创建分发任务，任务绑定正式 `artifactId`、清单摘要和文件摘要快照，Agent 不能自行选择其他中心或正式版本。
 
 Core 与 Agent 使用双向应用层签名。每台 Agent 保留独立 Ed25519 私钥，Core 登记 Agent 公钥；Agent 请求签名覆盖规范化的 HTTP 方法、路径、时间戳、随机数和原始请求体 SHA-256。Core 另生成持久化服务身份 `core-agent-identity.json`，只在 Core 保存私钥，并把服务公钥配置到所有 Agent。Core 返回 Agent API 响应时签名覆盖 HTTP 状态、方法、路径、请求 nonce、响应时间戳和原始响应体 SHA-256，Agent 验证签名后才解析响应或写入任务状态，业务错误和文件分块响应同样适用。Core 服务身份轮换使用分阶段签名协商：Core 暂存新身份并继续使用旧身份签署响应，Agent 验证提案后保存新公钥并提交签名确认；Core 在所有未禁用 Agent 确认后提前启用新身份，最多等待配置的旧身份过渡期；超时后仍启用新身份，并跳过未确认的离线 Agent。在线 Agent 在截止时间前的下次主动请求时完成更新；超时后重新上线的 Agent 需管理员重新配对。

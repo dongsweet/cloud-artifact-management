@@ -176,6 +176,7 @@ services:
     user: "10001:10001"
     tmpfs:
       - /tmp:size=256m,noexec,nosuid,nodev
+    # 主机绑定目录必须持久化：其中包含 Agent identity.json（私钥）、agent.sqlite 和缓存。
     volumes:
       - ${CAM_AGENT_1_DATA_DIR:-/var/lib/cloud-artifact-management/agent-1}:/data
     environment:
@@ -186,7 +187,6 @@ services:
       CAM_LOG_MAX_BYTES: ${CAM_LOG_MAX_BYTES:-52428800}
       CAM_LOG_MAX_FILES: ${CAM_LOG_MAX_FILES:-5}
       CAM_LOG_COLLECTION_MAX_BYTES: ${CAM_LOG_COLLECTION_MAX_BYTES:-104857600}
-      CAM_AGENT_ID: ${CAM_AGENT_1_ID:-}
       CAM_AGENT_POLL_MS: ${CAM_AGENT_POLL_MS:-5000}
       CAM_AGENT_CHUNK_SIZE: ${CAM_AGENT_CHUNK_SIZE:-4194304}
       CAM_AGENT_CONCURRENCY: ${CAM_AGENT_CONCURRENCY:-4}
@@ -212,6 +212,7 @@ services:
     user: "10001:10001"
     tmpfs:
       - /tmp:size=256m,noexec,nosuid,nodev
+    # 主机绑定目录必须持久化：其中包含 Agent identity.json（私钥）、agent.sqlite 和缓存。
     volumes:
       - ${CAM_AGENT_2_DATA_DIR:-/var/lib/cloud-artifact-management/agent-2}:/data
     environment:
@@ -223,7 +224,6 @@ services:
       CAM_LOG_MAX_BYTES: ${CAM_LOG_MAX_BYTES:-52428800}
       CAM_LOG_MAX_FILES: ${CAM_LOG_MAX_FILES:-5}
       CAM_LOG_COLLECTION_MAX_BYTES: ${CAM_LOG_COLLECTION_MAX_BYTES:-104857600}
-      CAM_AGENT_ID: ${CAM_AGENT_2_ID:-}
       CAM_AGENT_POLL_MS: ${CAM_AGENT_POLL_MS:-5000}
       CAM_AGENT_CHUNK_SIZE: ${CAM_AGENT_CHUNK_SIZE:-4194304}
       CAM_AGENT_CONCURRENCY: ${CAM_AGENT_CONCURRENCY:-4}

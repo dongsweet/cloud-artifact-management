@@ -39,7 +39,7 @@ test('Agent configures Core through authenticated APIs and preserves trust acros
     const missing = await app.inject({ method: 'POST', url: '/api/v1/core-config/test', headers, payload: {} });
     assert.equal(missing.statusCode, 503, missing.body);
     assert.equal(missing.json().error.code, 'core_public_key_missing');
-    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/core-config', headers })).json().item.source, 'environment');
+    assert.equal((await app.inject({ method: 'GET', url: '/api/v1/core-config', headers })).json().item.source, 'unconfigured');
     const payload = { coreUrl, corePublicKey: core.agentServiceIdentity.publicKeyPem };
     assert.equal((await app.inject({ method: 'PUT', url: '/api/v1/core-config', headers: { cookie: headers.cookie }, payload })).statusCode, 403);
     for (const invalid of [{ coreUrl: 'file:///tmp/core' }, { coreUrl: 'https://user:secret@example.com' }, { coreUrl: coreUrl + '?x=1' }, { corePublicKey: 'invalid' }, { corePublicKey: '' }]) {

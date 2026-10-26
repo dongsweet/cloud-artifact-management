@@ -19,8 +19,6 @@ import { bearerToken, parseRange } from '../../../libs/cam-transfer/src/http.js'
 import { buildLogBundle, readRuntimeLogs, sha256 } from '../../../libs/cam-server/src/log-bundle.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/agent' : join(process.cwd(), 'data', 'agent'));
-const CORE_URL = (process.env.CAM_CORE_URL ?? 'http://127.0.0.1:3102').replace(/\/$/u, '');
-const LEGACY_AGENT_ID = process.env.CAM_AGENT_ID ?? '';
 const CHUNK_SIZE = Math.max(64 * 1024, Math.min(64 * 1024 * 1024, Number(process.env.CAM_AGENT_CHUNK_SIZE ?? 4 * 1024 * 1024)));
 const CONCURRENCY = Math.max(1, Math.min(16, Number(process.env.CAM_AGENT_CONCURRENCY ?? 4)));
 
@@ -47,11 +45,10 @@ function registerAuth(app, auth) {
   app.post('/api/v1/auth/password', { bodyLimit: 4096 }, async (request, reply) => { if (request.principal?.type !== 'LOCAL_USER') return fail(reply, 403, 'local_account_required', '本地账号密码由 Agent 管理'); if (!auth.csrf(request.principal, request.headers['x-cam-agent-csrf'])) return fail(reply, 403, 'csrf_invalid', '会话校验失败，请刷新页面后重试'); try { await auth.changePassword(request.principal.id, request.body?.password, request.principal.id, request.body?.oldPassword); reply.header('Set-Cookie', [cookie('cam_agent_session', '', true, true), cookie('cam_agent_csrf', '', false, true)]); return { ok: true, loginRequired: true }; } catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'password_failed', err.message); } });
 }
 
-export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE_URL, agentId: legacyAgentId = LEGACY_AGENT_ID, corePublicKey = process.env.CAM_CORE_PUBLIC_KEY ?? (process.env.CAM_CORE_PUBLIC_KEY_B64 ? Buffer.from(process.env.CAM_CORE_PUBLIC_KEY_B64, 'base64').toString('utf8') : ''), corePreviousPublicKey = process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY ?? (process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_B64 ? Buffer.from(process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_B64, 'base64').toString('utf8') : ''), corePreviousPublicKeyExpiresAt = process.env.CAM_CORE_PREVIOUS_PUBLIC_KEY_EXPIRES_AT ?? '', fetchImpl = fetch, aaaAdapter = undefined, startWorker = true } = {}) {
+export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', agentId = '', corePublicKey = '', corePreviousPublicKey = '', corePreviousPublicKeyExpiresAt = '', fetchImpl = fetch, aaaAdapter = undefined, startWorker = true } = {}) {
   await mkdir(join(dataDir, 'cache'), { recursive: true });
   const identityPath = join(dataDir, 'identity.json');
   let identity = await loadAgentIdentity(identityPath);
-  let agentId = legacyAgentId;
   const db = await openDatabase(join(dataDir, 'agent.sqlite'));
   // AAA authentication is direct from Agent; Core is only the artifact source.
   const aaaConfigStore = new AaaConfigStore(db, { env: process.env, table: 'agent_aaa_config' });
@@ -139,7 +136,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = CORE
     }
     if (!response.ok) { const body = JSON.parse(responseBody.toString('utf8') || '{}'); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
   };
-  const rotation = await createIdentityRotation({ identityPath, identity, request: core, onIdentity: (next) => { identity = next; }, onAgentId: (next) => { agentId = next; }, initialAgentId: legacyAgentId });
+  const rotation = await createIdentityRotation({ identityPath, identity, request: core, onIdentity: (next) => { identity = next; }, onAgentId: (next) => { agentId = next; }, initialAgentId: agentId });
   const cachePath = (sha256) => join(dataDir, 'cache', sha256);
   const inspectCachedFile = async (file) => {
     try {

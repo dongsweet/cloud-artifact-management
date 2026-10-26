@@ -20,7 +20,7 @@ export class CoreConnectionStore {
     this.db = db;
     db.exec('CREATE TABLE IF NOT EXISTS agent_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TEXT NOT NULL)');
     this.defaults = {
-      coreUrl: normalizeUrl(defaults.coreUrl ?? 'http://127.0.0.1:3102'),
+      coreUrl: defaults.coreUrl ? normalizeUrl(defaults.coreUrl) : '',
       corePublicKey: defaults.corePublicKey ? normalizeKey(defaults.corePublicKey, 'Core 当前公钥') : '',
       previousPublicKey: defaults.previousPublicKey ? normalizeKey(defaults.previousPublicKey, 'Core 过渡公钥') : '',
       previousPublicKeyExpiresAt: defaults.previousPublicKeyExpiresAt ?? '',
@@ -33,7 +33,7 @@ export class CoreConnectionStore {
     const item = { ...this.defaults, ...stored };
     const fingerprintValue = item.corePublicKey ? fingerprint(item.corePublicKey) : null;
     const previousFingerprint = item.previousPublicKey ? fingerprint(item.previousPublicKey) : null;
-    return { ...item, fingerprint: fingerprintValue, previousFingerprint, configured: Boolean(item.corePublicKey), source: Object.hasOwn(stored, 'coreUrl') ? 'database' : 'environment' };
+    return { ...item, fingerprint: fingerprintValue, previousFingerprint, configured: Boolean(item.corePublicKey), source: Object.hasOwn(stored, 'coreUrl') ? 'database' : 'unconfigured' };
   }
   save(input = {}) {
     const before = this.get();
