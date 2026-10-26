@@ -44,7 +44,7 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.ok(html.includes("$('#core-public-key').classList.remove('bg-body-secondary')"));
   assert.ok(html.includes("$('#core-key-cancel').onclick=()=>{renderCoreConfig(coreConfig)"));
   assert.doesNotMatch(html, /立即轮换/);
-  assert.match(html, /部署交付/);
+  assert.match(html, /下载授权/);
   assert.doesNotMatch(html, /const deliverySidebar=.*?append\(deliverySidebar\.parentElement\)/);
   assert.match(html, /CamAgentDeliveryOpen/);
   assert.match(html, /下载明细/);
@@ -132,10 +132,16 @@ test('Agent delivery navigation is declared in the business menu template', asyn
     readFile(new URL('../src/delivery-web.js', import.meta.url), 'utf8')
   ]);
   assert.match(webSource, /data-agent-menu-group-item="business" data-agent-permission="deliveryRead"><a href="#delivery"/);
-  assert.match(webSource, /data-agent-mobile-group="business"[\s\S]*?href="#delivery"[\s\S]{0,160}部署交付/);
+  assert.match(webSource, /data-agent-mobile-group="business"[\s\S]*?href="#delivery"[\s\S]{0,160}下载授权/);
   assert.match(webSource, /\$\{agentDeliverySection\(\)\}/);
   assert.doesNotMatch(deliverySource, /businessHeader\?\.insertAdjacentHTML/);
   assert.doesNotMatch(deliverySource, /mobileBusiness\?\.insertAdjacentHTML/);
   assert.doesNotMatch(deliverySource, /document\.querySelector\('#page-tasks'\)\.insertAdjacentHTML/);
   assert.match(deliverySource, /document\.querySelectorAll\('#page-delivery dialog'\)\.forEach\(\(dialog\) => document\.body\.append\(dialog\)\)/);
+  assert.match(deliverySource, /id="new-delivery-grant"/);
+  assert.match(deliverySource, /id="delivery-owner"[^>]*readonly/);
+  assert.match(deliverySource, /id="delivery-total"[^>]*readonly/);
+  assert.match(deliverySource, /id="delivery-product"/);
+  assert.match(deliverySource, /id="delivery-artifact"/);
+  assert.match(deliverySource, /function updateDeliveryTotal\(\)/);
 });

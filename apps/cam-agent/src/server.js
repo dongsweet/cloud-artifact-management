@@ -428,7 +428,8 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
     try {
       const body = request.body ?? {}; const artifactId = body.artifactId;
       const artifact = (await listAvailableArtifacts()).find((item) => item.artifactId === artifactId);
-      const grant = delivery.createGrant({ artifactId, artifact, fileSha256s: body.fileSha256s, principalId: request.principal.id, createdBy: request.principal.id, expiresAt: body.expiresAt, maxTotalSessions: body.maxTotalSessions, maxSessionsPerFile: body.maxSessionsPerFile });
+      if (!artifact?.distributionAuthorized) throw Object.assign(new Error('正式制品尚未获准向本 Agent 分发，不能创建下载授权'), { code: 'delivery_artifact_not_authorized' });
+      const grant = delivery.createGrant({ artifactId, artifact, fileSha256s: body.fileSha256s, principalId: request.principal.id, createdBy: request.principal.id, expiresAt: body.expiresAt, maxSessionsPerFile: body.maxSessionsPerFile });
       return reply.code(201).send(deliveryGrantResponse(grant, grant.token));
     } catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_grant_failed', err.message); }
   });
