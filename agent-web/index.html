@@ -47,7 +47,6 @@ if (!document.querySelector('#page-delivery')) throw Error('下载授权页面�
 document.querySelectorAll('#page-delivery dialog').forEach((dialog) => document.body.append(dialog));
 let deliveryArtifact = null, deliveryArtifacts = [], deliveryExport = null, deliveryDetailId = null, deliveryDetailTimer = null, deliveryConfirmId = null, deliveryTotalCustomized = false;
 const deliveryBytes = (value) => { let amount = Number(value); if (!Number.isFinite(amount) || amount < 0) return '-'; if (amount < 1024) return amount + ' B'; const units = ['KB','MB','GB','TB']; let unit = -1; do { amount /= 1024; unit += 1; } while (amount >= 1024 && unit < units.length - 1); return amount.toFixed(amount >= 10 ? 1 : 2) + ' ' + units[unit]; };
-const deliverySessionLabel = { ACTIVE: '传输中', INTERRUPTED: '已中断', COMPLETED: '已完成', FAILED: '失败' };
 function deliveryStatus(grant) { if (grant.revokedAt) return ['已撤销', 'secondary']; if (Date.parse(grant.expiresAt) <= Date.now()) return ['已到期', 'secondary']; return ['有效', 'success']; }
 function renderDeliveryGrants(items) {
   const summary = { active: 0, expiring: 0, sessions: 0, failed: 0 };

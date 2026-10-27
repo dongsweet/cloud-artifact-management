@@ -1,6 +1,5 @@
 import { initAccountUI, currentUser, userLabel, csrfHeaders, showLogin, renderAccountView, hasRole } from './account-ui.js?v=20261023-menu-groups';
 import { renderGatePairing } from './gate-pairing.js?v=20261020-peer-save-feedback';
-import { refreshPaginatedTables } from './table-pagination.js?v=20261020-table-pagination';
 import { canEdgePage } from './role-permissions.js?v=20261023-auditor-scope';
 import { displayTransferState } from './task-state.js?v=20261027-transfer-state';
 const state = { products: [], releases: [], view: 'products', productId: null, releaseId: null, roundId: null, candidateId: null, pollTimer: null, queueTimer: null, currentRoundCandidates: [], currentRoundQueue: [], batchSubmitting: false, routeGeneration: 0, importFile: null, importPreview: null, nextRoundPreview: null };
@@ -21,8 +20,6 @@ function showAlert(message, type = 'success') {
 function statusLabel(status) { return { OPEN: '开放', SEALED: '已固化封存', SUPERSEDED: '已由后续轮次替代', CREATED: '待接收', RECEIVING: '接收中', PARTIAL: '待完成', ASSEMBLING: '组装校验中', FAILED: '失败', COMPLETED: '已完成', DRAFT: '固化草稿', PENDING_APPROVAL: '等待审批', APPROVED: '审批通过，已固化', REJECTED: '审批驳回', WITHDRAWN: '已撤回', IDLE: '尚未准备传输', READY: '待安排', SENDING: '传输中', RECEIVED: '已完成', WAITING_CONFIRMATION: '等待确认', VERIFYING: '校验中', RETRY_WAIT: '重试等待', TRANSFERRING: '传输中', COLLECTING: '收集中', PACKAGING: '打包中', EXPIRED: '已过期' }[status] ?? status; }
 function statusClass(status) { return { OPEN: 'text-bg-primary', SEALED: 'text-bg-success', SUPERSEDED: 'text-bg-secondary', CREATED: 'text-bg-secondary', RECEIVING: 'text-bg-info', PARTIAL: 'text-bg-warning', ASSEMBLING: 'text-bg-primary', FAILED: 'text-bg-danger', COMPLETED: 'text-bg-success', DRAFT: 'text-bg-secondary', PENDING_APPROVAL: 'text-bg-warning', APPROVED: 'text-bg-success', REJECTED: 'text-bg-danger', WITHDRAWN: 'text-bg-secondary' }[status] ?? 'text-bg-secondary'; }
 function internalDeliveryLabel(status) { return status === 'DELIVERED' ? '已进入内网，等待审批' : '正在进入内网，系统会自动重试'; }
-function queueLabel(status) { return { QUEUED: '排队中', RUNNING: '调度中', PAUSED: '已暂停', FAILED: '调度失败', CANCELLED: '已取消', COMPLETED: '已完成' }[status] ?? status; }
-function queueClass(status) { return { QUEUED: 'text-bg-secondary', RUNNING: 'text-bg-info', PAUSED: 'text-bg-warning', FAILED: 'text-bg-danger', CANCELLED: 'text-bg-secondary', COMPLETED: 'text-bg-success' }[status] ?? 'text-bg-secondary'; }
 function formatBytes(value) { if (!Number.isFinite(Number(value))) return '-'; if (value < 1024) return `${value} B`; const units = ['KB', 'MB', 'GB', 'TB']; let amount = value; let index = -1; while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index += 1; } return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${units[index]}`; }
 
 async function api(path, options = {}) {

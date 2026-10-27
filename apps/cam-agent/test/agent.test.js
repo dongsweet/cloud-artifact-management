@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { buildAgentApp } from '../src/server.js';
-import { AuthStore } from '../../cam-core/src/core-auth-store.js';
 import { createIdentityRotation } from '../src/identity-rotation.js';
 import { buildCoreApp } from '../../cam-core/src/server.js';
 import { generateIdentity } from '../../../libs/cam-agent-auth/src/protocol.js';

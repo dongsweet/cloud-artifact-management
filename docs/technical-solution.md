@@ -858,7 +858,7 @@ Core 的账号管理页面维护用户名、密码重置、账号状态、Core �
 
 外部交换区的候选接收采用持久化下载队列。`POST /api/v1/rounds/:roundId/receive-batch` 可将整轮候选包或指定的候选包加入队列，`GET /api/v1/receive-queue` 返回排队、运行、暂停和失败任务。单包接收接口也复用该队列。队列状态、尝试次数和错误信息写入外部交换区 SQLite；服务重启时将运行中的任务恢复为排队状态，并从已有分块继续下载。默认同时接收 2 个包，可通过 `CAM_RECEIVE_CONCURRENCY` 调整为 1 至 16。暂停只停止当前 HTTP Range 请求并保留已完成分块，恢复时继续缺失分块。
 
-`cam-edge` 的 `CAM_SOURCE_ALLOWLIST` 按 URL 主机名或 IP 限制研发文件来源，端口不参与匹配。例如 `http://172.22.5.66:9090/path/file.zip` 应允许 `172.22.5.66`。`cam-source-route.service` 直接读取同一项目 `.env` 中的 allowlist，为每个主机名解析出的 IPv4 地址安装精确 `/32` 路由；不再维护独立的路由目标列表。端口由 URL 和网络访问控制策略决定，不写入路由。allowlist 变化后重启该服务即可同步新增或删除的路由。
+`cam-edge` 的 `CAM_SOURCE_ALLOWLIST` 按 URL 主机名或 IP 限制研发文件来源，端口不参与匹配。例如 `http://172.22.5.66:9090/path/file.zip` 应允许 `172.22.5.66`。接收请求禁止 HTTP 重定向，避免跳转到未审核主机；同时由 `CAM_MAX_CANDIDATE_SIZE` 限制单个候选包大小，防止异常来源耗尽磁盘。`cam-source-route.service` 直接读取同一项目 `.env` 中的 allowlist，为每个主机名解析出的 IPv4 地址安装精确 `/32` 路由；不再维护独立的路由目标列表。端口由 URL 和网络访问控制策略决定，不写入路由。allowlist 变化后重启该服务即可同步新增或删除的路由。
 
 候选数据模型采用四级关系：`products` 保存软件产品；`releases` 保存产品发布版本；`release_rounds` 保存同一发布版本的候选收集轮次；`candidates` 保存单个候选包快照和断点续传状态。`round_candidates` 是轮次到候选包的清单映射，记录 `OWNED` 或 `INHERITED` 以及继承来源轮次。`releases` 另外保存研发版本号 `version`、内部修订号 `revision`、上一内部版本 `base_release_id` 和发布状态。
 
