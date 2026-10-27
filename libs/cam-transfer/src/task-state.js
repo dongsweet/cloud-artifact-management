@@ -1,0 +1,41 @@
+// Shared transfer state vocabulary. Storage and wire protocols may keep their
+// historical values; callers use this function for a stable cross-direction
+// display/monitoring state.
+export const DISPLAY_TRANSFER_STATES = Object.freeze({
+  SCHEDULED: 'SCHEDULED',
+  QUEUED: 'QUEUED',
+  TRANSFERRING: 'TRANSFERRING',
+  VERIFYING: 'VERIFYING',
+  WAITING_CONFIRMATION: 'WAITING_CONFIRMATION',
+  RETRY_WAIT: 'RETRY_WAIT',
+  FAILED: 'FAILED',
+  COMPLETED: 'COMPLETED',
+  PARTIAL: 'PARTIAL',
+  PAUSE_REQUESTED: 'PAUSE_REQUESTED',
+  PAUSED: 'PAUSED',
+  CANCEL_REQUESTED: 'CANCEL_REQUESTED',
+  CANCELLED: 'CANCELLED',
+  WAITING_AUTHORIZATION: 'WAITING_AUTHORIZATION',
+  WAITING_EDGE: 'WAITING_EDGE'
+});
+
+export function displayTransferState(status, { controlState = null, retryAt = null, hasError = false } = {}) {
+  const value = String(status ?? '').toUpperCase();
+  if (controlState === 'PAUSE_REQUESTED') return DISPLAY_TRANSFER_STATES.PAUSE_REQUESTED;
+  if (controlState === 'CANCEL_REQUESTED') return DISPLAY_TRANSFER_STATES.CANCEL_REQUESTED;
+  if (value === 'SCHEDULED') return DISPLAY_TRANSFER_STATES.SCHEDULED;
+  if (value === 'QUEUED') return hasError && retryAt ? DISPLAY_TRANSFER_STATES.RETRY_WAIT : DISPLAY_TRANSFER_STATES.QUEUED;
+  if (['STARTED', 'RECEIVING', 'RUNNING', 'SENDING', 'EDGE_STARTED'].includes(value)) return DISPLAY_TRANSFER_STATES.TRANSFERRING;
+  if (['ASSEMBLY_PENDING', 'ASSEMBLING', 'VERIFYING'].includes(value)) return DISPLAY_TRANSFER_STATES.VERIFYING;
+  if (['WAITING_RECEIPT', 'WAITING_CONFIRMATION'].includes(value)) return DISPLAY_TRANSFER_STATES.WAITING_CONFIRMATION;
+  if (['RETRY_WAIT', 'NOTIFICATION_RETRY_WAIT'].includes(value)) return DISPLAY_TRANSFER_STATES.RETRY_WAIT;
+  if (['FAILED', 'VERIFY_FAILED', 'NOTIFICATION_FAILED'].includes(value)) return DISPLAY_TRANSFER_STATES.FAILED;
+  if (['RECEIVED', 'COMPLETED', 'CACHED'].includes(value)) return DISPLAY_TRANSFER_STATES.COMPLETED;
+  if (value === 'PAUSED') return DISPLAY_TRANSFER_STATES.PAUSED;
+  if (value === 'CANCELLED') return DISPLAY_TRANSFER_STATES.CANCELLED;
+  if (value === 'WAITING_AUTHORIZATION') return DISPLAY_TRANSFER_STATES.WAITING_AUTHORIZATION;
+  if (value === 'WAITING_EDGE') return DISPLAY_TRANSFER_STATES.WAITING_EDGE;
+  if (value === 'PARTIAL') return DISPLAY_TRANSFER_STATES.PARTIAL;
+  if (['IDLE', 'READY', 'NOT_SCHEDULED', 'NOT_CACHED'].includes(value)) return DISPLAY_TRANSFER_STATES.WAITING_AUTHORIZATION;
+  return value || DISPLAY_TRANSFER_STATES.QUEUED;
+}

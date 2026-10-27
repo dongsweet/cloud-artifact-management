@@ -1,10 +1,15 @@
 export const taskStateMeta = {
-  SCHEDULED: ['已计划', 'info'],
+  SCHEDULED: ['待安排', 'info'],
+  TRANSFERRING: ['传输中', 'primary'],
   QUEUED: ['排队中', 'warning'],
   RUNNING: ['传输中', 'primary'],
+  VERIFYING: ['校验中', 'info'],
+  WAITING_CONFIRMATION: ['等待确认', 'primary'],
   RETRY_WAIT: ['重试等待', 'danger'],
+  FAILED: ['失败', 'danger'],
   CACHED: ['已完成', 'success'],
   COMPLETED: ['已完成', 'success'],
+  PARTIAL: ['部分缓存', 'warning'],
   NOT_CACHED: ['未拉取', 'secondary']
 };
 

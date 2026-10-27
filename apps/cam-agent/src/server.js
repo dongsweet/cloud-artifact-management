@@ -15,6 +15,7 @@ import { createIdentityRotation, loadAgentIdentity } from './identity-rotation.j
 import { CoreConnectionStore } from './core-connection.js';
 import { AgentDeliveryStore } from './delivery-store.js';
 import { bearerToken, parseRange } from '../../../libs/cam-transfer/src/http.js';
+import { displayTransferState } from '../../../libs/cam-transfer/src/task-state.js';
 import { buildLogBundle, readRuntimeLogs, sha256 } from '../../../libs/cam-server/src/log-bundle.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/agent' : join(process.cwd(), 'data', 'agent'));
@@ -151,11 +152,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
   const taskForArtifact = (artifactId) => db.prepare('SELECT * FROM agent_tasks WHERE artifact_id = ? ORDER BY updated_at DESC LIMIT 1').get(artifactId);
   const displayTaskStatus = (task) => {
     if (!task) return 'NOT_SCHEDULED';
-    if (task.status === 'COMPLETED') return 'CACHED';
-    if (task.status === 'SCHEDULED') return 'SCHEDULED';
-    if ((task.last_error ?? task.lastError) && (task.retry_at ?? task.retryAt) && Date.parse(task.retry_at ?? task.retryAt) > Date.now()) return 'RETRY_WAIT';
-    if (task.status === 'RUNNING') return 'RUNNING';
-    return 'QUEUED';
+    return displayTransferState(task.status, { retryAt: task.retry_at ?? task.retryAt, hasError: Boolean(task.last_error ?? task.lastError) });
   };
   const listAvailableArtifacts = async () => {
     const response = await core('/api/v1/agent/available-artifacts'); const catalog = await response.json();
@@ -166,10 +163,11 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
       const cachedFiles = files.filter((file) => file.cached);
       const allCached = files.length > 0 && cachedFiles.length === files.length;
       const taskState = displayTaskStatus(task);
-      const agentStatus = !task ? 'NOT_SCHEDULED' : allCached ? 'CACHED' : taskState === 'RETRY_WAIT' ? 'RETRY_WAIT' : taskState === 'RUNNING' ? 'RUNNING' : taskState === 'SCHEDULED' ? 'SCHEDULED' : taskState === 'QUEUED' ? 'QUEUED' : cachedFiles.length ? 'PARTIAL' : 'NOT_CACHED';
+      const agentStatus = !task ? 'NOT_SCHEDULED' : allCached ? 'CACHED' : taskState === 'RETRY_WAIT' ? 'RETRY_WAIT' : taskState === 'TRANSFERRING' ? 'RUNNING' : taskState === 'SCHEDULED' ? 'SCHEDULED' : taskState === 'QUEUED' ? 'QUEUED' : cachedFiles.length ? 'PARTIAL' : 'NOT_CACHED';
+      const displayStatus = !task ? (allCached ? 'COMPLETED' : cachedFiles.length ? 'PARTIAL' : 'WAITING_AUTHORIZATION') : allCached ? 'COMPLETED' : taskState;
       const agentStatusLabel = { CACHED: '已就绪', PARTIAL: '部分缓存', RETRY_WAIT: '重试等待', RUNNING: '传输中', QUEUED: '排队中', SCHEDULED: '已计划', NOT_SCHEDULED: '未调度', NOT_CACHED: '未缓存' }[agentStatus];
       const agentStatusDetail = task?.last_error ?? task?.lastError ?? (!task && allCached ? '未安排本 Agent 传输，文件已通过 SHA-256 复用' : !task ? '等待 Core 安排传输' : taskState === 'SCHEDULED' ? `计划开始：${task.scheduled_at ?? task.scheduledAt}` : null);
-      return { ...item, files, cachedFileCount: cachedFiles.length, cachedBytes: files.reduce((sum, file) => sum + (file.cachedBytes || 0), 0), totalBytes: files.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0), agentStatus, agentStatusLabel, agentStatusDetail, lastTransferAt: task?.updated_at ?? task?.updatedAt ?? null, taskId: task?.task_id ?? task?.taskId ?? null, distributionAuthorized: Boolean(item.distributionAuthorized || localTask) };
+      return { ...item, files, cachedFileCount: cachedFiles.length, cachedBytes: files.reduce((sum, file) => sum + (file.cachedBytes || 0), 0), totalBytes: files.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0), agentStatus, displayStatus, agentStatusLabel, agentStatusDetail, lastTransferAt: task?.updated_at ?? task?.updatedAt ?? null, taskId: task?.task_id ?? task?.taskId ?? null, distributionAuthorized: Boolean(item.distributionAuthorized || localTask) };
     }));
   };
   const cacheSummary = async (items) => {
@@ -300,8 +298,14 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
     const completedFiles = files.filter((file) => file.status === 'COMPLETED').length;
     const totalBytes = files.reduce((sum, file) => sum + Number(file.sizeBytes || 0), 0);
     const completedBytes = files.reduce((sum, file) => sum + Number(file.bytesDownloaded || 0), 0);
-    const displayStatus = row.status === 'COMPLETED' ? 'CACHED' : row.status === 'PAUSED' ? 'PAUSED' : row.status === 'CANCELLED' ? 'CANCELLED' : row.last_error && row.retry_at && Date.parse(row.retry_at) > Date.now() ? 'RETRY_WAIT' : row.status === 'RUNNING' ? 'RUNNING' : 'QUEUED';
+    const displayStatus = displayTransferState(row.status, { retryAt: row.retry_at, hasError: Boolean(row.last_error) });
     return { taskId: row.task_id, artifactId: row.artifact_id, status: row.status, displayStatus, progress, files, fileCount: files.length, completedFiles, totalBytes, completedBytes, attempts: row.attempts, retryAt: row.retry_at, scheduledAt: row.scheduled_at, chunkConcurrency: row.chunk_concurrency, lastError: row.last_error, updatedAt: row.updated_at };
+  };
+  const syncTaskSummaries = async () => {
+    const response = await core('/api/v1/agent/tasks');
+    const result = await response.json();
+    if (!response.ok) throw Object.assign(new Error(result.error?.message ?? 'Core 任务同步失败'), { code: result.error?.code ?? 'task_summary_sync_failed', status: response.status });
+    for (const task of result.items ?? []) localTask(task);
   };
   const update = async (taskId, body) => { const response = await core(`/api/v1/agent/tasks/${encodeURIComponent(taskId)}/progress`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); const result = await response.json(); if (!response.ok) throw Object.assign(new Error(result.error?.message ?? 'Core 任务状态更新失败'), { code: result.error?.code ?? 'task_update_failed' }); return result; };
   const controlError = (controlState) => Object.assign(new Error(controlState === 'CANCEL_REQUESTED' ? '任务已请求取消' : '任务已请求暂停'), { code: controlState === 'CANCEL_REQUESTED' ? 'task_cancelled' : 'task_paused' });
@@ -363,6 +367,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
     catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'cache_summary_failed', err.message); }
   });
   app.get('/api/v1/tasks', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (_request, reply) => {
+    try { await syncTaskSummaries(); } catch (err) { app.log.warn?.({ message: err.message }, 'Agent 任务摘要同步失败'); }
     try { const rows = db.prepare('SELECT * FROM agent_tasks ORDER BY updated_at DESC').all(); return reply.send({ items: await Promise.all(rows.map(serializeTask)) }); }
     catch (err) { return fail(reply, 500, 'task_list_failed', err.message); }
   });

@@ -453,6 +453,10 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     const tasks = store.listAgentTasks(agent.agentId);
     return { items: tasks };
   });
+  app.get('/api/v1/agent/tasks', async (request, reply) => {
+    const agent = request.agentPrincipal;
+    return { items: store.listAgentTaskSummaries(agent.agentId) };
+  });
   app.get('/api/v1/agent/tasks/:taskId/manifest', async (request, reply) => {
     const task = store.getDistributionTask(request.params.taskId);
     if (!task || task.agentId !== request.agentPrincipal.agentId) return error(reply, 404, 'distribution_task_not_found', '分发任务不存在');

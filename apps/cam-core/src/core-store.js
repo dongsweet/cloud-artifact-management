@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { attachmentExtension, validAttachmentFileName } from '../../../libs/cam-server/src/attachment-types.js';
 import { fingerprint, verifyRequest } from '../../../libs/cam-agent-auth/src/protocol.js';
 import { maskApprovalCode } from './approval-code.js';
+import { displayTransferState } from '../../../libs/cam-transfer/src/task-state.js';
 
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}-${Date.now()}-${randomUUID()}`;
@@ -458,7 +459,10 @@ export class CoreStore {
   }
   getDistributionTask(taskId) {
     const row = this.db.prepare('SELECT * FROM core_distribution_tasks WHERE task_id = ?').get(taskId);
-    return row ? { taskId: row.task_id, agentId: row.agent_id, artifactId: row.artifact_id, manifestSha256: row.manifest_sha256, files: JSON.parse(row.files_json), status: row.status, controlState: row.control_state ?? 'RUN', progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, scheduledAt: row.scheduled_at, chunkConcurrency: row.chunk_concurrency, lastError: row.last_error, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at } : null;
+    if (!row) return null;
+    const files = JSON.parse(row.files_json);
+    const displayStatus = displayTransferState(row.status, { controlState: row.control_state, retryAt: row.retry_at, hasError: Boolean(row.last_error) });
+    return { taskId: row.task_id, agentId: row.agent_id, artifactId: row.artifact_id, manifestSha256: row.manifest_sha256, files, status: row.status, displayStatus, controlState: row.control_state ?? 'RUN', progress: JSON.parse(row.progress_json), attempts: row.attempts, retryAt: row.retry_at, scheduledAt: row.scheduled_at, chunkConcurrency: row.chunk_concurrency, lastError: row.last_error, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at };
   }
   listLatestAgentDistributionTasks(agentId) {
     const latest = new Map();
@@ -473,6 +477,7 @@ export class CoreStore {
     const edgeToCore = this.list().filter((item) => item.status === 'APPROVED' || item.status === 'CLOSED' || item.transferTaskId).map((item) => {
       const progress = this.getTransferProgress(item.requestId, { recoveryLimit });
       const failure = progress?.edgeFailure ?? null;
+      const status = progress?.status ?? 'WAITING_AUTHORIZATION';
       return {
         requestId: item.requestId,
         freezeId: item.freezeId,
@@ -483,7 +488,8 @@ export class CoreStore {
         version: item.version,
         displayVersion: item.displayVersion,
         transferTaskId: progress?.transferTaskId ?? item.transferTaskId ?? null,
-        status: progress?.status ?? 'WAITING_AUTHORIZATION',
+        status,
+        displayStatus: displayTransferState(status, { retryAt: failure?.retryAt ?? item.transferEdgeRetryAt ?? null, hasError: Boolean(failure?.message ?? item.transferEdgeLastError ?? item.transferNotificationLastError) }),
         notification: progress?.notification ?? {
           state: item.transferNotificationState,
           attempts: item.transferNotificationAttempts,
@@ -510,7 +516,7 @@ export class CoreStore {
     const coreToAgent = this.listDistributionTasks().map((task) => {
       const agent = this.db.prepare('SELECT name, center_id AS centerId FROM core_agents WHERE agent_id = ?').get(task.agentId);
       const artifact = this.getArtifact(task.artifactId);
-      const displayStatus = task.status === 'SCHEDULED'
+      const legacyDisplayStatus = task.status === 'SCHEDULED'
         ? 'SCHEDULED'
         : task.status === 'PAUSED'
           ? 'PAUSED'
@@ -527,7 +533,10 @@ export class CoreStore {
                     : task.lastError && task.retryAt && Date.parse(task.retryAt) > Date.now() ? 'RETRY_WAIT' : task.status;
       return {
         ...task,
-        displayStatus,
+        // Keep the historical value available to older control/summary callers
+        // while exposing one stable status vocabulary to monitoring clients.
+        displayStatusLegacy: legacyDisplayStatus,
+        displayStatus: displayTransferState(task.status, { controlState: task.controlState, retryAt: task.retryAt, hasError: Boolean(task.lastError) }),
         agentName: agent?.name ?? task.agentId,
         centerId: agent?.centerId ?? null,
         productName: artifact?.productName ?? null,
@@ -540,7 +549,7 @@ export class CoreStore {
         completedBytes: Number(task.progress?.completedBytes ?? task.progress?.bytesDownloaded ?? 0)
       };
     });
-    const count = (items, value) => items.filter((item) => item.status === value || item.displayStatus === value).length;
+    const count = (items, value) => items.filter((item) => item.status === value || item.displayStatusLegacy === value || item.displayStatus === value).length;
     return {
       edgeToCore,
       coreToAgent,
@@ -554,6 +563,9 @@ export class CoreStore {
     const timestamp = now();
     this.db.prepare("UPDATE core_distribution_tasks SET status = 'QUEUED', updated_at = ? WHERE agent_id = ? AND status = 'SCHEDULED' AND control_state = 'RUN' AND scheduled_at <= ? AND retry_at <= ?").run(timestamp, agentId, timestamp, timestamp);
     return this.db.prepare("SELECT task_id FROM core_distribution_tasks WHERE agent_id = ? AND status IN ('QUEUED','RUNNING') AND control_state = 'RUN' AND scheduled_at <= ? AND retry_at <= ? ORDER BY created_at LIMIT 20").all(agentId, timestamp, timestamp).map(({ task_id }) => this.getDistributionTask(task_id));
+  }
+  listAgentTaskSummaries(agentId) {
+    return this.db.prepare("SELECT task_id FROM core_distribution_tasks WHERE agent_id = ? AND control_state NOT IN ('CANCELLED') ORDER BY created_at DESC LIMIT 500").all(agentId).map(({ task_id }) => this.getDistributionTask(task_id));
   }
   updateDistributionTask(agentId, taskId, { status, progress = {}, error = null }) {
     const task = this.getDistributionTask(taskId);

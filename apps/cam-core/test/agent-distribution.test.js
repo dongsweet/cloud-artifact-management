@@ -32,10 +32,15 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     const task = app.coreStore.createDistributionTask({ agentId: west.agentId, artifactId: 'BASELINE-REQ-AGENT' });
     const scheduledTask = app.coreStore.createDistributionTask({ agentId: west.agentId, artifactId: 'BASELINE-REQ-AGENT', scheduledAt: new Date(Date.now() + 60_000).toISOString(), chunkConcurrency: 8 });
     assert.equal(scheduledTask.status, 'SCHEDULED'); assert.equal(scheduledTask.chunkConcurrency, 8); assert.ok(!app.coreStore.listAgentTasks(west.agentId).some((item) => item.taskId === scheduledTask.taskId), 'future tasks stay out of the Agent queue');
+    const auth = (agent, identity, method, path, body = '') => { const timestamp = new Date().toISOString(); const nonce = randomNonce(); return { 'x-cam-agent-id': agent.agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(identity.privateKeyPem, method, path, timestamp, nonce, body) }; };
     const monitorBefore = await app.inject({ method: 'GET', url: '/api/v1/transfer-monitor' });
     assert.equal(monitorBefore.statusCode, 200, monitorBefore.body);
     assert.equal(monitorBefore.json().edgeToCore.length, 1);
     assert.ok(monitorBefore.json().coreToAgent.some((item) => item.taskId === scheduledTask.taskId && item.displayStatus === 'SCHEDULED'));
+    const scheduledSummaryPath = '/api/v1/agent/tasks';
+    const scheduledSummary = await app.inject({ method: 'GET', url: scheduledSummaryPath, headers: auth(west, westIdentity, 'GET', scheduledSummaryPath) });
+    assert.equal(scheduledSummary.statusCode, 200, scheduledSummary.body);
+    assert.ok(scheduledSummary.json().items.some((item) => item.taskId === scheduledTask.taskId && item.status === 'SCHEDULED'), 'Agent can see scheduled tasks without claiming them');
     const started = await app.inject({ method: 'POST', url: `/api/v1/distribution-tasks/${scheduledTask.taskId}/start`, payload: {} });
     assert.equal(started.statusCode, 200, started.body); assert.equal(started.json().item.status, 'QUEUED');
     const monitorAfterStart = await app.inject({ method: 'GET', url: '/api/v1/transfer-monitor' });
@@ -57,7 +62,6 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     assert.equal(failedWhilePausing.status, 'PAUSED');
     assert.ok(!app.coreStore.listAgentTasks(west.agentId).some((item) => item.taskId === pendingControlTask.taskId), 'a pause request survives a concurrent failure');
 
-    const auth = (agent, identity, method, path, body = '') => { const timestamp = new Date().toISOString(); const nonce = randomNonce(); return { 'x-cam-agent-id': agent.agentId, 'x-cam-agent-timestamp': timestamp, 'x-cam-agent-nonce': nonce, 'x-cam-agent-signature': signRequest(identity.privateKeyPem, method, path, timestamp, nonce, body) }; };
     const availablePath = '/api/v1/agent/available-artifacts';
     const available = await app.inject({ method: 'GET', url: availablePath, headers: auth(east, eastIdentity, 'GET', availablePath) });
     assert.equal(available.statusCode, 200, available.body);
