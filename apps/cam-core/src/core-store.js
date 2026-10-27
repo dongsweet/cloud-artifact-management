@@ -1080,7 +1080,7 @@ export class CoreStore {
     this.transferAssemblyLocks.set(lockKey, operation);
     try { return await operation; }
     finally {
-      if (this.transferAssemblyLocks.get(lockKey) === operation) void this.transferAssemblyLocks.delete(lockKey);
+      this.transferAssemblyLocks.delete(lockKey);
     }
   }
   async _assembleTransferParts(transferTaskId, sha256) {

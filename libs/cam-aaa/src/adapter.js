@@ -26,6 +26,20 @@ function explicitResponseSuccess(value) {
 }
 function configValue(env, key) { return text(env?.[key]); }
 
+function boundedTimeout(timeoutMs) {
+  const duration = Math.min(120_000, Math.max(1_000, Number(timeoutMs) || 10_000));
+  const controller = new AbortController();
+  const deadline = Date.now() + duration;
+  const timer = setInterval(() => {
+    if (Date.now() >= deadline) {
+      clearInterval(timer);
+      controller.abort();
+    }
+  }, 1_000);
+  timer.unref?.();
+  return { controller, close: () => clearInterval(timer) };
+}
+
 export function normalizeAaaConfig(input = {}) {
   const config = {
     baseUrl: text(input.baseUrl).replace(/\/$/u, ''), tenantName: text(input.tenantName),
@@ -102,16 +116,10 @@ export class DkeyAmAdapter {
     if (!config.baseUrl || !config.tenantName || !config.accessServerName || !config.sharedSecret) throw failure('AAA 参数尚未完整配置', 'aaa_not_configured', 503);
     if (!username) throw failure('请输入一个已存在的 AAA 测试用户名', 'aaa_test_user_required', 400);
     const url = new URL('/am/webauth/1/strong/passwordRequirement', `${config.baseUrl}/`); const { dispatcher, temporary } = this.dispatcherFor(config);
-    // Keep the externally configurable timeout bounded at the point where the
-    // timer is created as well as during config validation. This makes the
-    // resource lifetime explicit to both reviewers and static analyzers.
-    // normalizeAaaConfig bounds this administrator-controlled value to 1–120s
-    // before it reaches the timer, preventing unbounded resource retention.
-    const timeoutMs = Math.min(120_000, Math.max(1_000, Number(config.timeoutMs) || 10_000));
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = boundedTimeout(config.timeoutMs);
     try {
       const form = new URLSearchParams({ tenantName: config.tenantName, accessServerName: config.accessServerName, sharedSecret: config.sharedSecret, loginName: username });
-      const response = await this.fetch(url, { method: 'POST', redirect: 'manual', headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: form, signal: controller.signal, ...(dispatcher ? { dispatcher } : {}) });
+      const response = await this.fetch(url, { method: 'POST', redirect: 'manual', headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: form, signal: timeout.controller.signal, ...(dispatcher ? { dispatcher } : {}) });
       const raw = await response.text();
       if (response.status >= 300 && response.status < 400) throw failure(`AAA 认证接口返回 HTTP ${response.status}，请检查服务地址和接口访问策略`, 'aaa_api_redirect', 502);
       const value = parseJson(raw, response.status);
@@ -124,17 +132,16 @@ export class DkeyAmAdapter {
       if (error.code === 'aaa_api_error' || error.code === 'aaa_api_redirect' || error.code === 'aaa_config_rejected') throw error;
       if (error.name === 'AbortError' || error.cause?.code === 'UND_ERR_ABORTED') throw failure('AAA 连接测试超时，请稍后重试', 'aaa_timeout', 504);
       throw failure(`AAA 连接失败（${url.host}）`, 'aaa_unavailable', 503);
-    } finally { clearTimeout(timer); if (temporary) await dispatcher.close().catch(() => {}); }
+    } finally { timeout.close(); if (temporary) await dispatcher.close().catch(() => {}); }
   }
   async authenticate({ loginName, password, terminalIp = undefined, terminalMac = undefined } = {}) {
     if (!this.enabled()) throw failure('AAA 实时认证参数尚未完整配置', 'aaa_not_configured', 503);
     if (!text(loginName) || typeof password !== 'string') throw failure('请输入 AAA 用户名和密码', 'aaa_credentials_invalid', 401);
     const url = new URL('/am/webauth/1/strong/authenticate', `${this.config.baseUrl}/`); const { dispatcher, temporary } = this.dispatcherFor(this.config);
-    const timeoutMs = Math.min(120_000, Math.max(1_000, Number(this.config.timeoutMs) || 10_000));
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = boundedTimeout(this.config.timeoutMs);
     try {
       const form = new URLSearchParams({ tenantName: this.config.tenantName, accessServerName: this.config.accessServerName, sharedSecret: this.config.sharedSecret, loginName: text(loginName), password, ...(text(terminalIp) ? { terminalIp: text(terminalIp) } : {}), ...(text(terminalMac) ? { terminalMac: text(terminalMac) } : {}) });
-      const response = await this.fetch(url, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: form, signal: controller.signal, ...(dispatcher ? { dispatcher } : {}) });
+      const response = await this.fetch(url, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: form, signal: timeout.controller.signal, ...(dispatcher ? { dispatcher } : {}) });
       const raw = await response.text(); const value = parseJson(raw, response.status);
       if (!response.ok) { if ([400, 401, 403, 422].includes(response.status)) throw failure('AAA 用户名或密码错误', 'aaa_rejected', 401); throw failure(`AAA 认证服务请求失败（HTTP ${response.status}）`, 'aaa_api_error', response.status >= 500 ? 503 : 502); }
       if (!responseSucceeded(value)) throw failure('AAA 用户名或密码错误', 'aaa_rejected', 401);
@@ -143,7 +150,7 @@ export class DkeyAmAdapter {
       if (['aaa_not_configured', 'aaa_credentials_invalid', 'aaa_rejected', 'aaa_api_error'].includes(error.code)) throw error;
       if (error.name === 'AbortError' || error.cause?.code === 'UND_ERR_ABORTED' || error.code === 'UND_ERR_ABORTED') throw failure('AAA 认证请求超时，请稍后重试', 'aaa_timeout', 504);
       throw failure(`AAA 连接失败（${url.host}）：${error.code ?? 'network_error'}`, 'aaa_unavailable', 503);
-    } finally { clearTimeout(timer); if (temporary) await dispatcher.close().catch(() => {}); }
+    } finally { timeout.close(); if (temporary) await dispatcher.close().catch(() => {}); }
   }
 }
 

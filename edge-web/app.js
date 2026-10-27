@@ -816,12 +816,6 @@ async function deleteCandidate() {
   catch (error) { showAlert(error.message, 'danger'); }
 }
 
-async function deleteCandidateById(candidateId) {
-  if (!await confirmAction({ title: '永久删除候选包', message: '确定永久删除这个候选包吗？', detail: '这会删除候选记录、本机已下载文件，并解除它在所有候选轮次中的引用。此操作不可恢复。' })) return;
-  try { await api(`/api/v1/candidates/${encodeURIComponent(candidateId)}`, { method: 'DELETE' }); showAlert('候选包已删除'); await loadCandidates(); }
-  catch (error) { showAlert(error.message, 'danger'); }
-}
-
 async function renderRoute() {
   if (!currentUser() || currentUser().mustChangePassword) return;
   const generation = ++state.routeGeneration;
