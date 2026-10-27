@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, sign, verify } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, randomUUID, sign, verify } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { signGateRequest, verifyGateRequest } from './request-auth.js';
@@ -75,8 +75,8 @@ export class GateKeyring {
   }
 
   async #write(snapshot) {
-    const temporary = `${this.filePath}.${process.pid}.tmp`;
-    await writeFile(temporary, snapshot, { mode: 0o600 });
+    const temporary = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(temporary, snapshot, { flag: 'wx', mode: 0o600 });
     await chmod(temporary, 0o600);
     await rename(temporary, this.filePath);
     await chmod(this.filePath, 0o600);

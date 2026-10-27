@@ -16,7 +16,7 @@ function allowlisted(url, allowlist) {
 async function writeStreamToFile(stream, destination, expectedSize, onProgress = () => {}) {
   await mkdir(dirname(destination), { recursive: true });
   const temporary = `${destination}.tmp`;
-  const output = createWriteStream(temporary, { flags: 'w' });
+  const output = createWriteStream(temporary, { flags: 'wx', mode: 0o600 });
   const hash = createHash('sha256');
   let bytes = 0;
   try {
