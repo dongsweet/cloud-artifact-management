@@ -827,7 +827,7 @@ Core 的账号管理页面维护用户名、密码重置、账号状态、Core �
 
 运行日志与审计日志分离：运行日志用于故障排查，审计日志用于责任追踪。日志中不得出现完整密钥、访问令牌、VPN 凭据或制品敏感内容。
 
-日志收集由 Edge 提供入口，但 Edge 不感知 Agent 清单、Agent 编号、Agent 状态或单个 Agent 选择项。系统管理员在 Edge 只提交日志时间范围和日志类别；Core 收到签名请求后，在内网内部枚举并收集全部 Agent 的对应日志，同时加入 Core 自身日志。Core 汇总包按 Agent 名称分别写入 `agents/<agent-name>/runtime.jsonl`，并在 `manifest.json` 中记录来源、大小和摘要；Agent 名称仅做路径安全规范化，保留故障定位所需的来源信息，不再把所有 Agent 日志合并成一个无来源的文件。Edge 收到 Core 汇总包后，再将同一时间范围内的 Edge 日志加入最终归档，重新生成 `manifest.json`、文件摘要和归档摘要。最终归档只在 Edge 页面提供给系统管理员下载，生成、接收、合并、下载和过期清理均写入 Edge 审计记录；审计日志本身仍按审计管理员权限单独查看，不因日志收集功能向系统管理员开放。
+日志收集由 Edge 提供入口，但 Edge 不感知 Agent 清单、Agent 编号、Agent 状态或单个 Agent 选择项。系统管理员在 Edge 只提交日志时间范围和日志类别；Core 收到签名请求后，在内网内部枚举并收集全部 Agent 的对应日志，同时加入 Core 自身日志。每个选中的类别都会生成对应的 JSONL 文件：`runtime.jsonl` 保存时间范围内的完整运行日志，`transfer.jsonl` 按传输字段和传输相关消息筛选，`error.jsonl` 按错误级别、错误字段和错误消息筛选；传输失败日志可以同时出现在传输和错误两个类别中。Core 汇总包按 Agent 名称分别写入 `agents/<agent-name>/<category>.jsonl`，Core 自身写入 `core/<category>.jsonl`，并在 `manifest.json` 中记录来源、大小和摘要；没有匹配内容的已选类别仍保留空文件，便于核对收集范围。Agent 名称仅做路径安全规范化，保留故障定位所需的来源信息，不再把所有 Agent 日志合并成一个无来源的文件。Edge 收到 Core 汇总包后，再将同一时间范围内的 Edge 日志按同样类别写入 `edge/<category>.jsonl`，重新生成 `manifest.json`、文件摘要和归档摘要。最终归档只在 Edge 页面提供给系统管理员下载，生成、接收、合并、下载和过期清理均写入 Edge 审计记录；审计日志本身仍按审计管理员权限单独查看，不因日志收集功能向系统管理员开放。
 
 日志收集任务通过现有控制地址创建和查询，归档数据通过现有制品传输地址按 Range 分块拉取，不新增网闸映射。Core 使用 Agent 已有的签名轮询通道下发待收集任务，Agent 自动上传对应时间范围的日志归档；Core 只向 Edge 返回任务状态、归档大小和完整摘要。Edge 下载 Core 汇总归档后加入本端日志并原子生成最终 `tar.gz` 文件。三端应用日志统一写入各自数据目录的 `logs/` 子目录，按 `CAM_LOG_MAX_BYTES` 和 `CAM_LOG_MAX_FILES` 轮转；单次收集上限由 `CAM_LOG_COLLECTION_MAX_BYTES` 控制，默认 100 MiB。日志包默认保留 7 天，过期任务及文件由后台清理。
 
