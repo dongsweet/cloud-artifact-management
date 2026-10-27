@@ -5,6 +5,8 @@ import { once } from 'node:events';
 import { dirname } from 'node:path';
 import { getChunkRange } from '../../../libs/cam-transfer/src/transfer.js';
 
+const DEFAULT_MAX_SOURCE_SIZE = 2 * 1024 * 1024 * 1024 * 1024;
+
 function allowlisted(url, allowlist) {
   if (!allowlist || allowlist.length === 0) return false;
   const host = new URL(url).hostname.toLowerCase();
@@ -42,19 +44,29 @@ function parseAllowlist(value = process.env.CAM_SOURCE_ALLOWLIST ?? '') {
   return value.split(',').map((entry) => entry.trim().toLowerCase()).filter(Boolean);
 }
 
-async function resolveRemoteSize(url, fetchImpl) {
-  const head = await fetchImpl(url, { method: 'HEAD' });
+function rejectRedirect(response) {
+  if (response.status >= 300 && response.status < 400) throw new Error('source redirects are not allowed; use an allowlisted final URL');
+  return response;
+}
+
+async function resolveRemoteSize(url, fetchImpl, maxSize = DEFAULT_MAX_SOURCE_SIZE) {
+  const head = rejectRedirect(await fetchImpl(url, { method: 'HEAD', redirect: 'manual' }));
   const headLength = Number(head.headers.get('content-length'));
-  if (head.ok && Number.isSafeInteger(headLength) && headLength >= 0) return headLength;
-  const probe = await fetchImpl(url, { headers: { Range: 'bytes=0-0' } });
+  if (head.ok && Number.isSafeInteger(headLength) && headLength >= 0) {
+    if (headLength > maxSize) throw new Error(`source exceeds the configured maximum size of ${maxSize} bytes`);
+    return headLength;
+  }
+  const probe = rejectRedirect(await fetchImpl(url, { redirect: 'manual', headers: { Range: 'bytes=0-0' } }));
   const contentRange = probe.headers.get('content-range') ?? '';
   const match = /^bytes\s+0-0\/(\d+)$/.exec(contentRange);
   if (probe.body?.cancel) await probe.body.cancel();
   if (probe.status !== 206 || !match) throw new Error('source content length is unavailable; provide the file size');
-  return Number(match[1]);
+  const size = Number(match[1]);
+  if (!Number.isSafeInteger(size) || size > maxSize) throw new Error(`source exceeds the configured maximum size of ${maxSize} bytes`);
+  return size;
 }
 
-export function createCandidateReceiver({ store, allowlist = parseAllowlist(), allowlistProvider = null, fetchImpl = globalThis.fetch, finalize = null }) {
+export function createCandidateReceiver({ store, allowlist = parseAllowlist(), allowlistProvider = null, fetchImpl = globalThis.fetch, finalize = null, maxSourceSize = DEFAULT_MAX_SOURCE_SIZE }) {
   const running = new Map();
   const cancelled = new Set();
   const controllers = new Map();
@@ -70,14 +82,14 @@ export function createCandidateReceiver({ store, allowlist = parseAllowlist(), a
       const currentAllowlist = typeof allowlistProvider === 'function' ? allowlistProvider() : allowlist;
       if (!allowlisted(candidate.source_url, currentAllowlist)) throw new Error('source host is not allowlisted');
       if (candidate.expected_size === 0 && candidate.chunk_count === 0) {
-        store.setExpectedSize(candidateId, await resolveRemoteSize(candidate.source_url, fetchImpl));
+        store.setExpectedSize(candidateId, await resolveRemoteSize(candidate.source_url, fetchImpl, maxSourceSize));
       }
       store.markReceiving(candidateId);
       for (const partIndex of store.missingParts(candidateId)) {
         if (cancelled.has(candidateId)) { cancelled.delete(candidateId); store.markPartial(candidateId); return store.get(candidateId); }
         const current = store.get(candidateId);
         const range = getChunkRange(partIndex, current.expected_size, current.chunk_size);
-        const response = await fetchImpl(current.source_url, { signal: controller.signal, headers: { Range: `bytes=${range.offset}-${range.offset + range.size - 1}` } });
+        const response = rejectRedirect(await fetchImpl(current.source_url, { redirect: 'manual', signal: controller.signal, headers: { Range: `bytes=${range.offset}-${range.offset + range.size - 1}` } }));
         if (response.status !== 206) throw new Error(`source must support HTTP Range, received ${response.status}`);
         const contentRange = response.headers.get('content-range') ?? '';
         const expectedContentRange = `bytes ${range.offset}-${range.offset + range.size - 1}/${current.expected_size}`;
@@ -119,4 +131,4 @@ export function createCandidateReceiver({ store, allowlist = parseAllowlist(), a
   return { receive, resumePending, cancel, running, progress };
 }
 
-export { parseAllowlist, resolveRemoteSize, writeStreamToFile };
+export { DEFAULT_MAX_SOURCE_SIZE, parseAllowlist, resolveRemoteSize, writeStreamToFile };

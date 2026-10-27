@@ -63,10 +63,11 @@ function parseCandidate(row) {
 }
 
 export class CandidateStore {
-  constructor({ db, dataDir, defaultChunkSize }) {
+  constructor({ db, dataDir, defaultChunkSize, maxCandidateSize = 2 * 1024 * 1024 * 1024 * 1024 }) {
     this.db = db;
     this.dataDir = dataDir;
     this.defaultChunkSize = defaultChunkSize;
+    this.maxCandidateSize = maxCandidateSize;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS products (
         product_id TEXT PRIMARY KEY,
@@ -723,7 +724,7 @@ export class CandidateStore {
     if (expectedMd5Value !== null && (!MD5_PATTERN.test(expectedMd5Value))) throw new Error('md5 must be a 32-character hexadecimal digest');
     if (expectedSha256Value !== null && (!SHA256_PATTERN.test(expectedSha256Value))) throw new Error('sha256 must be a 64-character hexadecimal digest');
     const expectedSize = size === null || size === undefined || size === '' ? 0 : size;
-    if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) throw new Error('size must be a non-negative safe integer');
+    if (!Number.isSafeInteger(expectedSize) || expectedSize < 0 || expectedSize > this.maxCandidateSize) throw new Error(`size must be between 0 and ${this.maxCandidateSize} bytes`);
     if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0 || chunkSize > 512 * 1024 * 1024) throw new Error('chunkSize must be between 1 and 512 MiB');
     const candidateMetadata = metadata ?? sourceMetadata ?? {};
     if (!candidateMetadata || typeof candidateMetadata !== 'object' || Array.isArray(candidateMetadata)) throw new Error('metadata must be an object');
@@ -755,7 +756,7 @@ export class CandidateStore {
     const nextUrl = sourceUrl === undefined ? candidate.source_url : this.resolveSourceUrl(sourceUrl);
     const nextName = fileName === undefined || fileName === null || fileName === '' ? candidate.file_name : safeFileName(fileName);
     const nextSize = size === undefined || size === null || size === '' ? candidate.expected_size : size;
-    if (!Number.isSafeInteger(nextSize) || nextSize < 0) throw new Error('size must be a non-negative safe integer');
+    if (!Number.isSafeInteger(nextSize) || nextSize < 0 || nextSize > this.maxCandidateSize) throw new Error(`size must be between 0 and ${this.maxCandidateSize} bytes`);
     if (parts.length > 0 && (nextUrl !== candidate.source_url || nextName !== candidate.file_name || nextSize !== candidate.expected_size)) { const error = new Error('cannot change source, file name or size after receiving parts'); error.code = 'candidate_has_parts'; throw error; }
     const nextMd5 = md5 !== undefined ? md5 : expectedMd5 !== undefined ? expectedMd5 : candidate.expected_md5;
     const nextSha256 = sha256 !== undefined ? sha256 : expectedSha256 !== undefined ? expectedSha256 : candidate.expected_sha256;
@@ -918,7 +919,7 @@ export class CandidateStore {
   setExpectedSize(candidateId, size) {
     const candidate = this.get(candidateId);
     if (!candidate) throw new Error('candidate not found');
-    if (!Number.isSafeInteger(size) || size < 0) throw new Error('remote file size is invalid');
+    if (!Number.isSafeInteger(size) || size < 0 || size > this.maxCandidateSize) throw new Error(`remote file size must be between 0 and ${this.maxCandidateSize} bytes`);
     if (candidate.expected_size !== 0 && candidate.expected_size !== size) throw new Error('source size changed during receive');
     const chunkCount = calculateChunkCount(size, candidate.chunk_size);
     this.db.prepare('UPDATE candidates SET expected_size = ?, chunk_count = ?, updated_at = ? WHERE candidate_id = ?').run(size, chunkCount, now(), candidateId);

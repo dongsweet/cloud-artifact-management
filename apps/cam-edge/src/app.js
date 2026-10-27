@@ -22,9 +22,11 @@ const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'prod
 
 export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSize = Number(process.env.CHUNK_SIZE ?? DEFAULT_CHUNK_SIZE), allowlist, principalProvider = null, secureCookies, fetchImpl = fetch } = {}) {
   const db = await openDatabase(join(dataDir, 'edge.sqlite'));
-  const store = new CandidateStore({ db, dataDir, defaultChunkSize });
+  const configuredMaxCandidateSize = Number(process.env.CAM_MAX_CANDIDATE_SIZE ?? 2 * 1024 * 1024 * 1024 * 1024);
+  const maxCandidateSize = Number.isSafeInteger(configuredMaxCandidateSize) && configuredMaxCandidateSize > 0 ? Math.min(8 * 1024 * 1024 * 1024 * 1024, configuredMaxCandidateSize) : 2 * 1024 * 1024 * 1024 * 1024;
+  const store = new CandidateStore({ db, dataDir, defaultChunkSize, maxCandidateSize });
   const sourceConfig = new SourceConfigStore(db, { initialAllowlist: allowlist });
-  const receiver = createCandidateReceiver({ store, allowlistProvider: () => sourceConfig.get().allowlist, finalize: (candidateId) => finalizeCandidate(store, candidateId) });
+  const receiver = createCandidateReceiver({ store, allowlistProvider: () => sourceConfig.get().allowlist, maxSourceSize: maxCandidateSize, finalize: (candidateId) => finalizeCandidate(store, candidateId) });
   const scheduler = createReceiveScheduler({ store, receiver });
   const downloadGrants = new DownloadGrantStore({ db, candidateStore: store });
   const auth = new AuthStore(db);

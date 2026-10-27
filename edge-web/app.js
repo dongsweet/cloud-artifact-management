@@ -331,7 +331,6 @@ async function loadCandidates(generation = state.routeGeneration) {
   state.releases = releases;
   state.currentRelease = releases.find((item) => item.releaseId === state.releaseId) ?? null;
   setOptions($('#candidate-release-filter'), releaseFilterItems(releases), state.releaseId, (item) => item.name);
-  const selectedReleases = state.releaseId ? releases.filter((item) => item.releaseId === state.releaseId) : releases;
   const rounds = await getRoundsByFilter({ productId: state.productId, releaseId: state.releaseId });
   if (generation !== state.routeGeneration) return;
   setOptions($('#candidate-round-filter'), roundFilterItems(rounds), state.roundId, (item) => item.name, '全部');
@@ -916,7 +915,7 @@ $('#freeze-form').addEventListener('submit', async (event) => {
       freezeId = draft.freezeId;
     }
     await api(`/api/v1/freezes/${encodeURIComponent(freezeId)}/report`, { method: 'PUT', headers: { 'content-type': 'application/octet-stream', 'x-report-filename': encodeURIComponent(file.name) }, body: file });
-    const submitted = await api(`/api/v1/freezes/${encodeURIComponent(freezeId)}/submit`, { method: 'POST', body: '{}' });
+    await api(`/api/v1/freezes/${encodeURIComponent(freezeId)}/submit`, { method: 'POST', body: '{}' });
     modal('freeze').hide();
     showAlert('申请已保存，本轮候选清单已锁定；系统将在后台投递至 Core 并创建云管工单，失败后自动重试');
     await loadRound(state.routeGeneration);

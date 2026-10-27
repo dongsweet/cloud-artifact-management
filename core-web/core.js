@@ -262,7 +262,7 @@ async function loadDistribution() {
 }
 const monitorStatusLabels = {
   WAITING_AUTHORIZATION: '待安排', WAITING_EDGE: '待安排', EDGE_STARTED: '传输中', WAITING_RECEIPT: '等待确认', RECOVERY_SENDING: '传输中', RETRY_WAIT: '重试等待', NOTIFICATION_RETRY_WAIT: '重试等待', NOTIFICATION_FAILED: '失败', RECEIVING: '传输中', ASSEMBLY_PENDING: '校验中', ASSEMBLING: '校验中', VERIFYING: '校验中', VERIFY_FAILED: '失败', FAILED: '失败', COMPLETED: '已完成',
-  SCHEDULED: '待安排', QUEUED: '排队中', TRANSFERRING: '传输中', VERIFYING: '校验中', WAITING_CONFIRMATION: '等待确认', PAUSE_REQUESTED: '等待暂停', PAUSED: '已暂停', CANCEL_REQUESTED: '等待取消', CANCELLED: '已取消'
+  SCHEDULED: '待安排', QUEUED: '排队中', TRANSFERRING: '传输中', WAITING_CONFIRMATION: '等待确认', PAUSE_REQUESTED: '等待暂停', PAUSED: '已暂停', CANCEL_REQUESTED: '等待取消', CANCELLED: '已取消'
 };
 const monitorStatusColors = { WAITING_AUTHORIZATION: 'secondary', WAITING_EDGE: 'secondary', EDGE_STARTED: 'primary', WAITING_RECEIPT: 'primary', RECOVERY_SENDING: 'primary', RETRY_WAIT: 'warning', NOTIFICATION_RETRY_WAIT: 'warning', NOTIFICATION_FAILED: 'danger', RECEIVING: 'primary', ASSEMBLY_PENDING: 'info', ASSEMBLING: 'info', VERIFYING: 'info', VERIFY_FAILED: 'danger', FAILED: 'danger', COMPLETED: 'success', SCHEDULED: 'info', QUEUED: 'warning', TRANSFERRING: 'primary', WAITING_CONFIRMATION: 'primary', PAUSE_REQUESTED: 'warning', PAUSED: 'secondary', CANCEL_REQUESTED: 'danger', CANCELLED: 'secondary' };
 function monitorStatusBadge(status) { return `<span class="badge text-bg-${monitorStatusColors[status] ?? 'secondary'}">${escapeHtml(monitorStatusLabels[status] ?? status ?? '-')}</span>`; }

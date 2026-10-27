@@ -6,11 +6,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { buildEdgeApp } from '../src/app.js';
+import { createCandidateReceiver, resolveRemoteSize } from '../src/candidate-receiver.js';
 import { openDatabase } from '../../../libs/cam-sqlite/src/database.js';
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
+
+test('candidate source size is bounded before receiving data', async () => {
+  await assert.rejects(() => resolveRemoteSize('https://dev.invalid/package.bin', async (_url, options) => {
+    assert.equal(options.redirect, 'manual');
+    return new Response(null, { status: 200, headers: { 'content-length': '5' } });
+  }, 4), /maximum size/u);
+});
 
 test('cam-edge accepts resumable candidate parts and finalizes the candidate', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-api-'));
@@ -133,6 +141,23 @@ test('cam-edge receives a candidate from an HTTP Range source and records its so
   assert.equal((await app.inject({ method: 'GET', url: '/api/v1/candidates/' + candidate.candidateId })).json().status, 'COMPLETED');
   await app.close();
   await new Promise((resolve, reject) => source.close((error) => error ? reject(error) : resolve()));
+});
+
+test('candidate receiver rejects redirects from an allowlisted source', async () => {
+  let failed;
+  const store = {
+    get: () => ({ candidate_id: 'C1', source_url: 'https://dev.invalid/package.bin', expected_size: 0, chunk_count: 0, chunk_size: 5 }),
+    setExpectedSize: () => {},
+    markReceiving: () => {},
+    missingParts: () => [],
+    fail: (_id, error) => { failed = error; }
+  };
+  const receiver = createCandidateReceiver({ store, allowlist: ['dev.invalid'], fetchImpl: async (_url, options) => {
+    assert.equal(options.redirect, 'manual');
+    return new Response(null, { status: 302, headers: { location: 'https://other.invalid/package.bin' } });
+  } });
+  await assert.rejects(() => receiver.receive('C1'), /redirect/u);
+  assert.match(failed?.message ?? '', /redirect/u);
 });
 
 test('cam-edge resumes partial candidate downloads after restart and finalizes automatically', async () => {
