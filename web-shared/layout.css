@@ -14,7 +14,11 @@ body.layout-fixed { min-height: 100vh; background: #f4f6f9; }
 .app-sidebar { background-color: var(--cam-sidebar) !important; }
 .sidebar-brand { min-height: 3.5rem; display: flex; align-items: center; padding: 0 1rem; }
 .sidebar-menu .nav-link.active { background: var(--cam-accent); }
-.app-content { min-height: calc(100vh - 7rem); }
+/* The AdminLTE grid already allocates the viewport-sized main row.  A second
+ * viewport minimum here adds the header and bottom padding on top of it,
+ * which forces a scrollbar on pages that otherwise fit.  Long pages still
+ * scroll through the .app-main overflow container. */
+.app-content { min-height: 0; }
 .app-main .card { border: 1px solid var(--cam-border); box-shadow: 0 .1rem .35rem rgb(20 32 44 / 5%); }
 .card-title { font-weight: 600; }
 .cam-card-header, .cam-action-header { display: flex !important; align-items: center; justify-content: space-between; gap: 1rem; width: 100%; }

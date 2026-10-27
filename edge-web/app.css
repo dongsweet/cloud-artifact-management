@@ -9,7 +9,6 @@
 .app-sidebar { background-color: var(--cam-sidebar) !important; }
 .sidebar-brand { min-height: 3.5rem; display: flex; align-items: center; padding: 0 1rem; }
 .sidebar-menu .nav-link.active { background: var(--cam-accent); }
-.app-content { min-height: calc(100vh - 7rem); }
 .small-box { min-height: 8.5rem; box-shadow: 0 0.15rem 0.5rem rgb(20 32 44 / 8%); }
 .small-box .small-box-icon { font-size: 3rem; opacity: .25; }
 .card { border: 1px solid var(--cam-border); box-shadow: 0 0.1rem 0.35rem rgb(20 32 44 / 5%); }

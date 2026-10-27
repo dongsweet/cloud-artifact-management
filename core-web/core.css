@@ -2,13 +2,6 @@
 .app-main .cam-account-modal > .card { min-width: 0; }
 .font-monospace { font-size: .82rem; }
 
-/* The AdminLTE grid already gives .app-main the viewport-sized row.  The
- * shared shell's viewport minimum on .app-content adds that height on top of
- * the header and bottom padding, leaving an unnecessary page scrollbar even
- * when the current page fits.  Keep scrolling available for genuinely long
- * pages while letting the grid size the content area naturally. */
-.app-main > .app-content { min-height: 0; }
-
 /* AdminLTE card-title floats can absorb the header width and displace actions. */
 .app-main .cam-action-header {
   display: flex !important;
