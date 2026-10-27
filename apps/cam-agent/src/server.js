@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { mkdir, open, rename, rm, stat, statfs, readdir, readFile, writeFile } from 'node:fs/promises';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import { once } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
 import { buildServer } from '../../../libs/cam-server/src/server.js';
@@ -16,6 +16,7 @@ import { CoreConnectionStore } from './core-connection.js';
 import { AgentDeliveryStore } from './delivery-store.js';
 import { bearerToken, parseRange } from '../../../libs/cam-transfer/src/http.js';
 import { displayTransferState } from '../../../libs/cam-transfer/src/task-state.js';
+import { writeBufferAtomic, writeFilesAtomic } from '../../../libs/cam-transfer/src/secure-file.js';
 import { buildLogBundle, readRuntimeLogs, sha256 } from '../../../libs/cam-server/src/log-bundle.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/agent' : join(process.cwd(), 'data', 'agent'));
@@ -352,13 +353,13 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
         }
         let cursor = 0; let completedParts = count - pending.length;
         updateTaskFile(task.taskId, file, { status: 'RUNNING', reused: 0, completedParts, totalParts: count, bytesDownloaded: completedBytes, lastError: null });
-        const worker = async () => { while (cursor < pending.length) { const index = pending[cursor++]; const start = index * CHUNK_SIZE; const end = Math.min(file.sizeBytes - 1, start + CHUNK_SIZE - 1); const response = await core(`/api/v1/agent/tasks/${encodeURIComponent(task.taskId)}/files/${file.sha256}/parts/${index}`, { headers: { 'x-cam-chunk-size': String(CHUNK_SIZE) } }); const bytes = Buffer.from(await response.arrayBuffer()); if (bytes.length !== end - start + 1) throw new Error(`分块 ${index} 大小不正确`); const partPath = join(taskDir, 'parts', `${file.sha256}.${index}`); const temporaryPartPath = `${partPath}.${randomUUID()}.tmp`; try { await new Promise((resolve, reject) => { const output = createWriteStream(temporaryPartPath, { flags: 'wx', mode: 0o600 }); output.on('error', reject); output.end(bytes, resolve); }); await rename(temporaryPartPath, partPath); } catch (error) { await rm(temporaryPartPath, { force: true }); throw error; } completedParts += 1; completedBytes += bytes.length; updateTaskFile(task.taskId, file, { status: 'RUNNING', completedParts, totalParts: count, bytesDownloaded: completedBytes }); const progress = { state: 'downloading', fileName: file.fileName, sha256: file.sha256, completedParts, totalParts: count, bytesDownloaded: completedBytes, totalBytes: file.sizeBytes }; db.prepare('UPDATE agent_tasks SET progress_json = ?, updated_at = ? WHERE task_id = ?').run(JSON.stringify(progress), nowIso(), task.taskId); const remote = await update(task.taskId, { status: 'RUNNING', progress }).catch(() => null); if (remote?.item?.controlState && remote.item.controlState !== 'RUN') throw controlError(remote.item.controlState); } };
+        const worker = async () => { while (cursor < pending.length) { const index = pending[cursor++]; const start = index * CHUNK_SIZE; const end = Math.min(file.sizeBytes - 1, start + CHUNK_SIZE - 1); const response = await core(`/api/v1/agent/tasks/${encodeURIComponent(task.taskId)}/files/${file.sha256}/parts/${index}`, { headers: { 'x-cam-chunk-size': String(CHUNK_SIZE) } }); const bytes = Buffer.from(await response.arrayBuffer()); if (bytes.length !== end - start + 1) throw new Error(`分块 ${index} 大小不正确`); const partPath = join(taskDir, 'parts', `${file.sha256}.${index}`); await writeBufferAtomic({ data: bytes, destination: partPath, expectedSize: end - start + 1 }); completedParts += 1; completedBytes += bytes.length; updateTaskFile(task.taskId, file, { status: 'RUNNING', completedParts, totalParts: count, bytesDownloaded: completedBytes }); const progress = { state: 'downloading', fileName: file.fileName, sha256: file.sha256, completedParts, totalParts: count, bytesDownloaded: completedBytes, totalBytes: file.sizeBytes }; db.prepare('UPDATE agent_tasks SET progress_json = ?, updated_at = ? WHERE task_id = ?').run(JSON.stringify(progress), nowIso(), task.taskId); const remote = await update(task.taskId, { status: 'RUNNING', progress }).catch(() => null); if (remote?.item?.controlState && remote.item.controlState !== 'RUN') throw controlError(remote.item.controlState); } };
         const taskConcurrency = Math.max(1, Math.min(CONCURRENCY, Number(task.chunkConcurrency ?? CONCURRENCY)));
         const results = await Promise.allSettled(Array.from({ length: Math.min(taskConcurrency, pending.length) }, worker));
         const failedWorker = results.find((result) => result.status === 'rejected'); if (failedWorker) throw failedWorker.reason;
-        const temp = `${outputPath}.${randomUUID()}.tmp`; const output = createWriteStream(temp, { flags: 'wx', mode: 0o600 }); const fullHash = createHash('sha256'); let total = 0;
-        for (let index = 0; index < count; index += 1) { const bytes = await readFile(join(taskDir, 'parts', `${file.sha256}.${index}`)); fullHash.update(bytes); total += bytes.length; if (!output.write(bytes)) await once(output, 'drain'); }
-        output.end(); await once(output, 'close'); if (total !== file.sizeBytes || fullHash.digest('hex') !== file.sha256) { for (let index = 0; index < count; index += 1) await rm(join(taskDir, 'parts', `${file.sha256}.${index}`), { force: true }); throw new Error(`文件 ${file.fileName} 完整性校验失败`); } await rename(temp, outputPath); updateTaskFile(task.taskId, file, { status: 'COMPLETED', completedParts: count, totalParts: count, bytesDownloaded: file.sizeBytes, lastError: null });
+        const partPaths = Array.from({ length: count }, (_, index) => join(taskDir, 'parts', `${file.sha256}.${index}`));
+        try { await writeFilesAtomic({ sources: partPaths, destination: outputPath, expectedSize: file.sizeBytes, expectedSha256: file.sha256 }); } catch { for (const partPath of partPaths) await rm(partPath, { force: true }); throw new Error(`文件 ${file.fileName} 完整性校验失败`); }
+        updateTaskFile(task.taskId, file, { status: 'COMPLETED', completedParts: count, totalParts: count, bytesDownloaded: file.sizeBytes, lastError: null });
       }
       const ready = cachePath(task.artifactId); await writeFile(ready, JSON.stringify({ taskId: task.taskId, artifactId: task.artifactId, files: task.files, readyAt: nowIso() }));
       db.prepare('UPDATE agent_tasks SET status = ?, progress_json = ?, updated_at = ?, last_error = NULL WHERE task_id = ?').run('COMPLETED', JSON.stringify({ state: 'ready', completedFiles: task.files.length, totalFiles: task.files.length }), nowIso(), task.taskId); await update(task.taskId, { status: 'COMPLETED', progress: { state: 'ready' } });

@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import { mkdir, rm, rename, stat, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 import { assembleChunks } from '../../../libs/cam-transfer/src/transfer.js';
+import { writeBufferAtomic, writeStreamAtomic } from '../../../libs/cam-transfer/src/secure-file.js';
 import { bearerToken, parseRange } from '../../../libs/cam-transfer/src/http.js';
 import { previewCandidateWorkbook } from './candidate-import.js';
 import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
@@ -46,26 +47,12 @@ async function md5File(path) {
 async function writeRequestPart(request, destination, expectedSize) {
   await mkdir(dirname(destination), { recursive: true });
   const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
-  const output = createWriteStream(temporary, { flags: 'w' });
-  const hash = createHash('sha256');
-  let bytes = 0;
   try {
-    for await (const chunk of request.raw) {
-      const buffer = Buffer.from(chunk);
-      bytes += buffer.length;
-      if (bytes > expectedSize) throw new Error('request body is larger than expected part');
-      hash.update(buffer);
-      if (!output.write(buffer)) await once(output, 'drain');
-    }
-    output.end();
-    await once(output, 'close');
-    if (bytes !== expectedSize) throw new Error(`request body size ${bytes} does not match expected ${expectedSize}`);
-    const digest = hash.digest('hex');
+    const result = await writeStreamAtomic({ stream: request.raw, destination: temporary, expectedSize });
     const declared = request.headers['x-chunk-sha256'];
-    if (declared && declared !== digest) throw new Error('x-chunk-sha256 does not match request body');
-    return { size: bytes, sha256: digest, temporary };
+    if (declared && declared !== result.sha256) throw new Error('x-chunk-sha256 does not match request body');
+    return { ...result, temporary };
   } catch (err) {
-    output.destroy();
     await rm(temporary, { force: true });
     throw err;
   }
@@ -719,9 +706,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
     const path = join(dir, `${attachmentId}-${fileName}`);
     try {
       await mkdir(dir, { recursive: true });
-      const temporary = `${path}.tmp`;
-      await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
-      await rename(temporary, path);
+      await writeBufferAtomic({ data: bytes, destination: path, expectedSize: bytes.length });
       const item = store.addRoundAttachment(round.roundId, { fileName, contentType, fileSize: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), filePath: path, uploadedBy: principal(request).principalId });
       return reply.code(201).send({ item });
     } catch (err) { await rm(path, { force: true }); return error(reply, 400, 'attachment_save_failed', err.message); }

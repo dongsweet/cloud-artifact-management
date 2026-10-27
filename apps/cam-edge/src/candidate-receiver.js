@@ -1,9 +1,5 @@
-import { createHash } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
-import { mkdir, rename, rm } from 'node:fs/promises';
-import { once } from 'node:events';
-import { dirname } from 'node:path';
 import { getChunkRange } from '../../../libs/cam-transfer/src/transfer.js';
+import { writeStreamAtomic } from '../../../libs/cam-transfer/src/secure-file.js';
 
 const DEFAULT_MAX_SOURCE_SIZE = 2 * 1024 * 1024 * 1024 * 1024;
 
@@ -14,30 +10,7 @@ function allowlisted(url, allowlist) {
 }
 
 async function writeStreamToFile(stream, destination, expectedSize, onProgress = () => {}) {
-  await mkdir(dirname(destination), { recursive: true });
-  const temporary = `${destination}.tmp`;
-  const output = createWriteStream(temporary, { flags: 'wx', mode: 0o600 });
-  const hash = createHash('sha256');
-  let bytes = 0;
-  try {
-    for await (const chunk of stream) {
-      const buffer = Buffer.from(chunk);
-      bytes += buffer.length;
-      if (bytes > expectedSize) throw new Error('source returned more bytes than expected');
-      hash.update(buffer);
-      onProgress(bytes);
-      if (!output.write(buffer)) await once(output, 'drain');
-    }
-    output.end();
-    await once(output, 'close');
-    if (bytes !== expectedSize) throw new Error(`source returned ${bytes} bytes, expected ${expectedSize}`);
-    await rename(temporary, destination);
-    return { size: bytes, sha256: hash.digest('hex') };
-  } catch (error) {
-    output.destroy();
-    await rm(temporary, { force: true });
-    throw error;
-  }
+  return writeStreamAtomic({ stream, destination, expectedSize, onProgress });
 }
 
 function parseAllowlist(value = process.env.CAM_SOURCE_ALLOWLIST ?? '') {

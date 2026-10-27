@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { mkdir, rm, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { once } from 'node:events';
 import { attachmentContentType } from '../../../libs/cam-server/src/attachment-types.js';
 import { normalizeGateConfig } from '../../../libs/cam-gate/src/config.js';
+import { writeBufferAtomic, writeStreamAtomic } from '../../../libs/cam-transfer/src/secure-file.js';
 import { gateHealthCheck as checkGateHealth } from '../../../libs/cam-gate/src/client.js';
 import { verifyRequest } from '../../../libs/cam-agent-auth/src/protocol.js';
 import { hasCorePermission } from '../../../libs/cam-auth/src/roles.js';
@@ -340,9 +340,7 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     const dir = join(store.dataDir, 'log-collections', request.params.jobId, 'agents');
     await mkdir(dir, { recursive: true, mode: 0o750 });
     const path = join(dir, `${request.agentPrincipal.agentId}.tar.gz`);
-    const temporary = `${path}.${process.pid}.tmp`;
-    await writeFile(temporary, body, { mode: 0o640 });
-    await rename(temporary, path);
+    await writeBufferAtomic({ data: body, destination: path, expectedSize: body.length, expectedSha256: received, mode: 0o640 });
     const item = store.saveAgentLogCollection(request.params.jobId, request.agentPrincipal.agentId, path, received, body.length);
     if (item?.status === 'PACKAGING') queueMicrotask(() => { void buildCoreLogCollection(store, request.params.jobId).catch((err) => { app.log.error?.({ jobId: request.params.jobId, message: err.message }, 'Core 日志归档失败'); }); });
     return reply.send({ accepted: true, item: { jobId: request.params.jobId, status: item.status } });
@@ -641,7 +639,6 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     const sha256 = String(request.params.sha256 ?? '').toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(sha256)) return error(reply, 400, 'artifact_digest_invalid', '制品 SHA-256 格式无效');
     let temporary = null;
-    let output = null;
     try {
       const transfer = store.expectedTransferArtifacts(request.params.transferTaskId);
       const entries = transfer.items.filter((item) => String(item.actualSha256).toLowerCase() === sha256);
@@ -650,24 +647,11 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
       if (!Number.isSafeInteger(expectedSize) || entries.some((item) => Number(item.sizeBytes) !== expectedSize)) return error(reply, 409, 'artifact_manifest_invalid', '审批清单中的同一摘要大小不一致');
       temporary = join(store.dataDir, 'tmp', `artifact-${randomUUID()}.part`);
       await mkdir(dirname(temporary), { recursive: true });
-      output = createWriteStream(temporary, { flags: 'wx', mode: 0o600 });
-      const hash = createHash('sha256');
-      let size = 0;
-      for await (const chunk of request.raw) {
-        const bytes = Buffer.from(chunk);
-        size += bytes.length;
-        if (size > expectedSize) throw Object.assign(new Error('制品内容超过审批清单声明大小'), { code: 'artifact_size_mismatch' });
-        hash.update(bytes);
-        if (!output.write(bytes)) await once(output, 'drain');
-      }
-      output.end();
-      await once(output, 'close');
-      if (size !== expectedSize) throw Object.assign(new Error('制品内容大小与审批清单不一致'), { code: 'artifact_size_mismatch' });
-      const received = await store.receiveArtifact(request.params.transferTaskId, sha256, temporary, size, hash.digest('hex'), gateConfig.get());
+      const receivedFile = await writeStreamAtomic({ stream: request.raw, destination: temporary, expectedSize });
+      const received = await store.receiveArtifact(request.params.transferTaskId, sha256, temporary, receivedFile.size, receivedFile.sha256, gateConfig.get());
       temporary = null;
       return reply.send({ transferTaskId: request.params.transferTaskId, ...received });
     } catch (err) {
-      output?.destroy();
       if (temporary) await rm(temporary, { force: true });
       const status = ['approval_required', 'artifact_not_approved', 'artifact_manifest_missing', 'artifacts_incomplete'].includes(err.code) ? 409 : 400;
       return error(reply, status, err.code ?? 'artifact_receive_failed', err.message);
@@ -683,31 +667,18 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
     const size = Number(request.headers['content-length']);
     if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(index) || index < 0 || !Number.isSafeInteger(chunkSize) || !Number.isSafeInteger(chunkCount) || !Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || size < 0) return error(reply, 400, 'artifact_chunk_invalid', '制品分块请求头无效');
     let temporary = null;
-    let output = null;
     try {
       const transfer = store.expectedTransferArtifacts(request.params.transferTaskId);
       const expected = transfer.items.find((item) => String(item.actualSha256 ?? '').toLowerCase() === sha256);
       if (!expected) return error(reply, 409, 'artifact_not_approved', '该摘要不属于审批通过的制品清单');
       temporary = join(store.dataDir, 'tmp', `artifact-${randomUUID()}.chunk`);
       await mkdir(dirname(temporary), { recursive: true });
-      output = createWriteStream(temporary, { flags: 'wx', mode: 0o600 });
-      const hash = createHash('sha256');
-      let bytes = 0;
-      for await (const chunk of request.raw) {
-        const buffer = Buffer.from(chunk);
-        bytes += buffer.length;
-        if (bytes > size) throw Object.assign(new Error('分块内容超过声明大小'), { code: 'artifact_chunk_invalid' });
-        hash.update(buffer);
-        if (!output.write(buffer)) await once(output, 'drain');
-      }
-      output.end();
-      await once(output, 'close');
-      if (bytes !== size) throw Object.assign(new Error('分块内容大小与声明不一致'), { code: 'artifact_chunk_invalid' });
       const declaredChunkSha256 = String(request.headers['x-cam-chunk-sha256'] ?? '').toLowerCase();
-      const receivedChunkSha256 = hash.digest('hex');
-      if (!/^[a-f0-9]{64}$/.test(declaredChunkSha256) || receivedChunkSha256 !== declaredChunkSha256) {
-        throw Object.assign(new Error('制品分块 SHA-256 与 Edge 声明不一致'), { code: 'artifact_chunk_integrity_failed' });
-      }
+      if (!/^[a-f0-9]{64}$/u.test(declaredChunkSha256)) throw Object.assign(new Error('制品分块 SHA-256 与 Edge 声明不一致'), { code: 'artifact_chunk_integrity_failed' });
+      let receivedFile;
+      try { receivedFile = await writeStreamAtomic({ stream: request.raw, destination: temporary, expectedSize: size, expectedSha256: declaredChunkSha256 }); }
+      catch (err) { throw Object.assign(err, { code: 'artifact_chunk_integrity_failed' }); }
+      const receivedChunkSha256 = receivedFile.sha256;
       const saved = await store.saveTransferPart(request.params.transferTaskId, sha256, {
         index, chunkSize, chunkCount, offset, size, sha256: receivedChunkSha256, temporaryPath: temporary
       }, gateConfig.get());
@@ -723,7 +694,6 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
       }
       return reply.send({ transferTaskId: request.params.transferTaskId, sha256, ...saved, assemblyPending: saved.complete, assemblyStatus: saved.complete ? 'ASSEMBLY_PENDING' : null });
     } catch (err) {
-      output?.destroy();
       if (temporary) await rm(temporary, { force: true });
       const status = ['approval_required', 'artifact_not_approved', 'artifact_integrity_failed', 'artifact_chunk_integrity_failed', 'artifact_chunk_invalid', 'artifact_chunk_conflict', 'artifact_chunk_incomplete'].includes(err.code) ? 409 : 400;
       return error(reply, status, err.code ?? 'artifact_chunk_receive_failed', err.message);

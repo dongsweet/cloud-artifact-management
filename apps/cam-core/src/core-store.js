@@ -7,6 +7,7 @@ import { attachmentExtension, validAttachmentFileName } from '../../../libs/cam-
 import { fingerprint, verifyRequest } from '../../../libs/cam-agent-auth/src/protocol.js';
 import { maskApprovalCode } from './approval-code.js';
 import { displayTransferState } from '../../../libs/cam-transfer/src/task-state.js';
+import { writeBufferAtomic } from '../../../libs/cam-transfer/src/secure-file.js';
 
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}-${Date.now()}-${randomUUID()}`;
@@ -1294,8 +1295,7 @@ export class CoreStore {
     if (current.report_sha256 && current.report_sha256.toLowerCase() !== actual) throw Object.assign(new Error(`报告 SHA-256 不匹配（声明 ${current.report_sha256}，实际 ${actual}）`), { code: 'report_integrity_failed' });
     await mkdir(this.reportDir, { recursive: true });
     const destination = join(this.reportDir, `${requestId}${attachmentExtension(current.report_file_name)}`);
-    const temporary = `${destination}.${randomUUID()}.tmp`;
-    try { await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 }); await rename(temporary, destination); } catch (error) { await rm(temporary, { force: true }); throw error; }
+    await writeBufferAtomic({ data: bytes, destination, expectedSize: bytes.length, expectedSha256: actual });
     const timestamp = now();
     this.db.prepare('UPDATE core_approval_requests SET report_path = ?, report_received_sha256 = ?, report_received_at = ?, last_error = NULL, updated_at = ? WHERE request_id = ?').run(destination, actual, timestamp, timestamp, requestId);
     return this.get(requestId);
