@@ -102,7 +102,11 @@ export class DkeyAmAdapter {
     if (!config.baseUrl || !config.tenantName || !config.accessServerName || !config.sharedSecret) throw failure('AAA 参数尚未完整配置', 'aaa_not_configured', 503);
     if (!username) throw failure('请输入一个已存在的 AAA 测试用户名', 'aaa_test_user_required', 400);
     const url = new URL('/am/webauth/1/strong/passwordRequirement', `${config.baseUrl}/`); const { dispatcher, temporary } = this.dispatcherFor(config);
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+    // Keep the externally configurable timeout bounded at the point where the
+    // timer is created as well as during config validation. This makes the
+    // resource lifetime explicit to both reviewers and static analyzers.
+    const timeoutMs = Math.min(120_000, Math.max(1_000, Number(config.timeoutMs) || 10_000));
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const form = new URLSearchParams({ tenantName: config.tenantName, accessServerName: config.accessServerName, sharedSecret: config.sharedSecret, loginName: username });
       const response = await this.fetch(url, { method: 'POST', redirect: 'manual', headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: form, signal: controller.signal, ...(dispatcher ? { dispatcher } : {}) });
@@ -124,7 +128,8 @@ export class DkeyAmAdapter {
     if (!this.enabled()) throw failure('AAA 实时认证参数尚未完整配置', 'aaa_not_configured', 503);
     if (!text(loginName) || typeof password !== 'string') throw failure('请输入 AAA 用户名和密码', 'aaa_credentials_invalid', 401);
     const url = new URL('/am/webauth/1/strong/authenticate', `${this.config.baseUrl}/`); const { dispatcher, temporary } = this.dispatcherFor(this.config);
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
+    const timeoutMs = Math.min(120_000, Math.max(1_000, Number(this.config.timeoutMs) || 10_000));
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const form = new URLSearchParams({ tenantName: this.config.tenantName, accessServerName: this.config.accessServerName, sharedSecret: this.config.sharedSecret, loginName: text(loginName), password, ...(text(terminalIp) ? { terminalIp: text(terminalIp) } : {}), ...(text(terminalMac) ? { terminalMac: text(terminalMac) } : {}) });
       const response = await this.fetch(url, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: form, signal: controller.signal, ...(dispatcher ? { dispatcher } : {}) });

@@ -1,4 +1,4 @@
-import { closeSync, existsSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, fstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 
 const SECRET_KEY = /(password|passwd|secret|token|authorization|cookie|private.?key|shared.?key|access.?key)/iu;
@@ -29,20 +29,18 @@ export function createRollingLogStream({ service, dir = process.env.CAM_LOG_DIR,
   mkdirSync(dir, { recursive: true, mode: 0o750 });
   const base = join(dir, `${service}.jsonl`);
   let fd = openSync(base, 'a', 0o640);
-  let size = existsSync(base) ? statSync(base).size : 0;
+  let size = fstatSync(fd).size;
   const rotate = () => {
     closeSync(fd);
     for (let index = Math.max(1, maxFiles - 1); index >= 1; index -= 1) {
       const source = `${base}.${index}`;
       const target = `${base}.${index + 1}`;
-      if (existsSync(source)) {
-        if (index + 1 >= maxFiles) { try { unlinkSync(source); } catch {} }
-        else { try { renameSync(source, target); } catch {} }
-      }
+      if (index + 1 >= maxFiles) { try { unlinkSync(source); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
+      else { try { renameSync(source, target); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
     }
-    if (existsSync(base)) renameSync(base, `${base}.1`);
+    try { renameSync(base, `${base}.1`); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     fd = openSync(base, 'a', 0o640);
-    size = 0;
+    size = fstatSync(fd).size;
   };
   return {
     write(chunk) {

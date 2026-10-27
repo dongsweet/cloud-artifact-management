@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, open, readFile, rename, stat } from 'node:fs/promises';
+import { mkdir, open, readFile, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 export const DEFAULT_CHUNK_SIZE = 256 * 1024 * 1024;
@@ -42,34 +42,38 @@ async function readExactly(handle, buffer, position) {
 }
 
 export async function createManifest({ artifactId, releaseId, filePath, fileName, version, targets = [], chunkSize = DEFAULT_CHUNK_SIZE, approvalId, transferTaskId }) {
-  const file = await stat(filePath);
-  const sha256 = await sha256File(filePath);
-  const chunks = [];
   const handle = await open(filePath, 'r');
   try {
+    // Keep the descriptor open for both metadata and content reads. This
+    // prevents a replace-after-stat race from producing a manifest for a
+    // different inode than the one that was hashed.
+    const file = await handle.stat();
+    const fullHash = createHash('sha256');
+    const chunks = [];
     const count = calculateChunkCount(file.size, chunkSize);
     for (let index = 0; index < count; index += 1) {
       const range = getChunkRange(index, file.size, chunkSize);
       const buffer = Buffer.allocUnsafe(range.size);
       await readExactly(handle, buffer, range.offset);
+      fullHash.update(buffer);
       chunks.push({ ...range, sha256: sha256Bytes(buffer) });
     }
+    return {
+      schemaVersion: 1,
+      artifactId,
+      releaseId,
+      fileName,
+      size: file.size,
+      sha256: fullHash.digest('hex'),
+      version,
+      targets,
+      approvalId,
+      transferTaskId,
+      transfer: { mode: 'chunked', chunkSize, chunkCount: chunks.length, chunks }
+    };
   } finally {
     await handle.close();
   }
-  return {
-    schemaVersion: 1,
-    artifactId,
-    releaseId,
-    fileName,
-    size: file.size,
-    sha256,
-    version,
-    targets,
-    approvalId,
-    transferTaskId,
-    transfer: { mode: 'chunked', chunkSize, chunkCount: chunks.length, chunks }
-  };
 }
 
 export async function writeChunk({ sourcePath, taskDir, manifest, index }) {

@@ -1,6 +1,6 @@
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { mkdir, rename, rm, stat, statfs, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, open, rename, rm, stat, statfs, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
@@ -23,6 +23,24 @@ const CHUNK_SIZE = Math.max(64 * 1024, Math.min(64 * 1024 * 1024, Number(process
 const CONCURRENCY = Math.max(1, Math.min(16, Number(process.env.CAM_AGENT_CONCURRENCY ?? 4)));
 
 function fail(reply, status, code, message) { return reply.code(status).send({ error: { code, message } }); }
+const SAFE_CACHE_SEGMENT = /^[A-Za-z0-9._-]{1,255}$/u;
+function safeCachePath(cacheRoot, segment) {
+  if (typeof segment !== 'string' || !SAFE_CACHE_SEGMENT.test(segment)) throw Object.assign(new Error('缓存标识无效'), { code: 'cache_id_invalid', status: 400 });
+  const root = resolve(cacheRoot);
+  const candidate = resolve(root, segment);
+  if (candidate !== root && !candidate.startsWith(`${root}/`) && !candidate.startsWith(`${root}\\`)) throw Object.assign(new Error('缓存路径无效'), { code: 'cache_path_invalid', status: 400 });
+  return candidate;
+}
+async function verifyFileDigest(filePath, expectedSize, expectedSha256) {
+  const handle = await open(filePath, 'r');
+  try {
+    const info = await handle.stat();
+    if (info.size !== Number(expectedSize)) return false;
+    const hash = createHash('sha256'); let bytes = 0;
+    for await (const chunk of handle.readableWebStream()) { hash.update(Buffer.from(chunk)); bytes += chunk.byteLength; }
+    return bytes === Number(expectedSize) && hash.digest('hex') === expectedSha256;
+  } finally { await handle.close(); }
+}
 function cookies(request) { return Object.fromEntries((request.headers.cookie ?? '').split(';').filter(Boolean).map((e) => { const i = e.indexOf('='); return [e.slice(0, i).trim(), e.slice(i + 1).trim()]; })); }
 function registerAuth(app, auth) {
   const cookie = (name, value, httpOnly, expired = false) => `${name}=${value}; Path=/; SameSite=Strict; Max-Age=${expired ? 0 : 28800}${httpOnly ? '; HttpOnly' : ''}${process.env.CAM_COOKIE_SECURE === 'false' ? '' : '; Secure'}`;
@@ -141,7 +159,8 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
     if (!response.ok) { const body = JSON.parse(responseBody.toString('utf8') || '{}'); throw Object.assign(new Error(body.error?.message ?? `Core 请求失败（HTTP ${response.status}）`), { code: body.error?.code ?? 'core_request_failed', status: response.status }); } return response;
   };
   const rotation = await createIdentityRotation({ identityPath, identity, request: core, onIdentity: (next) => { identity = next; }, onAgentId: (next) => { agentId = next; }, initialAgentId: agentId });
-  const cachePath = (sha256) => join(dataDir, 'cache', sha256);
+  const cacheRoot = resolve(dataDir, 'cache');
+  const cachePath = (segment) => safeCachePath(cacheRoot, segment);
   const inspectCachedFile = async (file) => {
     try {
       const info = await stat(cachePath(file.sha256));
@@ -319,7 +338,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
         const outputPath = cachePath(file.sha256);
         try {
           const cached = await stat(outputPath);
-          if (cached.size === file.sizeBytes && createHash('sha256').update(await readFile(outputPath)).digest('hex') === file.sha256) {
+          if (cached.size === file.sizeBytes && await verifyFileDigest(outputPath, file.sizeBytes, file.sha256)) {
             const count = Math.ceil(file.sizeBytes / CHUNK_SIZE); updateTaskFile(task.taskId, file, { status: 'COMPLETED', reused: 1, completedParts: count, totalParts: count, bytesDownloaded: file.sizeBytes });
             continue;
           }
@@ -476,16 +495,16 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
     } catch (err) { release?.(); return fail(reply, deliveryStatus(err), err.code ?? 'delivery_session_failed', err.message); }
   });
   app.get('/api/v1/delivery-grants/:grantId/files/:sha256/content', async (request, reply) => {
-    let release; let sessionId = request.headers['x-cam-download-session']; let session; let recorded = false;
+    let release; let fileHandle; let sessionId = request.headers['x-cam-download-session']; let session; let recorded = false;
     try {
       const { token, grant } = deliveryTokenGrant(request, request.params.grantId); const item = deliveryItem(grant, request.params.sha256);
       if (!item) return fail(reply, 403, 'delivery_file_forbidden', '文件不在交付授权范围内');
-      const path = join(dataDir, 'cache', item.fileSha256); const file = await stat(path); if (file.size !== item.size) return fail(reply, 409, 'delivery_cache_invalid', 'Agent 本地缓存文件大小不匹配');
-      const range = parseRange(request.headers.range, file.size); if (range === 'invalid') return reply.code(416).header('Content-Range', `bytes */${file.size}`).send();
+      const path = cachePath(item.fileSha256); fileHandle = await open(path, 'r'); const file = await fileHandle.stat(); if (file.size !== item.size) { await fileHandle.close(); fileHandle = null; return fail(reply, 409, 'delivery_cache_invalid', 'Agent 本地缓存文件大小不匹配'); }
+      const range = parseRange(request.headers.range, file.size); if (range === 'invalid') { await fileHandle.close(); fileHandle = null; return reply.code(416).header('Content-Range', `bytes */${file.size}`).send(); }
       const start = range?.start ?? 0; const end = range?.end ?? file.size - 1; const length = end - start + 1;
       reply.code(range ? 206 : 200).header('Accept-Ranges', 'bytes').header('Content-Length', length).header('Content-Type', 'application/octet-stream').header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.fileName)}`).header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer').header('X-CAM-SHA256', item.fileSha256);
       if (range) reply.header('Content-Range', `bytes ${start}-${end}/${file.size}`);
-      if (request.method === 'HEAD') return reply.send();
+      if (request.method === 'HEAD') { await fileHandle.close(); fileHandle = null; return reply.send(); }
       release = delivery.acquireTransfer(grant.grantId, item.fileSha256);
       session = delivery.beginSession({ token, fileSha256: item.fileSha256, sessionId: typeof sessionId === 'string' ? sessionId : null, downloadedBy: deliveryPrincipal(request, grant), sourceAddress: request.ip, userAgent: request.headers['user-agent'] ?? null, autoResume: true, start });
       sessionId = session.sessionId; const prior = delivery.getSession(sessionId); let responseBytes = 0;
@@ -493,16 +512,16 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
       reply.raw.write = function (chunk, encoding, callback) { if (typeof encoding === 'function') { callback = encoding; encoding = undefined; } const size = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk, encoding); return originalWrite.call(this, chunk, encoding, (err) => { if (!err && !recorded) responseBytes += size; callback?.(err); }); };
       const progress = (finished = false) => ({ bytesSent: prior.bytes_sent + (finished ? length : responseBytes), coveredBytes: start <= prior.covered_bytes ? Math.max(prior.covered_bytes, start + (finished ? length : responseBytes)) : prior.covered_bytes });
       const timer = setInterval(() => { if (!recorded) delivery.recordSessionProgress(sessionId, { ...progress(), status: 'ACTIVE' }); }, 1000); timer.unref?.();
-      const record = (finished, err = null) => { if (recorded) return; recorded = true; clearInterval(timer); reply.raw.write = originalWrite; release?.(); const current = progress(finished); delivery.recordSessionProgress(sessionId, { ...current, responseBytes: finished ? length : responseBytes, status: err?.message ? 'FAILED' : finished && current.coveredBytes >= file.size ? 'COMPLETED' : 'INTERRUPTED', errorMessage: err?.message ?? null, principalId: deliveryPrincipal(request, grant) }); };
-      const stream = createReadStream(path, { start, end }); stream.on('error', (err) => record(false, err)); reply.raw.once('finish', () => record(true)); reply.raw.once('close', () => { record(false); stream.destroy(); });
+      const record = (finished, err = null) => { if (recorded) return; recorded = true; clearInterval(timer); reply.raw.write = originalWrite; release?.(); const current = progress(finished); delivery.recordSessionProgress(sessionId, { ...current, responseBytes: finished ? length : responseBytes, status: err?.message ? 'FAILED' : finished && current.coveredBytes >= file.size ? 'COMPLETED' : 'INTERRUPTED', errorMessage: err?.message ?? null, principalId: deliveryPrincipal(request, grant) }); if (fileHandle) void fileHandle.close().catch(() => {}); fileHandle = null; };
+      const stream = createReadStream(null, { fd: fileHandle.fd, start, end, autoClose: false }); stream.on('error', (err) => record(false, err)); reply.raw.once('finish', () => record(true)); reply.raw.once('close', () => { record(false); stream.destroy(); });
       return reply.header('X-CAM-Download-Session', sessionId).send(stream);
     } catch (err) {
-      release?.(); if (session) { const previous = delivery.getSession(sessionId); if (previous) delivery.recordSessionProgress(sessionId, { bytesSent: previous.bytes_sent, coveredBytes: previous.covered_bytes, status: 'FAILED', errorMessage: err.message }); }
+      release?.(); if (session) { const previous = delivery.getSession(sessionId); if (previous) delivery.recordSessionProgress(sessionId, { bytesSent: previous.bytes_sent, coveredBytes: previous.covered_bytes, status: 'FAILED', errorMessage: err.message }); } if (fileHandle) await fileHandle.close().catch(() => {});
       return fail(reply, deliveryStatus(err), err.code ?? 'delivery_failed', err.message);
     }
   });
   app.post('/api/v1/tasks/request', { bodyLimit: 8192, preHandler: requirePermission('businessWrite', '需要系统管理员或操作员权限') }, async (request, reply) => { try { const response = await core('/api/v1/agent/distribution-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifactId: request.body?.artifactId }) }); const result = await response.json(); queueMicrotask(() => { void poll(); }); return reply.code(201).send(result); } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'distribution_request_failed', err.message); } });
-  app.get('/api/v1/cache/:artifactId', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (request, reply) => { if (typeof request.params.artifactId !== 'string' || !/^[A-Za-z0-9._-]{1,255}$/.test(request.params.artifactId)) return reply.code(400).send({ ready: false }); const path = join(dataDir, 'cache', request.params.artifactId); try { const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch { return reply.code(404).send({ ready: false }); } });
+  app.get('/api/v1/cache/:artifactId', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (request, reply) => { try { const path = cachePath(request.params.artifactId); const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch (err) { if (err.code === 'cache_id_invalid' || err.code === 'cache_path_invalid') return reply.code(400).send({ ready: false, error: { code: err.code, message: err.message } }); return reply.code(404).send({ ready: false }); } });
   if (startWorker) { const timer = setInterval(() => { void poll(); }, Number(process.env.CAM_AGENT_POLL_MS ?? 5000)); timer.unref?.(); app.addHook('onClose', async () => clearInterval(timer)); queueMicrotask(() => { void poll(); }); }
   delivery.setLogger(app.log);
   app.decorate('agentAuthStore', auth); app.decorate('aaaConfigStore', aaaConfigStore); app.decorate('agentDeliveryStore', delivery); app.decorate('agentPoll', poll); app.decorate('agentIdentity', { getter: () => identity }); return app;

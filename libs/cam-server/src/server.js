@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { createRollingLogStream } from './rolling-log.js';
+import { registerApiRateLimit } from './rate-limit.js';
 
 export async function buildServer({ service, configure, bodyLimit = Number(process.env.BODY_LIMIT ?? 25 * 1024 * 1024) } = {}) {
   const logStream = createRollingLogStream({ service });
@@ -16,6 +17,7 @@ export async function buildServer({ service, configure, bodyLimit = Number(proce
     },
     bodyLimit
   });
+  registerApiRateLimit(app);
   app.addContentTypeParser([
     'application/octet-stream',
     'application/pdf',
