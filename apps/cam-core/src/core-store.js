@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream, statSync } from 'node:fs';
-import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, stat } from 'node:fs/promises';
 import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 import { attachmentExtension, validAttachmentFileName } from '../../../libs/cam-server/src/attachment-types.js';

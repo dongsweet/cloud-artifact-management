@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, rm, rename, stat, writeFile } from 'node:fs/promises';
-import { once } from 'node:events';
+import { mkdir, rm, rename, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { assembleChunks } from '../../../libs/cam-transfer/src/transfer.js';
 import { writeBufferAtomic, writeStreamAtomic } from '../../../libs/cam-transfer/src/secure-file.js';

@@ -1,9 +1,8 @@
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { mkdir, open, rename, rm, stat, statfs, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, open, rm, stat, statfs, readdir, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { once } from 'node:events';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { buildServer } from '../../../libs/cam-server/src/server.js';
 import { openDatabase } from '../../../libs/cam-sqlite/src/database.js';
 import { AuthStore } from '../../cam-core/src/core-auth-store.js';
