@@ -85,6 +85,11 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
     bytes_downloaded INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_at TEXT NOT NULL,
     PRIMARY KEY (task_id, sha256)
   ); CREATE INDEX IF NOT EXISTS agent_task_files_task_idx ON agent_task_files(task_id, updated_at);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS agent_task_parts (
+    task_id TEXT NOT NULL, sha256 TEXT NOT NULL, part_index INTEGER NOT NULL,
+    size_bytes INTEGER NOT NULL, part_sha256 TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, sha256, part_index)
+  ); CREATE INDEX IF NOT EXISTS agent_task_parts_task_idx ON agent_task_parts(task_id, sha256, part_index);`);
   const taskColumns = new Set(db.prepare('PRAGMA table_info(agent_tasks)').all().map((column) => column.name));
   if (!taskColumns.has('attempts')) db.exec('ALTER TABLE agent_tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
   if (!taskColumns.has('retry_at')) db.exec('ALTER TABLE agent_tasks ADD COLUMN retry_at TEXT');
@@ -347,17 +352,25 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
         const count = Math.ceil(file.sizeBytes / CHUNK_SIZE); const pending = []; let completedBytes = 0;
         for (let index = 0; index < count; index += 1) {
           const partPath = join(taskDir, 'parts', `${file.sha256}.${index}`); const expected = Math.min(CHUNK_SIZE, file.sizeBytes - index * CHUNK_SIZE);
-          try { const saved = await stat(partPath); if (saved.size === expected) { completedBytes += saved.size; continue; } } catch { /* missing chunk */ }
+          try {
+            const saved = await stat(partPath);
+            const record = db.prepare('SELECT size_bytes, part_sha256 FROM agent_task_parts WHERE task_id = ? AND sha256 = ? AND part_index = ?').get(task.taskId, file.sha256, index);
+            if (saved.size === expected && record?.size_bytes === expected && /^[a-f0-9]{64}$/u.test(record.part_sha256) && await verifyFileDigest(partPath, expected, record.part_sha256)) { completedBytes += saved.size; continue; }
+            await rm(partPath, { force: true });
+            db.prepare('DELETE FROM agent_task_parts WHERE task_id = ? AND sha256 = ? AND part_index = ?').run(task.taskId, file.sha256, index);
+          } catch { /* missing or invalid chunk */ }
           pending.push(index);
         }
         let cursor = 0; let completedParts = count - pending.length;
         updateTaskFile(task.taskId, file, { status: 'RUNNING', reused: 0, completedParts, totalParts: count, bytesDownloaded: completedBytes, lastError: null });
-        const worker = async () => { while (cursor < pending.length) { const index = pending[cursor++]; const start = index * CHUNK_SIZE; const end = Math.min(file.sizeBytes - 1, start + CHUNK_SIZE - 1); const response = await core(`/api/v1/agent/tasks/${encodeURIComponent(task.taskId)}/files/${file.sha256}/parts/${index}`, { headers: { 'x-cam-chunk-size': String(CHUNK_SIZE) } }); const bytes = Buffer.from(await response.arrayBuffer()); if (bytes.length !== end - start + 1) throw new Error(`分块 ${index} 大小不正确`); const partPath = join(taskDir, 'parts', `${file.sha256}.${index}`); await writeBufferAtomic({ data: bytes, destination: partPath, expectedSize: end - start + 1 }); completedParts += 1; completedBytes += bytes.length; updateTaskFile(task.taskId, file, { status: 'RUNNING', completedParts, totalParts: count, bytesDownloaded: completedBytes }); const progress = { state: 'downloading', fileName: file.fileName, sha256: file.sha256, completedParts, totalParts: count, bytesDownloaded: completedBytes, totalBytes: file.sizeBytes }; db.prepare('UPDATE agent_tasks SET progress_json = ?, updated_at = ? WHERE task_id = ?').run(JSON.stringify(progress), nowIso(), task.taskId); const remote = await update(task.taskId, { status: 'RUNNING', progress }).catch(() => null); if (remote?.item?.controlState && remote.item.controlState !== 'RUN') throw controlError(remote.item.controlState); } };
+        const worker = async () => { while (cursor < pending.length) { const index = pending[cursor++]; const start = index * CHUNK_SIZE; const end = Math.min(file.sizeBytes - 1, start + CHUNK_SIZE - 1); const response = await core(`/api/v1/agent/tasks/${encodeURIComponent(task.taskId)}/files/${file.sha256}/parts/${index}`, { headers: { 'x-cam-chunk-size': String(CHUNK_SIZE) } }); const declaredSha256 = String(response.headers.get('x-cam-chunk-sha256') ?? '').toLowerCase(); const bytes = Buffer.from(await response.arrayBuffer()); if (bytes.length !== end - start + 1) throw new Error(`分块 ${index} 大小不正确`); if (!/^[a-f0-9]{64}$/u.test(declaredSha256)) throw new Error(`分块 ${index} 缺少 SHA-256 摘要`); const actualSha256 = createHash('sha256').update(bytes).digest('hex'); if (actualSha256 !== declaredSha256) throw new Error(`分块 ${index} SHA-256 校验失败`); const partPath = join(taskDir, 'parts', `${file.sha256}.${index}`); const written = await writeBufferAtomic({ data: bytes, destination: partPath, expectedSize: end - start + 1, expectedSha256: declaredSha256 }); db.prepare(`INSERT INTO agent_task_parts (task_id, sha256, part_index, size_bytes, part_sha256, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, sha256, part_index) DO UPDATE SET size_bytes = excluded.size_bytes, part_sha256 = excluded.part_sha256, updated_at = excluded.updated_at`).run(task.taskId, file.sha256, index, written.size, written.sha256, nowIso()); completedParts += 1; completedBytes += bytes.length; updateTaskFile(task.taskId, file, { status: 'RUNNING', completedParts, totalParts: count, bytesDownloaded: completedBytes }); const progress = { state: 'downloading', fileName: file.fileName, sha256: file.sha256, completedParts, totalParts: count, bytesDownloaded: completedBytes, totalBytes: file.sizeBytes }; db.prepare('UPDATE agent_tasks SET progress_json = ?, updated_at = ? WHERE task_id = ?').run(JSON.stringify(progress), nowIso(), task.taskId); const remote = await update(task.taskId, { status: 'RUNNING', progress }).catch(() => null); if (remote?.item?.controlState && remote.item.controlState !== 'RUN') throw controlError(remote.item.controlState); } };
         const taskConcurrency = Math.max(1, Math.min(CONCURRENCY, Number(task.chunkConcurrency ?? CONCURRENCY)));
         const results = await Promise.allSettled(Array.from({ length: Math.min(taskConcurrency, pending.length) }, worker));
         const failedWorker = results.find((result) => result.status === 'rejected'); if (failedWorker) throw failedWorker.reason;
         const partPaths = Array.from({ length: count }, (_, index) => join(taskDir, 'parts', `${file.sha256}.${index}`));
-        try { await writeFilesAtomic({ sources: partPaths, destination: outputPath, expectedSize: file.sizeBytes, expectedSha256: file.sha256 }); } catch { for (const partPath of partPaths) await rm(partPath, { force: true }); throw new Error(`文件 ${file.fileName} 完整性校验失败`); }
+        try { await writeFilesAtomic({ sources: partPaths, destination: outputPath, expectedSize: file.sizeBytes, expectedSha256: file.sha256 }); } catch { for (const partPath of partPaths) await rm(partPath, { force: true }); db.prepare('DELETE FROM agent_task_parts WHERE task_id = ? AND sha256 = ?').run(task.taskId, file.sha256); throw new Error(`文件 ${file.fileName} 完整性校验失败`); }
+        for (const partPath of partPaths) await rm(partPath, { force: true });
+        db.prepare('DELETE FROM agent_task_parts WHERE task_id = ? AND sha256 = ?').run(task.taskId, file.sha256);
         updateTaskFile(task.taskId, file, { status: 'COMPLETED', completedParts: count, totalParts: count, bytesDownloaded: file.sizeBytes, lastError: null });
       }
       const ready = cachePath(task.artifactId); await writeFile(ready, JSON.stringify({ taskId: task.taskId, artifactId: task.artifactId, files: task.files, readyAt: nowIso() }));

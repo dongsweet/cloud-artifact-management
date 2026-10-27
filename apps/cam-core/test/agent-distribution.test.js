@@ -97,6 +97,7 @@ test('Core scopes queued distribution tasks and parallel file chunks to each Age
     const chunkPath = `/api/v1/agent/tasks/${task.taskId}/files/${sha}/parts/1`; const chunk = await app.inject({ method: 'GET', url: chunkPath, headers: { ...auth(west, finalIdentity, 'GET', chunkPath), 'x-cam-chunk-size': '10' } });
     assert.equal(chunk.statusCode, 206, chunk.body); assert.equal(chunk.headers['content-range'], `bytes 10-19/${payload.length}`);
     assert.deepEqual(chunk.rawPayload, payload.subarray(10, 20));
+    assert.equal(chunk.headers['x-cam-chunk-sha256'], createHash('sha256').update(payload.subarray(10, 20)).digest('hex'));
     const crossedPath = `/api/v1/agent/tasks/${task.taskId}/files/${sha}/parts/0`; const crossed = await app.inject({ method: 'GET', url: crossedPath, headers: { ...auth(east, eastIdentity, 'GET', crossedPath), 'x-cam-chunk-size': '10' } });
     assert.equal(crossed.statusCode, 404);
     const progressPath = `/api/v1/agent/tasks/${task.taskId}/progress`; const progressBody = JSON.stringify({ status: 'COMPLETED', progress: { state: 'ready' } }); const completed = await app.inject({ method: 'POST', url: progressPath, headers: { ...auth(west, finalIdentity, 'POST', progressPath, progressBody), 'content-type': 'application/json' }, payload: JSON.parse(progressBody) });

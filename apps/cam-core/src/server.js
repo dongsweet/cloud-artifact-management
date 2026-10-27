@@ -1,4 +1,5 @@
 import { access } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildServer } from '../../../libs/cam-server/src/server.js';
@@ -76,6 +77,9 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
           const chunks = [];
           for await (const chunk of body) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
           body = Buffer.concat(chunks);
+        }
+        if (/^\/api\/v1\/agent\/tasks\/[^/]+\/files\/[^/]+\/parts\/\d+$/u.test(request.url.split('?')[0])) {
+          reply.header('x-cam-chunk-sha256', createHash('sha256').update(body).digest('hex'));
         }
         const identity = request.agentPrincipal?.agentId && agentServiceIdentity.pendingIdentity && store.getAgentIdentity(request.agentPrincipal.agentId).coreIdentityRotationId === agentServiceIdentity.pendingIdentity.rotationId
           ? agentServiceIdentity.pendingIdentity : agentServiceIdentity;
