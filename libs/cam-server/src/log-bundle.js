@@ -116,6 +116,48 @@ export function readRuntimeLogs(dir, service, { fromAt, toAt, maxBytes = 50 * 10
   return Buffer.from(lines.join(''), 'utf8');
 }
 
+const LOG_CATEGORIES = new Set(['runtime', 'transfer', 'error']);
+const TRANSFER_LOG_PATTERN = /transfer|artifact|task|chunk|download|upload|receive|delivery|传输|制品|任务|分块|下载|上传|接收|交付/iu;
+
+function parseLogLine(line) {
+  try {
+    const value = JSON.parse(line);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function isErrorLog(line, value) {
+  const level = value?.level;
+  if ((typeof level === 'number' && level >= 50) || (typeof level === 'string' && /^(error|fatal)$/iu.test(level))) return true;
+  return Boolean(value?.err || value?.error || value?.exception || value?.stack || /\b(error|fatal|exception|失败|错误|异常)\b/iu.test(line));
+}
+
+function isTransferLog(line, value) {
+  if (value && Object.keys(value).some((key) => TRANSFER_LOG_PATTERN.test(key))) return true;
+  return TRANSFER_LOG_PATTERN.test(line);
+}
+
+/**
+ * Split rolling JSONL logs into the selected user-facing categories. Runtime
+ * is the complete range; transfer and error are focused views and may overlap
+ * when a transfer operation fails. Empty selected categories are retained so
+ * the archive always reflects the requested scope.
+ */
+export function categorizeRuntimeLogs(buffer, categories = ['runtime']) {
+  const selected = [...new Set(Array.isArray(categories) ? categories.filter((item) => LOG_CATEGORIES.has(item)) : [])];
+  const lines = Buffer.from(buffer ?? '').toString('utf8').split(/\r?\n/u).filter(Boolean);
+  const categorized = Object.fromEntries(selected.map((category) => [category, []]));
+  for (const line of lines) {
+    const value = parseLogLine(line);
+    if (categorized.runtime) categorized.runtime.push(line);
+    if (categorized.transfer && isTransferLog(line, value)) categorized.transfer.push(line);
+    if (categorized.error && isErrorLog(line, value)) categorized.error.push(line);
+  }
+  return Object.fromEntries(Object.entries(categorized).map(([category, items]) => [category, Buffer.from(items.length ? `${items.join('\n')}\n` : '', 'utf8')]));
+}
+
 export function buildLogBundle({ entries = [], fromAt, toAt, categories = ['runtime'], source = 'cam' } = {}) {
   const payloadEntries = entries.map(({ name, data }) => ({ name: normalizeName(name), data: Buffer.isBuffer(data) ? data : Buffer.from(data ?? '') }));
   const manifest = {

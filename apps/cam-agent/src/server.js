@@ -16,7 +16,7 @@ import { AgentDeliveryStore } from './delivery-store.js';
 import { bearerToken, parseRange } from '../../../libs/cam-transfer/src/http.js';
 import { displayTransferState } from '../../../libs/cam-transfer/src/task-state.js';
 import { writeBufferAtomic, writeFilesAtomic } from '../../../libs/cam-transfer/src/secure-file.js';
-import { buildLogBundle, readRuntimeLogs, sha256 } from '../../../libs/cam-server/src/log-bundle.js';
+import { buildLogBundle, categorizeRuntimeLogs, readRuntimeLogs, sha256 } from '../../../libs/cam-server/src/log-bundle.js';
 
 const DEFAULT_DATA_DIR = process.env.DATA_DIR ?? (process.env.NODE_ENV === 'production' ? '/data/agent' : join(process.cwd(), 'data', 'agent'));
 const CHUNK_SIZE = Math.max(64 * 1024, Math.min(64 * 1024 * 1024, Number(process.env.CAM_AGENT_CHUNK_SIZE ?? 4 * 1024 * 1024)));
@@ -370,7 +370,9 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
     const jobs = (await response.json()).items ?? [];
     for (const job of jobs) {
       const runtime = readRuntimeLogs(process.env.CAM_LOG_DIR ?? join(dataDir, 'logs'), 'cam-agent', { fromAt: job.fromAt, toAt: job.toAt, maxBytes: Number(process.env.CAM_LOG_COLLECTION_MAX_BYTES ?? 100 * 1024 * 1024) });
-      const bundle = buildLogBundle({ fromAt: job.fromAt, toAt: job.toAt, categories: job.categories, source: 'agent-aggregate', entries: [{ name: 'runtime.jsonl', data: runtime }] });
+      const categorized = categorizeRuntimeLogs(runtime, job.categories);
+      const entries = Object.entries(categorized).map(([category, data]) => ({ name: `${category}.jsonl`, data }));
+      const bundle = buildLogBundle({ fromAt: job.fromAt, toAt: job.toAt, categories: job.categories, source: 'agent-aggregate', entries });
       const uploaded = await core(`/api/v1/agent/log-collections/${encodeURIComponent(job.jobId)}`, { method: 'PUT', headers: { 'content-type': 'application/gzip', 'x-log-sha256': sha256(bundle) }, body: bundle });
       if (!uploaded.ok) throw new Error(`Agent 日志上传失败（HTTP ${uploaded.status}）`);
     }

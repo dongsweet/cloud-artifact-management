@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildLogBundle, readRuntimeLogs, unpackTarGz } from '../../../libs/cam-server/src/log-bundle.js';
+import { buildLogBundle, categorizeRuntimeLogs, readRuntimeLogs, unpackTarGz } from '../../../libs/cam-server/src/log-bundle.js';
 
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -33,7 +33,9 @@ export function createLogCollectionDispatcher({ store, gateConfig, keyring, data
   };
   const finalize = async (job, status) => {
     const coreBundle = await downloadCoreBundle(job, status.bundleSize); const entries = unpackTarGz(coreBundle).filter((entry) => !['manifest.json', 'checksums.sha256'].includes(entry.name));
-    const edgeLogs = readRuntimeLogs(process.env.CAM_LOG_DIR ?? join(dataDir, 'logs'), 'cam-edge', { fromAt: job.fromAt, toAt: job.toAt, maxBytes: Number(process.env.CAM_LOG_COLLECTION_MAX_BYTES ?? 100 * 1024 * 1024) }); entries.push({ name: 'edge/runtime.jsonl', data: edgeLogs });
+    const edgeLogs = readRuntimeLogs(process.env.CAM_LOG_DIR ?? join(dataDir, 'logs'), 'cam-edge', { fromAt: job.fromAt, toAt: job.toAt, maxBytes: Number(process.env.CAM_LOG_COLLECTION_MAX_BYTES ?? 100 * 1024 * 1024) });
+    const edgeCategories = categorizeRuntimeLogs(edgeLogs, job.categories);
+    entries.push(...Object.entries(edgeCategories).map(([category, data]) => ({ name: `edge/${category}.jsonl`, data })));
     const finalBundle = buildLogBundle({ fromAt: job.fromAt, toAt: job.toAt, categories: job.categories, source: 'edge-aggregate', entries }); const path = store.finalPath(job.jobId); await mkdir(join(dataDir, 'log-collections', job.jobId), { recursive: true, mode: 0o750 }); await writeFile(`${path}.tmp`, finalBundle, { mode: 0o640 }); await rename(`${path}.tmp`, path); return store.setStatus(job.jobId, 'READY', { bundlePath: path, bundleSha256: digest(finalBundle), bundleSize: finalBundle.length });
   };
   const syncOne = async (job) => { try { const status = await fetchCoreStatus(job); if (status.status === 'FAILED') return store.setStatus(job.jobId, 'FAILED', { lastError: status.lastError ?? 'Core 日志收集失败' }); if (status.status !== 'READY') return store.setStatus(job.jobId, 'COLLECTING'); return await finalize(job, status); } catch (error) { logger.warn?.({ jobId: job.jobId, message: error.message }, 'Edge 日志收集同步失败'); return store.setStatus(job.jobId, 'COLLECTING', { lastError: error.message }); } };

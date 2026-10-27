@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildLogBundle, readRuntimeLogs, sanitizeRuntimeLog, sha256, unpackTarGz } from '../../../libs/cam-server/src/log-bundle.js';
+import { buildLogBundle, categorizeRuntimeLogs, readRuntimeLogs, sanitizeRuntimeLog, sha256, unpackTarGz } from '../../../libs/cam-server/src/log-bundle.js';
 
 const inFlight = new Set();
 
@@ -27,21 +27,28 @@ async function buildCoreLogCollectionOnce(store, jobId) {
   for (const item of store.listAgentLogCollectionFiles(jobId)) {
     try {
       const entries = unpackTarGz(await readFile(item.bundlePath));
-      const logs = entries.filter((entry) => entry.name.endsWith('.jsonl') && !entry.name.includes('manifest') && !entry.name.includes('checksums')).map((entry) => entry.data);
+      const logEntries = entries.filter((entry) => entry.name.endsWith('.jsonl'));
+      const runtimeEntry = logEntries.find((entry) => /(?:^|\/)runtime\.jsonl$/u.test(entry.name));
+      const source = runtimeEntry?.data ?? Buffer.concat(logEntries.map((entry) => entry.data));
+      const categorized = categorizeRuntimeLogs(source, job.categories);
       const agentName = safeAgentDirectoryName(item, usedAgentNames);
-      agentEntries.push({ name: `agents/${agentName}/runtime.jsonl`, data: Buffer.concat(logs), agentId: item.agentId, centerId: item.centerId, agentName: item.agentName ?? item.agentId });
+      for (const category of job.categories) {
+        const exact = logEntries.find((entry) => new RegExp(`(?:^|/)${category}\\.jsonl$`, 'u').test(entry.name));
+        agentEntries.push({ name: `agents/${agentName}/${category}.jsonl`, data: runtimeEntry ? categorized[category] : (exact?.data ?? categorized[category]), agentId: item.agentId, centerId: item.centerId, agentName: item.agentName ?? item.agentId });
+      }
     } catch (error) {
       store.setLogCollectionBundle(jobId, { status: 'FAILED', error: `Agent 日志归档解析失败：${error.message}` });
       return store.getLogCollection(jobId);
     }
   }
   const coreLogs = sanitizeRuntimeLog(readRuntimeLogs(process.env.CAM_LOG_DIR ?? join(store.dataDir, 'logs'), 'cam-core', { fromAt: job.fromAt, toAt: job.toAt, maxBytes: Number(process.env.CAM_LOG_COLLECTION_MAX_BYTES ?? 100 * 1024 * 1024) }), { stripIdentifiers: true });
+  const coreCategories = categorizeRuntimeLogs(coreLogs, job.categories);
   const bundle = buildLogBundle({
     fromAt: job.fromAt,
     toAt: job.toAt,
     categories: job.categories,
     source: 'core-aggregate',
-    entries: [{ name: 'core/runtime.jsonl', data: coreLogs }, ...agentEntries]
+    entries: [...Object.entries(coreCategories).map(([category, data]) => ({ name: `core/${category}.jsonl`, data })), ...agentEntries]
   });
   const path = join(baseDir, 'core-aggregate.tar.gz');
   await writeFile(`${path}.tmp`, bundle, { mode: 0o640 });
