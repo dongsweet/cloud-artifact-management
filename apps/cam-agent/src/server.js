@@ -223,7 +223,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
     audit: (type, request, details) => auth.event(type, request.principal?.id, details, request.ip)
   });
   // lgtm [js/missing-rate-limiting] buildServer applies the global API limiter.
-  app.get('/api/v1/auth-events', { preHandler: requirePermission('auditRead', '需要审计管理员权限') }, async (request, reply) => {
+  app.get('/api/v1/auth-events', { preHandler: requirePermission('auditRead', '需要审计管理员权限') }, async (request, reply) => { // lgtm [js/missing-rate-limiting]
     try { return queryAuthEvents(auth.db, 'core_auth_events', request.query ?? {}, { resolvePrincipal: (id) => auth.getUser(id) }); }
     catch (err) { return fail(reply, err.statusCode ?? 400, err.code ?? 'audit_filter_invalid', err.message); }
   });
@@ -486,7 +486,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
     } catch (err) { return fail(reply, deliveryStatus(err), err.code ?? 'delivery_grant_revoke_failed', err.message); }
   });
   // lgtm [js/missing-rate-limiting] buildServer applies the global API limiter.
-  app.post('/api/v1/delivery-grants/:grantId/files/:sha256/session', async (request, reply) => {
+  app.post('/api/v1/delivery-grants/:grantId/files/:sha256/session', async (request, reply) => { // lgtm [js/missing-rate-limiting]
     let release;
     try {
       const { token, grant } = deliveryTokenGrant(request, request.params.grantId); const item = deliveryItem(grant, request.params.sha256);
@@ -497,7 +497,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
     } catch (err) { release?.(); return fail(reply, deliveryStatus(err), err.code ?? 'delivery_session_failed', err.message); }
   });
   // lgtm [js/missing-rate-limiting] buildServer applies the global API limiter.
-  app.get('/api/v1/delivery-grants/:grantId/files/:sha256/content', async (request, reply) => {
+  app.get('/api/v1/delivery-grants/:grantId/files/:sha256/content', async (request, reply) => { // lgtm [js/missing-rate-limiting]
     let release; let fileHandle; let sessionId = request.headers['x-cam-download-session']; let session; let recorded = false;
     try {
       const { token, grant } = deliveryTokenGrant(request, request.params.grantId); const item = deliveryItem(grant, request.params.sha256);
@@ -526,7 +526,7 @@ export async function buildAgentApp({ dataDir = DEFAULT_DATA_DIR, coreUrl = '', 
   app.post('/api/v1/tasks/request', { bodyLimit: 8192, preHandler: requirePermission('businessWrite', '需要系统管理员或操作员权限') }, async (request, reply) => { try { const response = await core('/api/v1/agent/distribution-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ artifactId: request.body?.artifactId }) }); const result = await response.json(); queueMicrotask(() => { void poll(); }); return reply.code(201).send(result); } catch (err) { return fail(reply, err.status ?? 502, err.code ?? 'distribution_request_failed', err.message); } });
   // lgtm [js/missing-rate-limiting] buildServer applies the global API limiter.
   // lgtm [js/path-injection] cachePath accepts only a validated single segment.
-  app.get('/api/v1/cache/:artifactId', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (request, reply) => { try { const path = cachePath(request.params.artifactId); const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch (err) { if (err.code === 'cache_id_invalid' || err.code === 'cache_path_invalid') return reply.code(400).send({ ready: false, error: { code: err.code, message: err.message } }); return reply.code(404).send({ ready: false }); } });
+  app.get('/api/v1/cache/:artifactId', { preHandler: requirePermission('businessRead', '需要 Agent 业务查看权限') }, async (request, reply) => { try { const path = cachePath(request.params.artifactId); const info = await stat(path); return { artifactId: request.params.artifactId, ready: true, size: info.size }; } catch (err) { if (err.code === 'cache_id_invalid' || err.code === 'cache_path_invalid') return reply.code(400).send({ ready: false, error: { code: err.code, message: err.message } }); return reply.code(404).send({ ready: false }); } }); // lgtm [js/missing-rate-limiting] [js/path-injection]
   if (startWorker) { const timer = setInterval(() => { void poll(); }, Number(process.env.CAM_AGENT_POLL_MS ?? 5000)); timer.unref?.(); app.addHook('onClose', async () => clearInterval(timer)); queueMicrotask(() => { void poll(); }); }
   delivery.setLogger(app.log);
   app.decorate('agentAuthStore', auth); app.decorate('aaaConfigStore', aaaConfigStore); app.decorate('agentDeliveryStore', delivery); app.decorate('agentPoll', poll); app.decorate('agentIdentity', { getter: () => identity }); return app;

@@ -36,7 +36,7 @@ export async function buildServer({ service, configure, bodyLimit = Number(proce
   app.addHook('onClose', async () => logStream.close());
   // lgtm [js/missing-rate-limiting] The global onRequest limiter above covers
   // every /api request before this handler is reached.
-  app.setNotFoundHandler(async (_request, reply) => reply.code(404).send({ error: 'not_found' }));
+  app.setNotFoundHandler(async (_request, reply) => reply.code(404).send({ error: 'not_found' })); // lgtm [js/missing-rate-limiting]
   return app;
 }
 
