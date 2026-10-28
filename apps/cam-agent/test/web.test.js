@@ -92,6 +92,9 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /data-agent-mobile-group="business"/);
   assert.match(html, /mountAaaConfig/);
   assert.match(html, /传输计划由 Core 统一安排，Agent 到时自动主动下载/);
+  assert.match(html, /<th>正式版本 \/ 传输任务编号<\/th>/);
+  const taskTableSource = html.slice(html.indexOf('function renderTasks'));
+  assert.ok(taskTableSource.indexOf("'<tr><td><strong>'+esc(taskLabel(task))+'</strong><div class=\"small text-body-secondary\">任务编号：") >= 0);
   assert.match(html, /transfer-file-table\.js/);
   assert.match(html, /renderTransferFileTable/);
   assert.doesNotMatch(html, /<th>来源<\/th>/);
