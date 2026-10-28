@@ -48,7 +48,7 @@ services:
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev
       - /data:size=16m,mode=0700,uid=10001,gid=10001
-      - /config:size=4m,mode=0700,nosuid,nodev
+      - /config:size=4m,mode=0700,uid=10001,gid=10001,nosuid,nodev
     volumes:
       - ${CAM_EDGE_TLS_DIR:-/var/lib/cloud-artifact-management/edge/tls}:/tls:ro
     environment:
