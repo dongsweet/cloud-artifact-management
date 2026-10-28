@@ -1,6 +1,6 @@
 # CAM 部署指南（Docker 镜像交付）
 
-本文说明如何把 CAM 作为 Docker 镜像交付到隔离网络，并分别部署统一运维外部交换区的 Edge、统一运维内网的 Core，以及各云中心的 Agent。三个模块使用独立 Compose 文件、独立配置文件和独立数据目录；部署目标只需要 Docker Engine、Docker Compose 插件、镜像文件和部署配置，不需要源码、Node.js 或 npm。
+本文说明如何把 CAM 作为 Docker 镜像交付到隔离网络，并分别部署统一运维外部交换区的 Edge、统一运维内网的 Core，以及各云中心的 Agent。三个模块使用独立 Compose 文件、独立配置文件和独立数据目录；部署目标只需要 Docker Engine、Docker Compose 插件、镜像文件和部署配置，不需要源码、Node.js 或 npm。银河麒麟等不能联网的主机，先按离线 Docker 部署步骤安装并验证 Docker、Compose v2 和 CLI 插件。
 
 部署文件：
 

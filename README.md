@@ -152,6 +152,7 @@ API 默认只绑定回环地址，外部 HTTPS 由所在安全区的受控反向
 ## 9. 文档索引
 
 - [部署指南](docs/deployment-guide.md)：镜像交付、独立分区 Compose、配置、升级和备份。
+- [银河麒麟离线 Docker 部署](docs/offline-kylin-docker.md)：离线安装 Docker/Compose、注册 docker compose 插件和导入镜像。
 - [技术方案](docs/technical-solution.md)：架构、权限、身份、传输和安全约束。
 - [系统设计](docs/system-design.md)：业务对象和流程设计。
 - [Core–Agent 制品接口](docs/core-agent-artifact-api.md)：分发、缓存、授权和下载接口。
