@@ -99,12 +99,12 @@ chmod 600 deploy/edge.env deploy/core.env deploy/agent.env
 | `CAM_*_DATA_DIR` | 设置为目标主机本地持久化路径；Edge、Core、每台 Agent 使用互不重叠的目录。应用日志会写入对应数据目录下的 `logs/` 子目录 |
 | `CAM_LOG_MAX_BYTES` / `CAM_LOG_MAX_FILES` | 应用日志单文件大小和轮转数量，默认 `52428800` / `5`；Docker `json-file` 轮转仍独立生效 |
 | `CAM_LOG_COLLECTION_MAX_BYTES` | 单个 Agent 或 Core 日志归档的大小上限，默认 `104857600`（100 MiB） |
-| `CAM_*_WEB_PORT` / `CAM_*_API_PORT` | 有宿主机端口冲突时调整；反代入口默认绑定 `127.0.0.1` |
-| `CAM_*_WEB_BIND` / `CAM_*_API_BIND` | 有本机 HTTPS 反向代理时保持 `127.0.0.1`；确需让其他主机直连时才改成受控内网地址，并配置防火墙 |
+| `CAM_*_WEB_PORT` / `CAM_*_API_PORT` | 有宿主机端口冲突时调整；网闸业务映射目标是 API 端口（Edge 默认 `3101`、Core 默认 `3102`），不是 Web 端口 |
+| `CAM_*_WEB_BIND` / `CAM_*_API_BIND` | Web 有本机 HTTPS 反向代理时保持 `127.0.0.1`；若网闸从其他主机访问 API，`CAM_*_API_BIND` 必须改为网闸可达的专用内网地址，并配置防火墙 |
 | `CAM_DOCKER_SUBNET` | 该 Compose 项目的 Docker 子网，模板为每个模块分配不同的 `192.168.241/242/243.0/24` 网段；部署前检查不与宿主机、VPN、业务网或其他 Docker 网络冲突，冲突时修改此值 |
 | `CAM_TRUST_PROXY` | 默认与本模块 Docker 子网相同，供同 Compose 内的 Caddy 或经宿主机映射的受控反代转发客户端地址；若反代拓扑不同，改成实际代理源地址/网段，不能信任所有来源 |
 | `CAM_COOKIE_SECURE` | HTTPS 正式环境保持 `true`；只有隔离的 HTTP 测试可设为 `false` |
-| `CAM_GATE_*_URL` | 填网闸映射服务提供的本区虚拟地址；Edge 填 Core 控制/制品传输外侧映射地址，Core 填 Edge 控制/制品回执内侧映射地址。不要填对端容器地址或自行拼接业务路径 |
+| `CAM_GATE_*_URL` | 填网闸映射服务提供的对端虚拟地址（含虚拟端口）；Edge 填 Core 控制/制品传输外侧映射地址，Core 填 Edge 控制/制品回执内侧映射地址。不要填对端容器地址或自行拼接业务路径 |
 | `CAM_GATE_TLS_*` | 只有映射 HTTPS 使用私有 CA 或指定证书名时设置；CA 文件须通过只读挂载等方式提供给容器，不能仅写一个容器内不存在的路径 |
 | `CAM_CLOUD_*` | 仅 Core 使用。填写云管 API 基址、认证用户、密钥及当前环境工单字典/部门/处理人等值；密钥仅保存在 Core 的受限配置文件或后续 Core 配置管理中 |
 | `CAM_AAA_*` | Core、Agent 各自连接 AAA 时分别配置。按模块设置 API 地址、租户、认证设备和共享密钥；证书验证保持开启，不把普通用户密码放入配置文件 |
