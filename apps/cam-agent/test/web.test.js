@@ -95,6 +95,7 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /<th>正式版本 \/ 传输任务编号<\/th>/);
   const taskTableSource = html.slice(html.indexOf('function renderTasks'));
   assert.ok(taskTableSource.indexOf("'<tr><td><strong>'+esc(taskLabel(task))+'</strong><div class=\"small text-body-secondary\">任务编号：") >= 0);
+  assert.match(html, /label:'传输中',color:'primary'/);
   assert.match(html, /transfer-file-table\.js/);
   assert.match(html, /renderTransferFileTable/);
   assert.doesNotMatch(html, /<th>来源<\/th>/);
