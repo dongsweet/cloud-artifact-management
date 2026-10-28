@@ -99,7 +99,7 @@ chmod 600 deploy/edge.env deploy/core.env deploy/agent.env
 | `CAM_*_DATA_DIR` | 设置为目标主机本地持久化路径；Edge、Core、每台 Agent 使用互不重叠的目录。应用日志会写入对应数据目录下的 `logs/` 子目录 |
 | `CAM_LOG_MAX_BYTES` / `CAM_LOG_MAX_FILES` | 应用日志单文件大小和轮转数量，默认 `52428800` / `5`；Docker `json-file` 轮转仍独立生效 |
 | `CAM_LOG_COLLECTION_MAX_BYTES` | 单个 Agent 或 Core 日志归档的大小上限，默认 `104857600`（100 MiB） |
-| `CAM_*_WEB_PORT` / `CAM_*_API_PORT` | 有宿主机端口冲突时调整；网闸业务映射目标是 API 端口（Edge 默认 `3101`、Core 默认 `3102`），不是 Web 端口 |
+| `CAM_*_WEB_PORT` / `CAM_*_API_PORT` | 有宿主机端口冲突时调整；网闸业务映射目标是 API 端口（Edge 默认 `3101`、Core 默认 `3102`），不是 Web 端口。当前 API 和容器内 Caddy 均使用 HTTP，HTTPS 由外部受控反向代理或网闸侧终止 |
 | `CAM_*_WEB_BIND` / `CAM_*_API_BIND` | Web 有本机 HTTPS 反向代理时保持 `127.0.0.1`；若网闸从其他主机访问 API，`CAM_*_API_BIND` 必须改为网闸可达的专用内网地址，并配置防火墙 |
 | `CAM_DOCKER_SUBNET` | 该 Compose 项目的 Docker 子网，模板为每个模块分配不同的 `192.168.241/242/243.0/24` 网段；部署前检查不与宿主机、VPN、业务网或其他 Docker 网络冲突，冲突时修改此值 |
 | `CAM_TRUST_PROXY` | 默认与本模块 Docker 子网相同，供同 Compose 内的 Caddy 或经宿主机映射的受控反代转发客户端地址；若反代拓扑不同，改成实际代理源地址/网段，不能信任所有来源 |
@@ -126,7 +126,7 @@ curl -fsS http://127.0.0.1:3101/health/ready
 curl -fsS http://127.0.0.1:8088/
 ```
 
-外部 HTTPS 入口由所在环境的受控反向代理提供，将 Web 入口代理到 `127.0.0.1:8088`。`CAM_EDGE_API_PORT` 默认只绑定回环地址，供同机代理及网闸映射链路接入；若网闸必须从其他主机访问该监听端口，将绑定地址限制在专用内网接口，并在主机防火墙仅放行网闸映射节点。首次登录人员由 Core 统一授权，Edge 不再初始化独立人员账号。
+外部 HTTPS 入口由所在环境的受控反向代理提供，将 Web 入口代理到 `127.0.0.1:8088`。Edge API 的 `3101` 是 HTTP，不是 HTTPS；`CAM_EDGE_API_PORT` 默认只绑定回环地址，供同机代理及网闸映射链路接入。若网闸从其他主机访问该监听端口，将绑定地址限制在专用内网接口，并在主机防火墙仅放行网闸映射节点。若网闸采用 HTTPS 终止后转发 HTTP，目标端口可直接使用 `3101`；若采用 TCP/TLS 透传，当前 Compose 不能直接提供 API TLS，需要在 API 前增加受控 TLS 反向代理。首次登录人员由 Core 统一授权，Edge 不再初始化独立人员账号。
 
 ## 单独部署 Core
 
@@ -149,7 +149,7 @@ docker compose --env-file deploy/core.env -f deploy/compose.core.yaml exec -it c
 
 初始口令在终端隐藏输入；登录后按要求修改密码。日常账号与角色管理由安全管理员完成。不要把账号密码写入 Compose 文件、镜像、命令行参数或版本库。
 
-Core 页面中的 Agent 功能通过 `/agent/` 反代到 `CAM_AGENT_UPSTREAM`。单机联调可把 Agent Web 发布端口限制在 Core 主机回环地址，使用默认 `host.docker.internal:3111`；跨主机部署时，将 Agent Web 的 `CAM_AGENT_WEB_BIND` 改为专用内网接口地址，并在 Core `.env` 中把 `CAM_AGENT_UPSTREAM` 改为该 Agent Web 主机的内网 DNS 名称/地址和端口。主机防火墙只允许受控反代主机访问 Agent Web 端口；Agent API 端口 3103 不发布到宿主机。Core 与 Agent 无须共享 Docker 网络。
+Core 页面中的 Agent 功能通过 `/agent/` 反代到 `CAM_AGENT_UPSTREAM`。单机联调可把 Agent Web 发布端口限制在 Core 主机回环地址，使用默认 `host.docker.internal:3111`；跨主机部署时，将 Agent Web 的 `CAM_AGENT_WEB_BIND` 改为专用内网接口地址，并在 Core `.env` 中把 `CAM_AGENT_UPSTREAM` 改为该 Agent Web 主机的内网 DNS 名称/地址和端口。主机防火墙只允许受控反代主机访问 Agent Web 端口；Agent API 端口 3103 不发布到宿主机。Core API 的 `3102` 同样是 HTTP；外部 HTTPS 由受控反向代理或网闸侧终止。Core 与 Agent 无须共享 Docker 网络。
 
 Core 的云管、AAA 和网闸地址必须从 Core 所在网络可达。云管工单配置和 Agent/Edge 间的审批状态通过 Core 后端流程完成；不要让 Edge 直接携带云管认证信息。
 
