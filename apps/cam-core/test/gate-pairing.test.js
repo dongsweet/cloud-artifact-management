@@ -31,7 +31,7 @@ test('Core and Edge pair by identity signatures and rotate either side own ident
     await edge.listen({ host: '127.0.0.1', port: 0 });
     const coreUrl = `http://127.0.0.1:${core.server.address().port}`;
     const edgeUrl = `http://127.0.0.1:${edge.server.address().port}`;
-    core.gateConfigStore.save({ edgeControlUrl: edgeUrl, edgeTransferUrl: edgeUrl });
+    core.gateConfigStore.save({ edgeControlUrl: edgeUrl });
     edge.gateConfigStore.save({ coreControlUrl: coreUrl, coreTransferUrl: coreUrl });
     const call = (url) => core.inject({ method: 'POST', url, headers, payload: {} });
     assert.equal((await core.inject({ method: 'POST', url: '/api/v1/gate/keys/rotate', payload: {} })).statusCode, 401);

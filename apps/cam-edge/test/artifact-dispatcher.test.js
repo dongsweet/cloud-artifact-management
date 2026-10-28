@@ -24,7 +24,7 @@ test('artifact dispatcher skips stored objects, resumes missing chunks and submi
   const dispatcher = createArtifactDispatcher({
     freezes,
     candidates: { get: () => ({ status: 'COMPLETED', source_path: sourcePath, final_sha256: sha256, expected_size: bytes.length }) },
-    gateConfig: { get: () => ({ coreTransferUrl: 'http://core.example', transferTimeoutMs: 1_000, chunkSizeBytes: 1024 * 1024 }) },
+    gateConfig: { get: () => ({ coreControlUrl: 'http://core-control.example', coreTransferUrl: 'http://core-transfer.example', connectTimeoutMs: 1_000, transferTimeoutMs: 1_000, chunkSizeBytes: 1024 * 1024 }) },
     keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
     fetchImpl: async (url, options = {}) => {
       calls.push({ url, options });
@@ -42,7 +42,7 @@ test('artifact dispatcher skips stored objects, resumes missing chunks and submi
     assert.equal(state.transferStatus, 'RECEIVED');
     assert.equal(calls.filter(({ url }) => url.includes('/parts/')).length, 1);
     assert.equal(calls.some(({ url }) => url.includes(`${'b'.repeat(64)}/parts/`)), false);
-    assert.match(calls.at(-1).url, /\/api\/v1\/gate\/receipts$/);
+    assert.equal(calls.at(-1).url, 'http://core-control.example/api/v1/gate/receipts');
   } finally {
     await dispatcher.close();
     await rm(dir, { recursive: true, force: true });
@@ -68,7 +68,7 @@ test('artifact dispatcher waits for Core assembly before starting the next file'
   const dispatcher = createArtifactDispatcher({
     freezes,
     candidates: { get: () => ({ status: 'COMPLETED', source_path: sourcePath, final_sha256: sha256, expected_size: bytes.length }) },
-    gateConfig: { get: () => ({ coreTransferUrl: 'http://core.example', transferTimeoutMs: 1_000, transferAssemblyPollMs: 1, chunkSizeBytes: 1024 * 1024 }) },
+    gateConfig: { get: () => ({ coreControlUrl: 'http://core.example', coreTransferUrl: 'http://core.example', connectTimeoutMs: 1_000, transferTimeoutMs: 1_000, transferAssemblyPollMs: 1, chunkSizeBytes: 1024 * 1024 }) },
     keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
     fetchImpl: async (url, options = {}) => {
       calls.push({ url, options });
@@ -141,7 +141,7 @@ test('artifact dispatcher registers the local manifest and repairs a legacy Core
   const calls = [];
   const dispatcher = createArtifactDispatcher({
     freezes, candidates: { get: () => ({ status: 'COMPLETED', source_path: sourcePath, final_sha256: sha256, expected_size: bytes.length }) },
-    gateConfig: { get: () => ({ coreTransferUrl: 'http://core.example', transferTimeoutMs: 1_000, chunkSizeBytes: 1024 * 1024 }) },
+    gateConfig: { get: () => ({ coreControlUrl: 'http://core.example', coreTransferUrl: 'http://core.example', connectTimeoutMs: 1_000, transferTimeoutMs: 1_000, chunkSizeBytes: 1024 * 1024 }) },
     keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
     fetchImpl: async (url, options = {}) => {
       calls.push({ url, options });
@@ -171,7 +171,7 @@ test('artifact dispatcher exposes a failed attempt for retry after a Core connec
   };
   const dispatcher = createArtifactDispatcher({
     freezes, candidates: { get() { throw new Error('unexpected source lookup'); } },
-    gateConfig: { get: () => ({ coreTransferUrl: 'http://core.example', transferTimeoutMs: 1_000, chunkSizeBytes: 1024 * 1024 }) },
+    gateConfig: { get: () => ({ coreControlUrl: 'http://core.example', coreTransferUrl: 'http://core.example', connectTimeoutMs: 1_000, transferTimeoutMs: 1_000, chunkSizeBytes: 1024 * 1024 }) },
     keyring: { requestHeaders: async (_method, _path, _body, headers = {}) => ({ ...headers, 'x-cam-gate-signature': 'signed-request' }) },
     fetchImpl: async () => { throw new Error('connection refused'); }, logger: { warn() {} }
   });

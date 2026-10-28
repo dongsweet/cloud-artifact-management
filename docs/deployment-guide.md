@@ -109,7 +109,7 @@ chmod 600 deploy/edge.env deploy/core.env deploy/agent.env
 | `CAM_DOCKER_SUBNET` | 该 Compose 项目的 Docker 子网，模板为每个模块分配不同的 `192.168.241/242/243.0/24` 网段；部署前检查不与宿主机、VPN、业务网或其他 Docker 网络冲突，冲突时修改此值 |
 | `CAM_TRUST_PROXY` | 默认与本模块 Docker 子网相同，供同 Compose 内的 Caddy 或经宿主机映射的受控反代转发客户端地址；若反代拓扑不同，改成实际代理源地址/网段，不能信任所有来源 |
 | `CAM_COOKIE_SECURE` | HTTPS 正式环境保持 `true`；只有隔离的 HTTP 测试可设为 `false` |
-| `CAM_GATE_*_URL` | 填网闸映射服务提供的对端虚拟地址（含虚拟端口）；Edge 填 Core 的控制/传输映射地址，Core 填 Edge 的控制/传输映射地址。网闸目标分别落到对端 Caddy 控制/传输端口（Edge `8101/8201`、Core `8102/8202`），不要填对端容器地址或自行拼接业务路径 |
+| `CAM_GATE_*_URL` | Edge 配置 Core 控制和传输地址：控制用于申请、状态、回执，传输用于 Edge→Core 分块上传；Core 只配置 Edge 控制地址，用于审批结果、传输授权、重试指令和报告读取。网闸目标分别落到对端 Caddy 控制/传输端口（Edge `8101/8201`、Core `8102/8202`），不要填对端容器地址或自行拼接业务路径 |
 | `CAM_GATE_TLS_*` | 只有映射 HTTPS 使用私有 CA 或指定证书名时设置；CA 文件须通过只读挂载等方式提供给容器，不能仅写一个容器内不存在的路径 |
 | `CAM_CLOUD_*` | 仅 Core 使用。填写云管 API 基址、认证用户、密钥及当前环境工单字典/部门/处理人等值；密钥仅保存在 Core 的受限配置文件或后续 Core 配置管理中 |
 | `CAM_AAA_*` | Core、Agent 各自连接 AAA 时分别配置。按模块设置 API 地址、租户、认证设备和共享密钥；证书验证保持开启，不把普通用户密码放入配置文件 |

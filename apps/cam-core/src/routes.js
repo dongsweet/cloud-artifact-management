@@ -59,13 +59,16 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   let workerBusy = false;
   const ensureCloudReport = async (requestId, envelope) => {
     // Older control envelopes may contain only a report name/digest. New Edge
-    // envelopes include reportSize and therefore require the binary transfer.
+    // envelopes include reportSize and therefore require reading the report
+    // bytes over the signed control channel.
     if (!envelope?.reportFileName || !Number.isSafeInteger(envelope.reportSize)) return envelope;
     let path = store.reportPath(requestId);
     if (!path) {
       const config = gateConfig.get();
-      if (!config.edgeTransferUrl) throw Object.assign(new Error('请先配置 Core 内侧访问 Edge 报告/回执映射地址'), { code: 'gate_address_missing' });
-      const reportUrl = `${config.edgeTransferUrl.replace(/\/$/u, '')}/api/v1/gate/transfer/reports/${encodeURIComponent(requestId)}`;
+      if (!config.edgeControlUrl) throw Object.assign(new Error('请先配置 Core 内侧访问 Edge 的控制地址'), { code: 'gate_address_missing' });
+      // The report is requested through the signed control channel. Core does
+      // not expose or consume a reverse Edge transfer channel.
+      const reportUrl = `${config.edgeControlUrl.replace(/\/$/u, '')}/api/v1/gate/transfer/reports/${encodeURIComponent(requestId)}`;
       const chunks = []; let offset = 0; const expected = envelope.reportSize; let reportResponseSha = null;
       while (offset < expected) {
         let received = false; let lastError = null;
@@ -499,9 +502,9 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   app.post('/api/v1/gate/config/test', { bodyLimit: 8192 }, async (request, reply) => {
     if (requireCorePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     try {
-      const config = normalizeGateConfig(Object.keys(request.body ?? {}).length ? request.body : gateConfig.get(), { requireUrls: true, requiredUrlFields: ['edgeControlUrl', 'edgeTransferUrl'] });
+      const config = normalizeGateConfig(Object.keys(request.body ?? {}).length ? request.body : gateConfig.get(), { requireUrls: true, requiredUrlFields: ['edgeControlUrl'] });
       const checks = {};
-      for (const [name, url] of Object.entries({ edgeControlUrl: config.edgeControlUrl, edgeTransferUrl: config.edgeTransferUrl })) {
+      for (const [name, url] of Object.entries({ edgeControlUrl: config.edgeControlUrl })) {
         checks[name] = await checkGateHealth(url, { timeoutMs: config.connectTimeoutMs });
       }
       return reply.send({ ok: true, checks });

@@ -57,7 +57,9 @@ export async function buildCoreApp({ dataDir = DEFAULT_DATA_DIR, cloudAdapter = 
   const aaaConfigStore = new AaaConfigStore(db);
   const resolvedAaaAdapter = aaaAdapter ?? new DkeyAmAdapter({ config: aaaConfigStore.get().config, fetchImpl });
   const auth = new AuthStore(db, { aaaAdapter: resolvedAaaAdapter });
-  const gateConfig = new GateConfigStore(db, { table: 'core_gate_config', eventsTable: 'core_gate_config_events', requiredUrlFields: ['edgeControlUrl', 'edgeTransferUrl'] });
+  // Core sends commands to Edge over the control channel. Edge pushes the
+  // approved artifact bytes to Core; Core therefore has no Edge transfer URL.
+  const gateConfig = new GateConfigStore(db, { table: 'core_gate_config', eventsTable: 'core_gate_config_events', requiredUrlFields: ['edgeControlUrl'] });
   const keyring = new GateKeyring({ filePath: join(dataDir, 'gate-keyring.json'), role: 'core' });
   await keyring.ready;
   const app = await buildServer({

@@ -228,9 +228,16 @@ export function createArtifactDispatcher({ freezes, candidates, gateConfig, keyr
       catch (reportError) {
         logger.warn?.({ freezeId, attempt, state: 'COMPLETED', code: reportError.code, message: reportError.message }, 'CAM Edge 完成状态回告 Core 失败，将继续提交回执');
       }
-      const receiptResponse = await request(`${base}/api/v1/gate/receipts`, config, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ requestId: freeze.freezeId, transferTaskId: freeze.transferTaskId, manifestSha256: freeze.manifestSha256 })
+      // The artifact bytes use Core's transfer channel; the small final
+      // receipt belongs to the signed control channel.
+      if (!config.coreControlUrl) throw Object.assign(new Error('请先配置 Edge 外侧访问 Core 的控制地址'), { code: 'gate_address_missing' });
+      const receiptPath = '/api/v1/gate/receipts';
+      const receiptBody = JSON.stringify({ requestId: freeze.freezeId, transferTaskId: freeze.transferTaskId, manifestSha256: freeze.manifestSha256 });
+      const receiptResponse = await fetchImpl(`${config.coreControlUrl.replace(/\/$/u, '')}${receiptPath}`, {
+        method: 'POST',
+        headers: await keyring.requestHeaders('POST', receiptPath, receiptBody, { 'content-type': 'application/json' }),
+        body: receiptBody,
+        signal: AbortSignal.timeout(config.connectTimeoutMs ?? 10_000)
       });
       if (!receiptResponse.ok) throw await responseError(receiptResponse, 'Core 拒绝接收正式制品回执');
       freezes.markTransferSuccess(freezeId);

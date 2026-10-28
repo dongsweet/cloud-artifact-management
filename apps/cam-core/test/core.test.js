@@ -246,7 +246,7 @@ test('Core notifies Edge when an approval request is withdrawn', async () => {
     workerIntervalMs: 10
   });
   await trustTestPeer(app.gateKeyring, dataDir, 'edge');
-  app.gateConfigStore.save({ edgeControlUrl: 'http://edge-map:3101', edgeTransferUrl: 'http://edge-map:3101' }, 'test');
+  app.gateConfigStore.save({ edgeControlUrl: 'http://edge-map:3101' }, 'test');
   try {
     app.coreStore.receiveApproval({ ...envelope, requestId: 'FREEZE-WITHDRAW-CALLBACK', freezeId: 'FREEZE-WITHDRAW-CALLBACK' });
     const withdrawn = await app.inject({ method: 'POST', url: '/api/v1/approval-requests/FREEZE-WITHDRAW-CALLBACK/withdraw', payload: {} });
@@ -297,7 +297,7 @@ test('Core sends a signed Edge transfer recovery instruction and supports termin
     }
   });
   await trustTestPeer(app.gateKeyring, dataDir, 'edge');
-  app.gateConfigStore.save({ edgeControlUrl: 'http://edge-map:3101', edgeTransferUrl: 'http://edge-map:3101' }, 'test');
+  app.gateConfigStore.save({ edgeControlUrl: 'http://edge-map:3101' }, 'test');
   try {
     const requestId = 'FREEZE-TRANSFER-RETRY';
     app.coreStore.receiveApproval({ ...envelope, requestId, freezeId: requestId });
@@ -337,7 +337,7 @@ test('Core polls cloud approval status and reliably pushes only the decision to 
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, enableAuth: false, fetchImpl, approvalResultRetryBaseMs: 5, workerIntervalMs: 10 });
   await trustTestPeer(app.gateKeyring, dataDir, 'edge');
-  app.gateConfigStore.save({ edgeControlUrl: 'http://edge-map:3101', edgeTransferUrl: 'http://edge-map:3101' }, 'test');
+  app.gateConfigStore.save({ edgeControlUrl: 'http://edge-map:3101' }, 'test');
   const headers = (payload) => signedTestHeaders(app.gateKeyring, 'POST', '/api/v1/gate/approval-requests', payload);
   try {
     const acceptedPayload = { ...envelope, requestId: 'FREEZE-CALLBACK', freezeId: 'FREEZE-CALLBACK' };
@@ -421,13 +421,14 @@ test('Core receives and verifies the PDF before uploading it and creating the cl
     async uploadApprovalReport(input) { uploaded = input; return '2026/10/report.pdf'; },
     async createApproval(value) { created = value; return { approvalId: 'APR-WITH-REPORT', status: 'PENDING' }; }
   };
-  const fetchImpl = async (_url, options) => {
+  const fetchImpl = async (url, options) => {
     assert.equal(typeof options.headers['x-cam-gate-signature'], 'string');
+    assert.match(url, /^http:\/\/edge-control\/api\/v1\/gate\/transfer\/reports\/FREEZE-REPORT$/u);
     return new Response(pdf, { status: 206, headers: { 'content-type': 'application/pdf', 'content-range': `bytes 0-${pdf.length - 1}/${pdf.length}`, 'x-report-sha256': pdfSha } });
   };
   const app = await buildCoreApp({ dataDir, cloudAdapter: cloud, enableAuth: false, fetchImpl });
   await trustTestPeer(app.gateKeyring, dataDir, 'edge');
-  app.gateConfigStore.save({ edgeControlUrl: 'http://edge-control', edgeTransferUrl: 'http://edge-transfer' }, 'test');
+  app.gateConfigStore.save({ edgeControlUrl: 'http://edge-control' }, 'test');
   const headers = (payload) => signedTestHeaders(app.gateKeyring, 'POST', '/api/v1/gate/approval-requests', payload);
   try {
     const payload = { ...envelope, requestId: 'FREEZE-REPORT', freezeId: 'FREEZE-REPORT', reportSha256: pdfSha, reportFileName: 'verification.pdf', reportSize: pdf.length };

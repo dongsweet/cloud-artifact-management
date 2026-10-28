@@ -643,6 +643,8 @@ async function loadCloudConfig() {
 async function loadGateConfig() {
   ensureGateTransferTimeoutFields();
   const form = $('#gate-config-form');
+  const legacyTransferInput = form.querySelector('[name="edgeTransferUrl"]');
+  legacyTransferInput?.closest('.col-md-6')?.remove();
   try {
     const result = await api('/api/v1/gate/config');
     const item = result.item ?? {};
