@@ -5,7 +5,7 @@ import test from 'node:test';
 const read = (name) => readFile(new URL(name, import.meta.url), 'utf8');
 
 test('Edge sidebar groups business, management, security and audit pages like Core', async () => {
-  const [html, script] = await Promise.all([read('./index.html'), read('./account-ui.js')]);
+  const [html, script, appScript] = await Promise.all([read('./index.html'), read('./account-ui.js'), read('./app.js')]);
   assert.match(html, /<span class="brand-text">CAM Edge<\/span>/u);
   assert.doesNotMatch(html, /<span class="brand-text fw-light">CAM Edge<\/span>/u);
   for (const [group, label] of [['business', '业务'], ['management', '系统管理'], ['security', '账号安全'], ['audit', '审计']]) {
@@ -26,6 +26,9 @@ test('Edge sidebar groups business, management, security and audit pages like Co
   assert.doesNotMatch(script, /sidebar-menu'\)\.insertAdjacentHTML/u);
   assert.doesNotMatch(script, /before\(\$\('#grants-nav'\)\)/u);
   assert.match(script, /\[data-menu-group\][\s\S]*?header\.classList\.toggle\('d-none', !items\.some\(\(item\) => !item\.classList\.contains\('d-none'\)\)\)/u);
+  assert.match(appScript, /name="coreControlUrl"/u);
+  assert.match(appScript, /coreControlInput\.readOnly = true/u);
+  assert.match(appScript, /Core 控制地址（外侧，只读）/u);
 });
 
 test('download grant form binds the current operator and derives its total session limit', async () => {

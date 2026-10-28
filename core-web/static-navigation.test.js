@@ -19,4 +19,7 @@ test('Core declares all navigation groups and mounted pages in the HTML template
   assert.doesNotMatch(script, /\$\('#page-cloud-config'\)\.insertAdjacentHTML/u);
   assert.match(script, /mountAaaConfig\(mount,/u);
   assert.match(script, /mountAuditEvents\(\$\('#audit-events-mount'\)/u);
+  assert.match(script, /name="edgeTransferUrl"/u);
+  assert.match(script, /legacyTransferInput\.readOnly = true/u);
+  assert.match(script, /Edge 制品\/回执地址（内侧，暂不启用）/u);
 });

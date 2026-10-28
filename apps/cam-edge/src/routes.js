@@ -194,7 +194,9 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
   });
   app.post('/api/v1/gate/config/test', { bodyLimit: 8192 }, async (request, reply) => {
     try {
-      const config = normalizeGateConfig(Object.keys(request.body ?? {}).length ? request.body : gateConfig.get(), { requireUrls: true, requiredUrlFields: ['coreControlUrl', 'coreTransferUrl'] });
+      // The Core control endpoint is deployment-owned.  Ignore any value sent
+      // by the browser/API caller and always test the effective configured URL.
+      const config = normalizeGateConfig({ ...request.body, coreControlUrl: gateConfig.get().coreControlUrl }, { requireUrls: true, requiredUrlFields: ['coreControlUrl', 'coreTransferUrl'] });
       const checks = {};
       for (const [name, url] of Object.entries({ coreControlUrl: config.coreControlUrl, coreTransferUrl: config.coreTransferUrl })) checks[name] = await checkGateHealth(url, { timeoutMs: config.connectTimeoutMs });
       return reply.send({ ok: true, checks });

@@ -69,18 +69,33 @@ export function gateConfigFromEnv(env = process.env) {
 }
 
 export class GateConfigStore {
-  constructor(db, { table = 'gate_config', eventsTable = 'gate_config_events', env = process.env, requiredUrlFields = URL_FIELDS } = {}) {
+  constructor(db, { table = 'gate_config', eventsTable = 'gate_config_events', env = process.env, requiredUrlFields = URL_FIELDS, envOnlyFields = [] } = {}) {
     this.db = db; this.table = table; this.eventsTable = eventsTable; this.env = env;
     this.requiredUrlFields = requiredUrlFields;
+    // Some bootstrap-critical endpoints must remain deployment-owned.  Their
+    // environment values always win over database values and cannot be changed
+    // through the configuration API.
+    this.envOnlyFields = envOnlyFields;
     db.exec(`CREATE TABLE IF NOT EXISTS ${table} (config_id INTEGER PRIMARY KEY CHECK (config_id = 1), config_json TEXT NOT NULL, updated_by TEXT, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS ${eventsTable} (event_id TEXT PRIMARY KEY, actor_id TEXT, action TEXT NOT NULL, config_json TEXT NOT NULL, created_at TEXT NOT NULL)`);
+  }
+  envConfig() { return gateConfigFromEnv(this.env); }
+  applyEnvOnlyFields(config) {
+    const envConfig = this.envConfig();
+    for (const field of this.envOnlyFields) config[field] = envConfig[field] ?? '';
+    return config;
   }
   get() {
     const row = this.db.prepare(`SELECT * FROM ${this.table} WHERE config_id = 1`).get();
-    if (!row) return { ...gateConfigFromEnv(this.env), source: 'environment', updatedBy: null, updatedAt: null };
-    return { ...normalizeGateConfig(JSON.parse(row.config_json)), source: 'database', updatedBy: row.updated_by, updatedAt: row.updated_at };
+    if (!row) return { ...this.applyEnvOnlyFields(gateConfigFromEnv(this.env)), source: 'environment', updatedBy: null, updatedAt: null };
+    return { ...this.applyEnvOnlyFields(normalizeGateConfig(JSON.parse(row.config_json))), source: 'database', updatedBy: row.updated_by, updatedAt: row.updated_at };
   }
   save(input, actorId) {
-    const config = normalizeGateConfig(input, { requireUrls: true, requiredUrlFields: this.requiredUrlFields });
+    const candidate = { ...input };
+    const envConfig = this.envConfig();
+    for (const field of this.envOnlyFields) {
+      candidate[field] = envConfig[field] ?? '';
+    }
+    const config = normalizeGateConfig(candidate, { requireUrls: true, requiredUrlFields: this.requiredUrlFields });
     const timestamp = new Date().toISOString();
     const eventId = `GATECFG-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     this.db.exec('BEGIN IMMEDIATE');

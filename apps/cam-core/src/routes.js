@@ -496,7 +496,13 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
   });
   app.put('/api/v1/gate/config', { bodyLimit: 8192 }, async (request, reply) => {
     if (requireCorePermission(request, reply, 'configWrite', '需要平台配置管理权限')) return;
-    try { const item = gateConfig.save(request.body ?? {}, request.principal.id); const keys = await keyring.status(); return reply.send({ item, identityConfigured: keys.keyConfigured, previousIdentityConfigured: Boolean(keys.previousKeyExpiresAt) }); }
+    try {
+      // Keep the retired Edge transfer/receipt address visible for migration
+      // and audit purposes, but do not let the disabled UI field clear it.
+      const input = { ...(request.body ?? {}) };
+      if (!Object.prototype.hasOwnProperty.call(input, 'edgeTransferUrl')) input.edgeTransferUrl = gateConfig.get().edgeTransferUrl;
+      const item = gateConfig.save(input, request.principal.id); const keys = await keyring.status(); return reply.send({ item, identityConfigured: keys.keyConfigured, previousIdentityConfigured: Boolean(keys.previousKeyExpiresAt) });
+    }
     catch (err) { return error(reply, 400, err.code ?? 'gate_config_invalid', err.message); }
   });
   app.post('/api/v1/gate/config/test', { bodyLimit: 8192 }, async (request, reply) => {

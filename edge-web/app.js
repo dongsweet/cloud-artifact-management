@@ -155,6 +155,16 @@ async function loadGateConfig() {
   ensureIntegrationConfigFields();
   ensureGateTransferTimeoutFields();
   const form = $('#gate-config-form');
+  const coreControlInput = form.querySelector('[name="coreControlUrl"]');
+  if (coreControlInput) {
+    coreControlInput.required = false;
+    coreControlInput.readOnly = true;
+    coreControlInput.setAttribute('aria-readonly', 'true');
+    coreControlInput.classList.add('bg-body-secondary');
+    coreControlInput.placeholder = '由部署配置文件提供';
+    const label = coreControlInput.closest('.col-md-6')?.querySelector('label');
+    if (label) label.textContent = 'Core 控制地址（外侧，只读）';
+  }
   try {
     const result = await api('/api/v1/gate/config'); const item = result.item ?? {};
     for (const element of form.elements) if (element.name && item[element.name] !== undefined) element.value = element.name === 'sourceAllowlist' && Array.isArray(item[element.name]) ? item[element.name].join('\n') : item[element.name];

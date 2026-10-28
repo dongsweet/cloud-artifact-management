@@ -644,7 +644,15 @@ async function loadGateConfig() {
   ensureGateTransferTimeoutFields();
   const form = $('#gate-config-form');
   const legacyTransferInput = form.querySelector('[name="edgeTransferUrl"]');
-  legacyTransferInput?.closest('.col-md-6')?.remove();
+  if (legacyTransferInput) {
+    legacyTransferInput.required = false;
+    legacyTransferInput.readOnly = true;
+    legacyTransferInput.setAttribute('aria-readonly', 'true');
+    legacyTransferInput.classList.add('bg-body-secondary');
+    legacyTransferInput.placeholder = '暂不配置';
+    const label = legacyTransferInput.closest('.col-md-6')?.querySelector('label');
+    if (label) label.textContent = 'Edge 制品/回执地址（内侧，暂不启用）';
+  }
   try {
     const result = await api('/api/v1/gate/config');
     const item = result.item ?? {};
