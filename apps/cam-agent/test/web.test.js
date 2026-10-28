@@ -83,6 +83,7 @@ test('Agent identity page makes trust direction and Core-owned rotation policy e
   assert.match(html, /function clearMessage\(\)\{const e=\$\('#alert'\);e\.className='alert d-none';e\.textContent=''\}/);
   assert.match(html, /if\(v==='login'\|\|v==='app'\)clearMessage\(\)/);
   assert.match(html, /const camAgentFetch=window\.fetch\.bind\(window\);window\.fetch=async\(input,init\)=>\{[\s\S]*?response\.status===401&&!requestPath\.endsWith\('\/auth\/login'\)\)show\('\login'\)/);
+  assert.match(html, /init\?\.body===undefined&&init\?\.headers[\s\S]*?headers\.delete\('content-type'\)/);
   assert.doesNotMatch(html, /msg\('密码已修改，请重新登录'\)/);
   assert.match(html, /data-page="aaa-config" data-agent-permission="configRead"/);
   assert.match(html, /data-agent-menu-group="business">业务/);
