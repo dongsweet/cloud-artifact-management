@@ -50,4 +50,4 @@
   .app-main { margin-left: 4.5rem; }
   .file-name { max-width: 9rem; }
 }
-#view-gate-config [name="coreControlUrl"] { background-color: var(--bs-secondary-bg); pointer-events: none; }
+#view-gate-config [name="mode"], #view-gate-config [name="coreControlUrl"] { background-color: var(--bs-secondary-bg); pointer-events: none; }

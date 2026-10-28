@@ -155,6 +155,12 @@ async function loadGateConfig() {
   ensureIntegrationConfigFields();
   ensureGateTransferTimeoutFields();
   const form = $('#gate-config-form');
+  const modeInput = form.querySelector('[name="mode"]');
+  if (modeInput) {
+    modeInput.readOnly = true;
+    modeInput.setAttribute('aria-readonly', 'true');
+    modeInput.classList.add('bg-body-secondary');
+  }
   const coreControlInput = form.querySelector('[name="coreControlUrl"]');
   if (coreControlInput) {
     coreControlInput.required = false;
@@ -163,7 +169,7 @@ async function loadGateConfig() {
     coreControlInput.classList.add('bg-body-secondary');
     coreControlInput.placeholder = '由部署配置文件提供';
     const label = coreControlInput.closest('.col-md-6')?.querySelector('label');
-    if (label) label.textContent = 'Core 控制地址（外侧，只读）';
+    if (label) label.textContent = 'Core 控制地址（外侧，取配置文件）';
   }
   try {
     const result = await api('/api/v1/gate/config'); const item = result.item ?? {};

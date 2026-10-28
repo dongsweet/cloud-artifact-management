@@ -27,8 +27,9 @@ test('Edge sidebar groups business, management, security and audit pages like Co
   assert.doesNotMatch(script, /before\(\$\('#grants-nav'\)\)/u);
   assert.match(script, /\[data-menu-group\][\s\S]*?header\.classList\.toggle\('d-none', !items\.some\(\(item\) => !item\.classList\.contains\('d-none'\)\)\)/u);
   assert.match(appScript, /name="coreControlUrl"/u);
+  assert.match(appScript, /modeInput\.readOnly = true/u);
   assert.match(appScript, /coreControlInput\.readOnly = true/u);
-  assert.match(appScript, /Core 控制地址（外侧，只读）/u);
+  assert.match(appScript, /Core 控制地址（外侧，取配置文件）/u);
 });
 
 test('download grant form binds the current operator and derives its total session limit', async () => {
