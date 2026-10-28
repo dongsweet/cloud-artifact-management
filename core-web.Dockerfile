@@ -16,6 +16,10 @@ COPY web-shared/assets /build/shared-assets
 RUN mkdir -p /out/assets/fonts && cp shared-assets/bootstrap.min.css /out/assets/ && cp shared-assets/bootstrap-icons.min.css /out/assets/ && cp shared-assets/fonts/* /out/assets/fonts/ && cp shared-assets/adminlte.min.css /out/assets/ && cp layout.css transfer-file-table.css gate-pairing.js gate-pairing.css table-pagination.js artifact-catalog.js role-permissions.js audit-events.js role-display.js role-display.css aaa-config.js task-state.js cam-auth-roles.js /out/assets/ && cp index.html /out/ && cp core.js core.css transfer-file-table.js /out/assets/
 FROM ${CADDY_BASE_IMAGE}
 COPY core-web/Caddyfile /etc/caddy/Caddyfile
+COPY web-shared/caddy-entrypoint.sh /usr/local/bin/cam-caddy-entrypoint
 COPY --from=assets /out /srv/web
-RUN addgroup -S -g 10001 cam && adduser -S -D -H -u 10001 -G cam cam && chown -R cam:cam /srv/web /data /config
+RUN addgroup -S -g 10001 cam && adduser -S -D -H -u 10001 -G cam cam \
+  && chmod 0755 /usr/local/bin/cam-caddy-entrypoint \
+  && chown -R cam:cam /srv/web /data /config
 USER cam
+ENTRYPOINT ["/usr/local/bin/cam-caddy-entrypoint"]

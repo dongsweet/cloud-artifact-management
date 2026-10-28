@@ -49,6 +49,19 @@ services:
       - /tmp:size=64m,noexec,nosuid,nodev
       - /data:size=16m,mode=0700,uid=10001,gid=10001
       - /config:size=4m,mode=0700,nosuid,nodev
+    volumes:
+      - ${CAM_EDGE_TLS_DIR:-/var/lib/cloud-artifact-management/edge/tls}:/tls:ro
+    environment:
+      CAM_CADDY_MODULE: edge
+      CAM_EDGE_WEB_HTTPS: ${CAM_EDGE_WEB_HTTPS:-false}
+      CAM_EDGE_WEB_TLS_CERT_FILE: ${CAM_EDGE_WEB_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_EDGE_WEB_TLS_KEY_FILE: ${CAM_EDGE_WEB_TLS_KEY_FILE:-/tls/privkey.pem}
+      CAM_EDGE_CONTROL_HTTPS: ${CAM_EDGE_CONTROL_HTTPS:-false}
+      CAM_EDGE_CONTROL_TLS_CERT_FILE: ${CAM_EDGE_CONTROL_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_EDGE_CONTROL_TLS_KEY_FILE: ${CAM_EDGE_CONTROL_TLS_KEY_FILE:-/tls/privkey.pem}
+      CAM_EDGE_TRANSFER_HTTPS: ${CAM_EDGE_TRANSFER_HTTPS:-false}
+      CAM_EDGE_TRANSFER_TLS_CERT_FILE: ${CAM_EDGE_TRANSFER_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_EDGE_TRANSFER_TLS_KEY_FILE: ${CAM_EDGE_TRANSFER_TLS_KEY_FILE:-/tls/privkey.pem}
     depends_on:
       - cam-edge
       - cam-core
@@ -58,6 +71,8 @@ services:
       - default
     ports:
       - "127.0.0.1:8088:8080"
+      - "127.0.0.1:8101:8101"
+      - "127.0.0.1:8201:8201"
     restart: unless-stopped
 
   cam-core-web:
@@ -73,14 +88,28 @@ services:
       - /tmp:size=64m,noexec,nosuid,nodev
       - /data:size=16m,mode=0700,uid=10001,gid=10001
       - /config:size=4m,mode=0700,uid=10001,gid=10001
+    volumes:
+      - ${CAM_CORE_TLS_DIR:-/var/lib/cloud-artifact-management/core/tls}:/tls:ro
     depends_on:
       - cam-core
     environment:
       CAM_AGENT_UPSTREAM: ${CAM_AGENT_UPSTREAM:-cam-agent-web-1:8080}
+      CAM_CADDY_MODULE: core
+      CAM_CORE_WEB_HTTPS: ${CAM_CORE_WEB_HTTPS:-false}
+      CAM_CORE_WEB_TLS_CERT_FILE: ${CAM_CORE_WEB_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_CORE_WEB_TLS_KEY_FILE: ${CAM_CORE_WEB_TLS_KEY_FILE:-/tls/privkey.pem}
+      CAM_CORE_CONTROL_HTTPS: ${CAM_CORE_CONTROL_HTTPS:-false}
+      CAM_CORE_CONTROL_TLS_CERT_FILE: ${CAM_CORE_CONTROL_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_CORE_CONTROL_TLS_KEY_FILE: ${CAM_CORE_CONTROL_TLS_KEY_FILE:-/tls/privkey.pem}
+      CAM_CORE_TRANSFER_HTTPS: ${CAM_CORE_TRANSFER_HTTPS:-false}
+      CAM_CORE_TRANSFER_TLS_CERT_FILE: ${CAM_CORE_TRANSFER_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_CORE_TRANSFER_TLS_KEY_FILE: ${CAM_CORE_TRANSFER_TLS_KEY_FILE:-/tls/privkey.pem}
     networks:
       - default
     ports:
       - "127.0.0.1:8092:8080"
+      - "127.0.0.1:8102:8102"
+      - "127.0.0.1:8202:8202"
     restart: unless-stopped
 
   cam-edge:

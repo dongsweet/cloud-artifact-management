@@ -6,8 +6,8 @@
 
 | 模块 | Compose 文件 | 配置模板 | 服务入口 |
 |---|---|---|---|
-| Edge | `deploy/compose.edge.yaml` | `deploy/edge.env.example` | Edge Web（默认宿主机 8088），Edge API（默认仅回环 3101） |
-| Core | `deploy/compose.core.yaml` | `deploy/core.env.example` | Core Web（默认宿主机 8092），Core API（默认仅回环 3102） |
+| Edge | `deploy/compose.edge.yaml` | `deploy/edge.env.example` | Edge Web（默认宿主机 8088），控制 Caddy（8101），传输 Caddy（8201），API（容器 3101） |
+| Core | `deploy/compose.core.yaml` | `deploy/core.env.example` | Core Web（默认宿主机 8092），控制 Caddy（8102），传输 Caddy（8202），API（容器 3102） |
 | Agent | `deploy/compose.agent.yaml` | `deploy/agent.env.example` | Agent API（仅 Compose 内部 3103）+ Agent Web（默认宿主机 3111） |
 
 根目录的 `compose.yaml` 和 `compose.direct.yaml` 保留给开发、联调和测试环境。正式分区部署不要用它们，因为它们会把多个安全区组件组合到同一 Compose 网络中。
@@ -99,12 +99,17 @@ chmod 600 deploy/edge.env deploy/core.env deploy/agent.env
 | `CAM_*_DATA_DIR` | 设置为目标主机本地持久化路径；Edge、Core、每台 Agent 使用互不重叠的目录。应用日志会写入对应数据目录下的 `logs/` 子目录 |
 | `CAM_LOG_MAX_BYTES` / `CAM_LOG_MAX_FILES` | 应用日志单文件大小和轮转数量，默认 `52428800` / `5`；Docker `json-file` 轮转仍独立生效 |
 | `CAM_LOG_COLLECTION_MAX_BYTES` | 单个 Agent 或 Core 日志归档的大小上限，默认 `104857600`（100 MiB） |
-| `CAM_*_WEB_PORT` / `CAM_*_API_PORT` | 有宿主机端口冲突时调整；网闸业务映射目标是 API 端口（Edge 默认 `3101`、Core 默认 `3102`），不是 Web 端口。当前 API 和容器内 Caddy 均使用 HTTP，HTTPS 由外部受控反向代理或网闸侧终止 |
-| `CAM_*_WEB_BIND` / `CAM_*_API_BIND` | Web 有本机 HTTPS 反向代理时保持 `127.0.0.1`；若网闸从其他主机访问 API，`CAM_*_API_BIND` 必须改为网闸可达的专用内网地址，并配置防火墙 |
+| `CAM_*_WEB_PORT` / `CAM_*_API_PORT` | 有宿主机端口冲突时调整。API 端口仍固定为容器内 Edge `3101`、Core `3102`，默认只绑定宿主机回环；业务网闸不直接映射 API 端口 |
+| `CAM_*_CONTROL_BIND` / `CAM_*_CONTROL_PORT` | Caddy 控制通道的宿主机监听地址和端口；默认 Edge `127.0.0.1:8101`、Core `127.0.0.1:8102`。网闸从其他主机访问时改为专用内网地址并收紧防火墙 |
+| `CAM_*_TRANSFER_BIND` / `CAM_*_TRANSFER_PORT` | Caddy 传输通道的宿主机监听地址和端口；默认 Edge `127.0.0.1:8201`、Core `127.0.0.1:8202`。网闸从其他主机访问时改为专用内网地址并收紧防火墙 |
+| `CAM_*_TLS_DIR` | 宿主机证书目录，只读挂载到 Web 容器的 `/tls`；目录内的证书权限应允许容器用户读取 |
+| `CAM_*_WEB_HTTPS` / `CAM_*_CONTROL_HTTPS` / `CAM_*_TRANSFER_HTTPS` | 分别控制页面、控制、传输入口是否启用 HTTPS；默认均为 `false`，当前版本按 HTTP 运行 |
+| `CAM_*_*_TLS_CERT_FILE` / `CAM_*_*_TLS_KEY_FILE` | 对应入口使用的证书和私钥路径，填写容器内 `/tls/...` 路径；可以三条入口共用一套证书，也可以分别配置 |
+| `CAM_*_WEB_BIND` / `CAM_*_API_BIND` | 页面/API 有本机反向代理时保持 `127.0.0.1`；跨主机网闸应使用控制/传输 Caddy 端口，并将对应 `*_BIND` 改为网闸可达的专用内网地址，配置防火墙 |
 | `CAM_DOCKER_SUBNET` | 该 Compose 项目的 Docker 子网，模板为每个模块分配不同的 `192.168.241/242/243.0/24` 网段；部署前检查不与宿主机、VPN、业务网或其他 Docker 网络冲突，冲突时修改此值 |
 | `CAM_TRUST_PROXY` | 默认与本模块 Docker 子网相同，供同 Compose 内的 Caddy 或经宿主机映射的受控反代转发客户端地址；若反代拓扑不同，改成实际代理源地址/网段，不能信任所有来源 |
 | `CAM_COOKIE_SECURE` | HTTPS 正式环境保持 `true`；只有隔离的 HTTP 测试可设为 `false` |
-| `CAM_GATE_*_URL` | 填网闸映射服务提供的对端虚拟地址（含虚拟端口）；Edge 填 Core 控制/制品传输外侧映射地址，Core 填 Edge 控制/制品回执内侧映射地址。不要填对端容器地址或自行拼接业务路径 |
+| `CAM_GATE_*_URL` | 填网闸映射服务提供的对端虚拟地址（含虚拟端口）；Edge 填 Core 的控制/传输映射地址，Core 填 Edge 的控制/传输映射地址。网闸目标分别落到对端 Caddy 控制/传输端口（Edge `8101/8201`、Core `8102/8202`），不要填对端容器地址或自行拼接业务路径 |
 | `CAM_GATE_TLS_*` | 只有映射 HTTPS 使用私有 CA 或指定证书名时设置；CA 文件须通过只读挂载等方式提供给容器，不能仅写一个容器内不存在的路径 |
 | `CAM_CLOUD_*` | 仅 Core 使用。填写云管 API 基址、认证用户、密钥及当前环境工单字典/部门/处理人等值；密钥仅保存在 Core 的受限配置文件或后续 Core 配置管理中 |
 | `CAM_AAA_*` | Core、Agent 各自连接 AAA 时分别配置。按模块设置 API 地址、租户、认证设备和共享密钥；证书验证保持开启，不把普通用户密码放入配置文件 |
@@ -112,7 +117,7 @@ chmod 600 deploy/edge.env deploy/core.env deploy/agent.env
 | `CAM_SOURCE_ALLOWLIST` | 仅 Edge 使用，配置允许拉取研发内网文件的来源地址/网段策略，按现网实际值收紧；不要照搬模板占位值 |
 | `CAM_MAX_CANDIDATE_SIZE` | 仅 Edge 使用，单个候选包允许的最大字节数；默认 2 TiB，必须结合本地磁盘容量收紧，超限或来源重定向会拒绝接收 |
 
-业务字典、人员匹配结果、密钥轮换和网闸映射配置中，适合日常调整的内容优先使用相应管理页面；`.env` 用于部署基础参数和首次启动默认值，不作为日常业务操作界面。
+业务字典、人员匹配结果、密钥轮换和网闸映射配置中，适合日常调整的内容优先使用相应管理页面；`.env` 用于部署基础参数和首次启动默认值，不作为日常业务操作界面。页面、控制、传输三条 Caddy 入口都可独立切换 HTTP/HTTPS、指定证书/私钥和调整宿主机对外端口；启用 HTTPS 前先把证书目录放到 `CAM_*_TLS_DIR`，再重建对应 Web 容器。HTTP/HTTPS 切换会改变访问协议，`CAM_GATE_*_URL` 和外部网闸规则必须同步使用对应协议与端口。
 
 ## 单独部署 Edge
 
@@ -126,7 +131,7 @@ curl -fsS http://127.0.0.1:3101/health/ready
 curl -fsS http://127.0.0.1:8088/
 ```
 
-外部 HTTPS 入口由所在环境的受控反向代理提供，将 Web 入口代理到 `127.0.0.1:8088`。Edge API 的 `3101` 是 HTTP，不是 HTTPS；`CAM_EDGE_API_PORT` 默认只绑定回环地址，供同机代理及网闸映射链路接入。若网闸从其他主机访问该监听端口，将绑定地址限制在专用内网接口，并在主机防火墙仅放行网闸映射节点。若网闸采用 HTTPS 终止后转发 HTTP，目标端口可直接使用 `3101`；若采用 TCP/TLS 透传，当前 Compose 不能直接提供 API TLS，需要在 API 前增加受控 TLS 反向代理。首次登录人员由 Core 统一授权，Edge 不再初始化独立人员账号。
+外部 HTTPS 入口由所在环境的受控反向代理提供，将 Web 入口代理到 `127.0.0.1:8088`。Edge API 的 `3101` 是容器内 HTTP API，不作为网闸业务入口；Edge Caddy 另外监听 HTTP 控制端口 `8101` 和传输端口 `8201`，网闸规则应分别映射到这两个端口。默认端口只绑定回环地址，若网闸从其他主机访问，需将对应 `CAM_EDGE_CONTROL_BIND`/`CAM_EDGE_TRANSFER_BIND` 改为专用内网接口并配置防火墙。后续若需要 HTTPS，可在 Caddy 或其外部受控反向代理处终止 TLS。首次登录人员由 Core 统一授权，Edge 不再初始化独立人员账号。
 
 ## 单独部署 Core
 
@@ -149,7 +154,7 @@ docker compose --env-file deploy/core.env -f deploy/compose.core.yaml exec -it c
 
 初始口令在终端隐藏输入；登录后按要求修改密码。日常账号与角色管理由安全管理员完成。不要把账号密码写入 Compose 文件、镜像、命令行参数或版本库。
 
-Core 页面中的 Agent 功能通过 `/agent/` 反代到 `CAM_AGENT_UPSTREAM`。单机联调可把 Agent Web 发布端口限制在 Core 主机回环地址，使用默认 `host.docker.internal:3111`；跨主机部署时，将 Agent Web 的 `CAM_AGENT_WEB_BIND` 改为专用内网接口地址，并在 Core `.env` 中把 `CAM_AGENT_UPSTREAM` 改为该 Agent Web 主机的内网 DNS 名称/地址和端口。主机防火墙只允许受控反代主机访问 Agent Web 端口；Agent API 端口 3103 不发布到宿主机。Core API 的 `3102` 同样是 HTTP；外部 HTTPS 由受控反向代理或网闸侧终止。Core 与 Agent 无须共享 Docker 网络。
+Core 页面中的 Agent 功能通过 `/agent/` 反代到 `CAM_AGENT_UPSTREAM`。单机联调可把 Agent Web 发布端口限制在 Core 主机回环地址，使用默认 `host.docker.internal:3111`；跨主机部署时，将 Agent Web 的 `CAM_AGENT_WEB_BIND` 改为专用内网接口地址，并在 Core `.env` 中把 `CAM_AGENT_UPSTREAM` 改为该 Agent Web 主机的内网 DNS 名称/地址和端口。主机防火墙只允许受控反代主机访问 Agent Web 端口；Agent API 端口 3103 不发布到宿主机。Core API 的 `3102` 是容器内 HTTP API，不作为网闸业务入口；Core Caddy 另外监听 HTTP 控制端口 `8102` 和传输端口 `8202`，网闸规则应分别映射到这两个端口。后续若需要 HTTPS，可在 Caddy 或其外部受控反向代理处终止 TLS。Core 与 Agent 无须共享 Docker 网络。
 
 Core 的云管、AAA 和网闸地址必须从 Core 所在网络可达。云管工单配置和 Agent/Edge 间的审批状态通过 Core 后端流程完成；不要让 Edge 直接携带云管认证信息。
 

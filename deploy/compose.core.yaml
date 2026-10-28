@@ -82,14 +82,28 @@ services:
       - /tmp:size=64m,noexec,nosuid,nodev
       - /data:size=16m,mode=0700,uid=10001,gid=10001
       - /config:size=4m,mode=0700,uid=10001,gid=10001
+    volumes:
+      - ${CAM_CORE_TLS_DIR:-/var/lib/cloud-artifact-management/core/tls}:/tls:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
       CAM_AGENT_UPSTREAM: ${CAM_AGENT_UPSTREAM:-host.docker.internal:3111}
+      CAM_CADDY_MODULE: core
+      CAM_CORE_WEB_HTTPS: ${CAM_CORE_WEB_HTTPS:-false}
+      CAM_CORE_WEB_TLS_CERT_FILE: ${CAM_CORE_WEB_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_CORE_WEB_TLS_KEY_FILE: ${CAM_CORE_WEB_TLS_KEY_FILE:-/tls/privkey.pem}
+      CAM_CORE_CONTROL_HTTPS: ${CAM_CORE_CONTROL_HTTPS:-false}
+      CAM_CORE_CONTROL_TLS_CERT_FILE: ${CAM_CORE_CONTROL_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_CORE_CONTROL_TLS_KEY_FILE: ${CAM_CORE_CONTROL_TLS_KEY_FILE:-/tls/privkey.pem}
+      CAM_CORE_TRANSFER_HTTPS: ${CAM_CORE_TRANSFER_HTTPS:-false}
+      CAM_CORE_TRANSFER_TLS_CERT_FILE: ${CAM_CORE_TRANSFER_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_CORE_TRANSFER_TLS_KEY_FILE: ${CAM_CORE_TRANSFER_TLS_KEY_FILE:-/tls/privkey.pem}
     depends_on:
       - cam-core
     ports:
       - "${CAM_CORE_WEB_BIND:-127.0.0.1}:${CAM_CORE_WEB_PORT:-8092}:8080"
+      - "${CAM_CORE_CONTROL_BIND:-127.0.0.1}:${CAM_CORE_CONTROL_PORT:-8102}:8102"
+      - "${CAM_CORE_TRANSFER_BIND:-127.0.0.1}:${CAM_CORE_TRANSFER_PORT:-8202}:8202"
     restart: unless-stopped
     logging:
       driver: json-file

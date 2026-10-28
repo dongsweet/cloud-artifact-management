@@ -1,4 +1,5 @@
 :8080 {
+# CAM-CADDY-TLS: WEB
   root * /srv/web
   encode gzip zstd
 
@@ -23,4 +24,17 @@
     try_files {path} /index.html
     file_server
   }
+}
+
+# The gateway exposes separate control and transfer channels.  They currently
+# share the Core API upstream; the distinction is represented by the mapped
+# listener/host ports and the corresponding CAM_GATE_*_URL values.
+:8102 {
+# CAM-CADDY-TLS: CONTROL
+  reverse_proxy cam-core:3102
+}
+
+:8202 {
+# CAM-CADDY-TLS: TRANSFER
+  reverse_proxy cam-core:3102
 }

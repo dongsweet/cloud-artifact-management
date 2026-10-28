@@ -63,10 +63,25 @@ services:
       - /tmp:size=64m,noexec,nosuid,nodev
       - /data:size=16m,mode=0700,uid=10001,gid=10001
       - /config:size=4m,mode=0700,uid=10001,gid=10001
+    volumes:
+      - ${CAM_EDGE_TLS_DIR:-/var/lib/cloud-artifact-management/edge/tls}:/tls:ro
+    environment:
+      CAM_CADDY_MODULE: edge
+      CAM_EDGE_WEB_HTTPS: ${CAM_EDGE_WEB_HTTPS:-false}
+      CAM_EDGE_WEB_TLS_CERT_FILE: ${CAM_EDGE_WEB_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_EDGE_WEB_TLS_KEY_FILE: ${CAM_EDGE_WEB_TLS_KEY_FILE:-/tls/privkey.pem}
+      CAM_EDGE_CONTROL_HTTPS: ${CAM_EDGE_CONTROL_HTTPS:-false}
+      CAM_EDGE_CONTROL_TLS_CERT_FILE: ${CAM_EDGE_CONTROL_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_EDGE_CONTROL_TLS_KEY_FILE: ${CAM_EDGE_CONTROL_TLS_KEY_FILE:-/tls/privkey.pem}
+      CAM_EDGE_TRANSFER_HTTPS: ${CAM_EDGE_TRANSFER_HTTPS:-false}
+      CAM_EDGE_TRANSFER_TLS_CERT_FILE: ${CAM_EDGE_TRANSFER_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_EDGE_TRANSFER_TLS_KEY_FILE: ${CAM_EDGE_TRANSFER_TLS_KEY_FILE:-/tls/privkey.pem}
     depends_on:
       - cam-edge
     ports:
       - "${CAM_EDGE_WEB_BIND:-127.0.0.1}:${CAM_EDGE_WEB_PORT:-8088}:8080"
+      - "${CAM_EDGE_CONTROL_BIND:-127.0.0.1}:${CAM_EDGE_CONTROL_PORT:-8101}:8101"
+      - "${CAM_EDGE_TRANSFER_BIND:-127.0.0.1}:${CAM_EDGE_TRANSFER_PORT:-8201}:8201"
     restart: unless-stopped
     logging:
       driver: json-file
