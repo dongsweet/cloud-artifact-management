@@ -657,6 +657,10 @@ async function loadGateConfig() {
     const result = await api('/api/v1/gate/config');
     const item = result.item ?? {};
     for (const element of form.elements) if (element.name && item[element.name] !== undefined) element.value = item[element.name];
+    // The legacy Edge transfer/receipt endpoint is retired. Keep the field as
+    // a visible placeholder, but never echo an obsolete mapped URL from an old
+    // database row.
+    if (legacyTransferInput) legacyTransferInput.value = '';
     $('#gate-secret-status').value = result.identityConfigured ? (result.previousIdentityConfigured ? '身份已配对（旧身份过渡中）' : '身份已配对') : '尚未配对';
     $('#gate-config-status').textContent = `配置来源：${result.item?.source === 'database' ? 'Core 数据库' : '.env 默认值'}；映射模式固定为 mapping。`;
     await loadGateKeys();
