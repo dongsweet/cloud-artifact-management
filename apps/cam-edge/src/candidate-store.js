@@ -1019,7 +1019,6 @@ export class CandidateStore {
     const rows = this.db.prepare(`SELECT candidate_id, source_path, expected_size
       FROM candidates WHERE status = 'COMPLETED' AND final_sha256 = ? AND expected_size = ?
       ORDER BY created_at, candidate_id`).all(digest, candidate.expected_size);
-    if (!rows.some((row) => row.candidate_id !== candidateId)) return candidate;
 
     const objectPath = this.candidateObjectPath(digest);
     await mkdir(join(this.dataDir, 'candidates', 'objects', 'sha256', digest.slice(0, 2), digest.slice(2, 4)), { recursive: true });

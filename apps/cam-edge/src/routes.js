@@ -116,7 +116,9 @@ export async function finalizeCandidate(store, candidateId) {
   const partsDir = join(store.candidateDir(candidate.candidate_id), 'parts');
   if (candidate.status === 'COMPLETED') {
     await rm(partsDir, { recursive: true, force: true });
-    return candidate;
+    const promoted = store.deduplicateCompleted ? await store.deduplicateCompleted(candidateId) : candidate;
+    if (promoted?.source_path && promoted.source_path !== candidate.source_path) await rm(store.candidateDir(candidate.candidate_id), { recursive: true, force: true });
+    return promoted;
   }
   const missing = store.missingParts(candidate.candidate_id);
   if (missing.length > 0) throw new Error(`candidate has missing parts: ${missing.join(',')}`);
@@ -125,7 +127,9 @@ export async function finalizeCandidate(store, candidateId) {
   const assembled = await assembleChunks({ taskDir: store.candidateDir(candidate.candidate_id), manifest, outputPath: candidate.source_path });
   const completed = store.complete(candidate.candidate_id, { finalSha256: assembled.sha256, finalMd5: candidate.expected_md5 ? await md5File(assembled.path) : null });
   await rm(partsDir, { recursive: true, force: true });
-  return store.deduplicateCompleted ? await store.deduplicateCompleted(candidateId) : completed;
+  const promoted = store.deduplicateCompleted ? await store.deduplicateCompleted(candidateId) : completed;
+  if (promoted?.source_path && promoted.source_path !== candidate.source_path) await rm(store.candidateDir(candidate.candidate_id), { recursive: true, force: true });
+  return promoted;
 }
 
 export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, sourceConfig, keyring, approvalDispatcher, artifactDispatcher, logCollections }) {

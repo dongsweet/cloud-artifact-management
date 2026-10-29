@@ -43,7 +43,10 @@ test('cam-edge accepts resumable candidate parts and finalizes the candidate', a
   const completed = await app.inject({ method: 'POST', url: `/api/v1/candidates/${candidate.candidateId}/complete` });
   assert.equal(completed.statusCode, 200);
   assert.equal(completed.json().status, 'COMPLETED');
-  assert.equal(await readFile(join(dataDir, 'candidates', candidate.candidateId, 'source', 'release.bin'), 'utf8'), 'abcdefghij');
+  const stored = app.candidateStore.get(candidate.candidateId);
+  assert.match(stored.source_path, /candidates[\\/]objects[\\/]sha256[\\/]/u);
+  assert.equal(await readFile(stored.source_path, 'utf8'), 'abcdefghij');
+  await assert.rejects(access(join(dataDir, 'candidates', candidate.candidateId, 'source', 'release.bin')));
   await assert.rejects(access(join(dataDir, 'candidates', candidate.candidateId, 'parts')));
   assert.equal(app.candidateStore.listParts(candidate.candidateId).length, 3, 'keep verified chunk metadata for audit and progress');
   const stalePartsDir = join(dataDir, 'candidates', candidate.candidateId, 'parts');
