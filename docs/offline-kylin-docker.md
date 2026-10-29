@@ -12,16 +12,24 @@
     passwd sugon
     id sugon
 
-如果采用 SSH 密钥登录，建议先建立并锁定本地密码（不要在文档、命令历史或工单中记录密码）：
+当前堡垒机不支持 SSH 密钥时，保留 `sugon` 的口令登录即可。口令应使用每台主机不同的高强度密码，由堡垒机或密码保险箱管理，不要写入文档、命令历史、配置文件或工单。先验证堡垒机登录和切换用户：
+
+    su - sugon
+    whoami
+
+确认口令登录正常后，再按安全基线考虑关闭 root 直登；不要关闭 SSH 密码登录，否则堡垒机无法进入。若以后堡垒机支持密钥，再切换到密钥方案并锁定本地密码。
+
+后续若采用 SSH 密钥登录，可使用以下配置：
 
     sudo -u sugon mkdir -p /home/sugon/.ssh
     chmod 700 /home/sugon/.ssh
     sudo -u sugon vi /home/sugon/.ssh/authorized_keys
     chmod 600 /home/sugon/.ssh/authorized_keys
     chown -R sugon:sugon /home/sugon/.ssh
-    passwd -l sugon
+    # 确认密钥登录成功后，才可按策略锁定密码：
+    # passwd -l sugon
 
-确认密钥可以登录后，再考虑在 `/etc/ssh/sshd_config` 中关闭 root 直登和密码登录，并用 `sshd -t` 校验后重载 SSH；不要在密钥验证前关闭现有登录方式。CAM 容器仍以镜像内的 `10001:10001` 运行，不能把宿主机的 `sugon` UID 当成容器用户。若允许 `sugon` 直接执行 Docker，可加入 `docker` 组并重新登录：
+CAM 容器仍以镜像内的 `10001:10001` 运行，不能把宿主机的 `sugon` UID 当成容器用户。若允许 `sugon` 直接执行 Docker，可加入 `docker` 组并重新登录：
 
     usermod -aG docker sugon
     su - sugon
