@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { link, mkdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { calculateChunkCount, getChunkRange } from '../../../libs/cam-transfer/src/transfer.js';
 
@@ -9,6 +10,16 @@ const CANDIDATE_STATUSES = new Set(['CREATED', 'RECEIVING', 'PARTIAL', 'FAILED',
 
 function now() { return new Date().toISOString(); }
 function id(prefix) { return `${prefix}-${Date.now()}-${randomUUID()}`; }
+
+async function fileSha256(filePath) {
+  const hash = createHash('sha256');
+  let size = 0;
+  for await (const chunk of createReadStream(filePath)) {
+    size += chunk.length;
+    hash.update(chunk);
+  }
+  return { size, sha256: hash.digest('hex') };
+}
 
 function safeText(value, name, { required = true, max = 255 } = {}) {
   if (value === undefined || value === null || value === '') {
@@ -789,6 +800,7 @@ export class CandidateStore {
     const linkedRoundIds = this.db.prepare('SELECT round_id FROM round_candidates WHERE candidate_id = ?').all(candidateId).map((row) => row.round_id);
     if (linkedRoundIds.some((roundId) => !this.isRoundLatest(roundId))) throw Object.assign(new Error('该候选包已被历史轮次引用，不能永久删除；请仅从最新轮次移除'), { code: 'round_locked' });
     if (['RECEIVING', 'ASSEMBLING'].includes(candidate.status)) { const error = new Error('candidate is receiving and cannot be deleted'); error.code = 'candidate_busy'; throw error; }
+    const sourcePath = candidate.source_path;
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.db.prepare('DELETE FROM round_candidates WHERE candidate_id = ?').run(candidateId);
@@ -796,7 +808,8 @@ export class CandidateStore {
       this.db.prepare('DELETE FROM candidates WHERE candidate_id = ?').run(candidateId);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    return { candidateId, deleted: true, dataDir: this.candidateDir(candidateId) };
+    const stillReferenced = sourcePath ? Boolean(this.db.prepare('SELECT 1 FROM candidates WHERE source_path = ? LIMIT 1').get(sourcePath)) : false;
+    return { candidateId, deleted: true, dataDir: this.candidateDir(candidateId), sourcePath, removeSourcePath: !stillReferenced };
   }
 
   get(candidateId) {
@@ -989,6 +1002,83 @@ export class CandidateStore {
     const timestamp = now();
     this.db.prepare('UPDATE candidates SET status = ?, final_md5 = ?, final_sha256 = ?, completed_at = ?, updated_at = ?, error_message = NULL WHERE candidate_id = ?').run('COMPLETED', finalMd5, finalSha256, timestamp, timestamp, candidateId);
     return this.get(candidateId);
+  }
+
+  /**
+   * Move equal completed candidate files into one content-addressed object.
+   *
+   * Candidate metadata remains independent (each candidate can belong to a
+   * different round/package), while the bytes are shared by source_path. The
+   * method is intentionally best-effort: a cleanup failure must not turn an
+   * already verified download into a failed candidate.
+   */
+  async deduplicateCompleted(candidateId) {
+    const candidate = this.get(candidateId);
+    if (!candidate || candidate.status !== 'COMPLETED' || !candidate.final_sha256) return candidate;
+    const digest = candidate.final_sha256.toLowerCase();
+    const rows = this.db.prepare(`SELECT candidate_id, source_path, expected_size
+      FROM candidates WHERE status = 'COMPLETED' AND final_sha256 = ? AND expected_size = ?
+      ORDER BY created_at, candidate_id`).all(digest, candidate.expected_size);
+    if (!rows.some((row) => row.candidate_id !== candidateId)) return candidate;
+
+    const objectPath = this.candidateObjectPath(digest);
+    await mkdir(join(this.dataDir, 'candidates', 'objects', 'sha256', digest.slice(0, 2), digest.slice(2, 4)), { recursive: true });
+    const candidatesPaths = [...new Set(rows.map((row) => row.source_path).filter(Boolean))];
+
+    // Prefer an already published object, otherwise use a verified existing
+    // candidate file as the seed. Re-check the seed before sharing it so a
+    // file changed outside CAM cannot be silently reused.
+    let seedPath = objectPath;
+    let seedValid = false;
+    try {
+      const info = await stat(seedPath);
+      if (info.isFile() && info.size === candidate.expected_size) {
+        const actual = await fileSha256(seedPath);
+        seedValid = actual.size === candidate.expected_size && actual.sha256 === digest;
+      }
+    } catch {}
+    if (!seedValid) {
+      for (const sourcePath of candidatesPaths) {
+        try {
+          const actual = await fileSha256(sourcePath);
+          if (actual.size === candidate.expected_size && actual.sha256 === digest) {
+            seedPath = sourcePath;
+            seedValid = true;
+            break;
+          }
+        } catch {}
+      }
+    }
+    if (!seedValid) return candidate;
+
+    if (seedPath !== objectPath) {
+      try {
+        await link(seedPath, objectPath);
+      } catch (error) {
+        if (error.code !== 'EEXIST') return candidate;
+        try {
+          const existing = await fileSha256(objectPath);
+          if (existing.size !== candidate.expected_size || existing.sha256 !== digest) return candidate;
+        } catch {
+          return candidate;
+        }
+      }
+    }
+
+    // All matching candidates now point at the immutable object. Updating the
+    // rows before removing old paths prevents a restart from losing the only
+    // known location of the bytes.
+    this.db.prepare(`UPDATE candidates SET source_path = ?, updated_at = ?
+      WHERE status = 'COMPLETED' AND final_sha256 = ? AND expected_size = ?`).run(objectPath, now(), digest, candidate.expected_size);
+    for (const sourcePath of candidatesPaths) {
+      if (sourcePath !== objectPath) await rm(sourcePath, { force: true });
+    }
+    return this.get(candidateId);
+  }
+
+  candidateObjectPath(sha256) {
+    const digest = String(sha256).toLowerCase();
+    return join(this.dataDir, 'candidates', 'objects', 'sha256', digest.slice(0, 2), digest.slice(2, 4), digest);
   }
 
   fail(candidateId, error) { this.db.prepare('UPDATE candidates SET status = ?, error_message = ?, updated_at = ? WHERE candidate_id = ?').run('FAILED', String(error.message ?? error).slice(0, 1000), now(), candidateId); }

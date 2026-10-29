@@ -125,7 +125,7 @@ export async function finalizeCandidate(store, candidateId) {
   const assembled = await assembleChunks({ taskDir: store.candidateDir(candidate.candidate_id), manifest, outputPath: candidate.source_path });
   const completed = store.complete(candidate.candidate_id, { finalSha256: assembled.sha256, finalMd5: candidate.expected_md5 ? await md5File(assembled.path) : null });
   await rm(partsDir, { recursive: true, force: true });
-  return completed;
+  return store.deduplicateCompleted ? await store.deduplicateCompleted(candidateId) : completed;
 }
 
 export function registerCandidateRoutes(app, { store, receiver, scheduler, downloadGrants, auth, freezes, gateConfig, sourceConfig, keyring, approvalDispatcher, artifactDispatcher, logCollections }) {
@@ -846,6 +846,7 @@ export function registerCandidateRoutes(app, { store, receiver, scheduler, downl
       if (downloadGrants.db.prepare('SELECT 1 FROM download_grant_items WHERE candidate_id = ? LIMIT 1').get(request.params.candidateId)) return error(reply, 409, 'candidate_in_download_audit', '该候选包已关联下载授权和审计记录，暂不能永久删除；可以移出候选轮次');
       const deleted = store.deleteCandidate(request.params.candidateId);
       if (!deleted) return error(reply, 404, 'candidate_not_found', 'candidate not found');
+      if (deleted.removeSourcePath && deleted.sourcePath) await rm(deleted.sourcePath, { force: true });
       await rm(deleted.dataDir, { recursive: true, force: true });
       return reply.code(204).send();
     } catch (err) { return error(reply, ['candidate_busy', 'round_locked', 'release_sealed', 'release_approval_pending'].includes(err.code) ? 409 : 400, err.code ?? 'candidate_delete_failed', err.message); }

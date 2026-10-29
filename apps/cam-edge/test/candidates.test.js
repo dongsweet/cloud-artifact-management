@@ -59,6 +59,40 @@ test('cam-edge accepts resumable candidate parts and finalizes the candidate', a
   await reopened.close();
 });
 
+test('cam-edge shares completed files with the same SHA-256 and keeps them after one candidate is deleted', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-content-dedup-'));
+  const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] }), dataDir, defaultChunkSize: 4 });
+  const payload = Buffer.from('same-content');
+  const createAndComplete = async (fileName) => {
+    const created = await app.inject({ method: 'POST', url: '/api/v1/candidates', payload: { sourceUrl: `http://127.0.0.1/${fileName}`, fileName, size: payload.length, chunkSize: 4 } });
+    assert.equal(created.statusCode, 201);
+    const candidate = created.json();
+    for (let offset = 0, index = 0; offset < payload.length; offset += 4, index += 1) {
+      const chunk = payload.subarray(offset, Math.min(offset + 4, payload.length));
+      assert.equal((await app.inject({ method: 'PUT', url: `/api/v1/candidates/${candidate.candidateId}/parts/${index}`, headers: { 'content-type': 'application/octet-stream', 'x-chunk-sha256': sha256(chunk) }, payload: chunk })).statusCode, 200);
+    }
+    const completed = await app.inject({ method: 'POST', url: `/api/v1/candidates/${candidate.candidateId}/complete` });
+    assert.equal(completed.statusCode, 200);
+    return candidate.candidateId;
+  };
+  try {
+    const firstId = await createAndComplete('first.bin');
+    const secondId = await createAndComplete('second.bin');
+    const first = app.candidateStore.get(firstId);
+    const second = app.candidateStore.get(secondId);
+    assert.equal(first.source_path, second.source_path);
+    assert.match(first.source_path, /candidates[\\/]objects[\\/]sha256[\\/]/u);
+    assert.equal((await readFile(first.source_path)).toString(), payload.toString());
+    assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/candidates/${firstId}` })).statusCode, 204);
+    assert.equal((await readFile(second.source_path)).toString(), payload.toString());
+    assert.equal((await app.inject({ method: 'DELETE', url: `/api/v1/candidates/${secondId}` })).statusCode, 204);
+    await assert.rejects(access(first.source_path));
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('cam-edge validates candidate metadata, preserves parts on conflict and stores final digest', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-edge-validation-'));
   const app = await buildEdgeApp({ principalProvider: () => ({ id: 'test-receiver', type: 'TEST_IDP', roles: ['EDGE_OPERATOR'] }), dataDir, defaultChunkSize: 3, allowlist: ['127.0.0.1'] });
