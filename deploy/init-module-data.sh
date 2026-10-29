@@ -3,11 +3,22 @@ set -eu
 
 module="${1:-}"
 case "$module" in
-  edge) directory="${CAM_EDGE_DATA_DIR:-/var/lib/cloud-artifact-management/edge}" ;;
-  core) directory="${CAM_CORE_DATA_DIR:-/var/lib/cloud-artifact-management/core}" ;;
-  agent) directory="${CAM_AGENT_DATA_DIR:-/var/lib/cloud-artifact-management/agent}" ;;
+  edge)
+    default_directory=/var/lib/cloud-artifact-management/edge
+    legacy_directory="${CAM_EDGE_DATA_DIR:-}"
+    ;;
+  core)
+    default_directory=/var/lib/cloud-artifact-management/core
+    legacy_directory="${CAM_CORE_DATA_DIR:-}"
+    ;;
+  agent)
+    default_directory=/var/lib/cloud-artifact-management/agent
+    legacy_directory="${CAM_AGENT_DATA_DIR:-}"
+    ;;
   *) echo "Usage: $0 edge|core|agent" >&2; exit 2 ;;
 esac
+
+directory="${CAM_DATA_DIR:-${legacy_directory:-$default_directory}}"
 
 uid="${CAM_DATA_UID:-10001}"
 gid="${CAM_DATA_GID:-10001}"

@@ -242,11 +242,11 @@ sudo ln -sfn "releases/$VERSION" \
 配置包安装完成后，初始化对应模块的数据目录。以下是 Edge 示例；Core、Agent 分别替换环境变量名和模块名：
 
 ```bash
-sudo env CAM_EDGE_DATA_DIR=/var/lib/cloud-artifact-management/edge \
-  sh /opt/cloud-artifact-management/edge/current/init-module-data.sh edge
+sudo env CAM_DATA_DIR=/var/lib/cloud-artifact-management/$MODULE \
+  sh /opt/cloud-artifact-management/$MODULE/current/init-module-data.sh $MODULE
 ```
 
-Core 使用 `CAM_CORE_DATA_DIR`/`core`，Agent 使用 `CAM_AGENT_DATA_DIR`/`agent`。该脚本会设置容器用户 `10001:10001` 的访问权限。
+Core、Agent 只需将 `MODULE` 改为 `core`、`agent`；`CAM_DATA_DIR` 会按模块传入统一的数据目录。该脚本会设置容器用户 `10001:10001` 的访问权限。
 
 部署时使用的镜像：
 
@@ -425,11 +425,11 @@ journalctl -u docker --no-pager -n 200
 ```bash
 findmnt /var/lib/cloud-artifact-management/<module>
 ls -ld /var/lib/cloud-artifact-management/<module>
-sudo CAM_EDGE_DATA_DIR=/var/lib/cloud-artifact-management/edge \
+sudo env CAM_DATA_DIR=/var/lib/cloud-artifact-management/edge \
   sh /opt/cloud-artifact-management/edge/current/init-module-data.sh edge
 ```
 
-Core、Agent 分别替换为 `CAM_CORE_DATA_DIR`/`core` 和 `CAM_AGENT_DATA_DIR`/`agent`。不要把数据目录改成 `777`。初始化脚本应将目录设置为容器用户 `10001:10001` 可写。
+Core、Agent 只需将路径和脚本参数替换为 `core`、`agent`。`CAM_DATA_DIR` 优先于旧的模块专用变量；未设置时脚本仍兼容 `CAM_EDGE_DATA_DIR`、`CAM_CORE_DATA_DIR`、`CAM_AGENT_DATA_DIR`。不要把数据目录改成 `777`。初始化脚本应将目录设置为容器用户 `10001:10001` 可写。
 
 ## 网络与安全要求
 
