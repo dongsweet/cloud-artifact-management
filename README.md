@@ -47,7 +47,8 @@ Core 是审批和分发的授权方；Agent 不能绕过 Core 直接选择或下
 
     cp deploy/.env.example deploy/.env
     # 只填写数据目录和确需覆盖的测试项；不要把真实密钥提交到 Git
-    sudo -E sh deploy/init-data-directories.sh
+    sudo env CAM_DATA_ROOT_DIR=/var/lib/cloud-artifact-management \
+      sh deploy/init-data-directories.sh
 
 有 Hillstone/VPN 模拟环境时：
 
@@ -59,7 +60,7 @@ Core 是审批和分发的授权方；Agent 不能绕过 Core 直接选择或下
     docker compose --env-file deploy/.env -f compose.direct.yaml up -d --build
     docker compose --env-file deploy/.env -f compose.direct.yaml ps
 
-直连 Compose 会启动 cam-agent-1 和 cam-agent-2 两个独立 Agent；它们分别使用 CAM_AGENT_1_DATA_DIR、CAM_AGENT_2_DATA_DIR，不能共用数据目录。
+直连 Compose 会启动 cam-agent-1 和 cam-agent-2 两个独立 Agent；它们分别挂载 `agent-1`、`agent-2` 子目录，不能共用数据目录。需要更换测试根目录时设置 `CAM_DATA_ROOT_DIR`。
 
 停止容器但保留数据：
 

@@ -294,8 +294,9 @@ flowchart TB
 首期单实例更新允许出现很短的管理页面切换窗口；未完成的传输任务不得因容器切换而丢失。若要求管理面严格无中断，再将同一镜像扩展为双实例或蓝绿 Compose 部署，SQLite 仍按安全区单主写入约束运行。
 
 生产部署中的 `edge`、`core` 和 `agent` 业务数据必须使用宿主机固定目录绑定挂载，例如
-`/var/lib/cloud-artifact-management/edge`、`core` 和 `agent`。部署前由
-`deploy/init-data-directories.sh` 创建目录并设置容器用户 `10001:10001` 的权限，Compose
+`/var/lib/cloud-artifact-management/edge`、`core` 和 `agent`。正式部署使用
+`deploy/init-module-data.sh` 配合 `CAM_DATA_DIR` 创建对应目录并设置容器用户 `10001:10001` 的权限；开发联调用
+`deploy/init-data-directories.sh` 配合 `CAM_DATA_ROOT_DIR` 一次创建测试用的 edge、core、agent-1、agent-2 子目录。Compose
 只负责挂载目录，不创建或管理业务数据卷。SQLite 文件、WAL/SHM 文件、分块进度和制品文件
 都直接落在对应本地目录中；项目目录或 Compose 项目名变化不会切换数据位置。
 
