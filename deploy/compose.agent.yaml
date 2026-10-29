@@ -59,12 +59,19 @@ services:
       - /tmp:size=64m,noexec,nosuid,nodev
       - /data:size=16m,mode=0700,uid=10001,gid=10001
       - /config:size=4m,mode=0700,uid=10001,gid=10001
+    volumes:
+      - ${CAM_AGENT_TLS_DIR:-/var/lib/cloud-artifact-management/agent/tls}:/tls:ro
     environment:
       CAM_AGENT_UPSTREAM: ${CAM_AGENT_UPSTREAM:-cam-agent:3103}
+      CAM_CADDY_MODULE: agent
+      CAM_AGENT_WEB_HTTPS: ${CAM_AGENT_WEB_HTTPS:-false}
+      CAM_AGENT_WEB_TLS_CERT_FILE: ${CAM_AGENT_WEB_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_AGENT_WEB_TLS_KEY_FILE: ${CAM_AGENT_WEB_TLS_KEY_FILE:-/tls/privkey.pem}
     depends_on:
       - cam-agent
     ports:
-      - "${CAM_AGENT_WEB_BIND:-127.0.0.1}:${CAM_AGENT_WEB_PORT:-3111}:8080"
+      - "${CAM_AGENT_WEB_HTTP_BIND:-0.0.0.0}:${CAM_AGENT_WEB_HTTP_PORT:-80}:8080"
+      - "${CAM_AGENT_WEB_HTTPS_BIND:-0.0.0.0}:${CAM_AGENT_WEB_HTTPS_PORT:-443}:8443"
     restart: unless-stopped
     logging:
       driver: json-file

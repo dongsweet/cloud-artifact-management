@@ -61,9 +61,6 @@ services:
       CAM_EDGE_CONTROL_HTTPS: ${CAM_EDGE_CONTROL_HTTPS:-false}
       CAM_EDGE_CONTROL_TLS_CERT_FILE: ${CAM_EDGE_CONTROL_TLS_CERT_FILE:-/tls/fullchain.pem}
       CAM_EDGE_CONTROL_TLS_KEY_FILE: ${CAM_EDGE_CONTROL_TLS_KEY_FILE:-/tls/privkey.pem}
-      CAM_EDGE_TRANSFER_HTTPS: ${CAM_EDGE_TRANSFER_HTTPS:-false}
-      CAM_EDGE_TRANSFER_TLS_CERT_FILE: ${CAM_EDGE_TRANSFER_TLS_CERT_FILE:-/tls/fullchain.pem}
-      CAM_EDGE_TRANSFER_TLS_KEY_FILE: ${CAM_EDGE_TRANSFER_TLS_KEY_FILE:-/tls/privkey.pem}
     depends_on:
       - cam-edge
       - cam-core
@@ -74,7 +71,6 @@ services:
     ports:
       - "127.0.0.1:8088:8080"
       - "127.0.0.1:8101:8101"
-      - "127.0.0.1:8201:8201"
     restart: unless-stopped
 
   cam-core-web:
@@ -112,7 +108,7 @@ services:
       - default
     ports:
       - "127.0.0.1:8092:8080"
-      - "127.0.0.1:8102:8102"
+      - "127.0.0.1:8201:8201"
       - "127.0.0.1:8202:8202"
     restart: unless-stopped
 

@@ -8,6 +8,14 @@ set -eu
 module=${CAM_CADDY_MODULE:?CAM_CADDY_MODULE is required}
 template=${CAM_CADDY_TEMPLATE:-/etc/caddy/Caddyfile}
 
+tls_enabled() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off|'') return 1 ;;
+    *) echo "invalid HTTPS switch: $1 (use true or false)" >&2; exit 64 ;;
+  esac
+}
+
 case "$module" in
   edge)
     web_https=${CAM_EDGE_WEB_HTTPS:-false}
@@ -19,6 +27,17 @@ case "$module" in
     transfer_https=${CAM_EDGE_TRANSFER_HTTPS:-false}
     transfer_cert=${CAM_EDGE_TRANSFER_TLS_CERT_FILE:-}
     transfer_key=${CAM_EDGE_TRANSFER_TLS_KEY_FILE:-}
+    ;;
+  agent)
+    web_https=${CAM_AGENT_WEB_HTTPS:-false}
+    web_cert=${CAM_AGENT_WEB_TLS_CERT_FILE:-}
+    web_key=${CAM_AGENT_WEB_TLS_KEY_FILE:-}
+    control_https=false
+    control_cert=
+    control_key=
+    transfer_https=false
+    transfer_cert=
+    transfer_key=
     ;;
   core)
     web_https=${CAM_CORE_WEB_HTTPS:-false}
@@ -37,13 +56,13 @@ case "$module" in
     ;;
 esac
 
-tls_enabled() {
-  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    1|true|yes|on) return 0 ;;
-    0|false|no|off|'') return 1 ;;
-    *) echo "invalid HTTPS switch: $1 (use true or false)" >&2; exit 64 ;;
-  esac
-}
+# Web uses an unprivileged listener inside the container.  Compose maps it to
+# the real external 80/443 port, so the Caddy process never needs CAP_NET_BIND_SERVICE.
+if tls_enabled "${web_https}"; then
+  web_listen=':8443'
+else
+  web_listen=':8080'
+fi
 
 emit_tls() {
   enabled=$1
@@ -76,6 +95,9 @@ output=/tmp/cam-caddy/Caddyfile
 
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
+    *'CAM-CADDY-WEB-ADDRESS'*)
+      printf '%s {\n' "$web_listen"
+      ;;
     *'CAM-CADDY-TLS: WEB'*)
       emit_tls "$web_https" "$web_cert" "$web_key"
       ;;

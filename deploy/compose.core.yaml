@@ -63,8 +63,8 @@ services:
       CAM_AAA_TIMEOUT_MS: ${CAM_AAA_TIMEOUT_MS:-10000}
       CAM_AAA_ALLOW_HTTP: ${CAM_AAA_ALLOW_HTTP:-false}
       CAM_AAA_SKIP_TLS_VERIFICATION: ${CAM_AAA_SKIP_TLS_VERIFICATION:-false}
-    ports:
-      - "${CAM_CORE_API_BIND:-127.0.0.1}:${CAM_CORE_API_PORT:-3102}:3102"
+    # The API is reachable only from cam-core-web on the Compose network.
+    # Do not publish the backend port on the production host.
     restart: unless-stopped
     logging:
       driver: json-file
@@ -90,7 +90,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      CAM_AGENT_UPSTREAM: ${CAM_AGENT_UPSTREAM:-host.docker.internal:3111}
+      CAM_AGENT_UPSTREAM: ${CAM_AGENT_UPSTREAM:-host.docker.internal:80}
       CAM_CADDY_MODULE: core
       CAM_CORE_WEB_HTTPS: ${CAM_CORE_WEB_HTTPS:-false}
       CAM_CORE_WEB_TLS_CERT_FILE: ${CAM_CORE_WEB_TLS_CERT_FILE:-/tls/fullchain.pem}
@@ -104,9 +104,10 @@ services:
     depends_on:
       - cam-core
     ports:
-      - "${CAM_CORE_WEB_BIND:-127.0.0.1}:${CAM_CORE_WEB_PORT:-8092}:8080"
-      - "${CAM_CORE_CONTROL_BIND:-127.0.0.1}:${CAM_CORE_CONTROL_PORT:-8102}:8102"
-      - "${CAM_CORE_TRANSFER_BIND:-127.0.0.1}:${CAM_CORE_TRANSFER_PORT:-8202}:8202"
+      - "${CAM_CORE_WEB_HTTP_BIND:-0.0.0.0}:${CAM_CORE_WEB_HTTP_PORT:-80}:8080"
+      - "${CAM_CORE_WEB_HTTPS_BIND:-0.0.0.0}:${CAM_CORE_WEB_HTTPS_PORT:-443}:8443"
+      - "${CAM_CORE_CONTROL_BIND:-0.0.0.0}:${CAM_CORE_CONTROL_PORT:-8201}:8201"
+      - "${CAM_CORE_TRANSFER_BIND:-0.0.0.0}:${CAM_CORE_TRANSFER_PORT:-8202}:8202"
     restart: unless-stopped
     logging:
       driver: json-file

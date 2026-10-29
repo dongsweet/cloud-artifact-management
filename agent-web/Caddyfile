@@ -1,4 +1,5 @@
-:8080 {
+CAM-CADDY-WEB-ADDRESS {
+# CAM-CADDY-TLS: WEB
   encode gzip zstd
 
   header {

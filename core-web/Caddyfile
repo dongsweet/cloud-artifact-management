@@ -1,4 +1,4 @@
-:8080 {
+CAM-CADDY-WEB-ADDRESS {
 # CAM-CADDY-TLS: WEB
   root * /srv/web
   encode gzip zstd
@@ -13,10 +13,14 @@
   handle_path /agent/* {
     # In production Core and Agent may be deployed on separate hosts. The
     # upstream is therefore supplied by the Core deployment environment.
-    reverse_proxy {$CAM_AGENT_UPSTREAM:host.docker.internal:3111}
+    reverse_proxy {$CAM_AGENT_UPSTREAM:host.docker.internal:80}
   }
 
   handle /api/* {
+    reverse_proxy cam-core:3102
+  }
+
+  handle /health/* {
     reverse_proxy cam-core:3102
   }
 
@@ -26,10 +30,8 @@
   }
 }
 
-# The gateway exposes separate control and transfer channels.  They currently
-# share the Core API upstream; the distinction is represented by the mapped
-# listener/host ports and the corresponding CAM_GATE_*_URL values.
-:8102 {
+# Core exposes an API/control channel and a separate data-transfer channel.
+:8201 {
 # CAM-CADDY-TLS: CONTROL
   reverse_proxy cam-core:3102
 }

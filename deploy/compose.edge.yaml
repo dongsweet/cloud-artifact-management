@@ -45,8 +45,8 @@ services:
       CAM_GATE_REQUEST_TTL_SECONDS: ${CAM_GATE_REQUEST_TTL_SECONDS:-86400}
       CAM_GATE_TLS_CA_FILE: ${CAM_GATE_TLS_CA_FILE:-}
       CAM_GATE_TLS_SERVER_NAME: ${CAM_GATE_TLS_SERVER_NAME:-}
-    ports:
-      - "${CAM_EDGE_API_BIND:-127.0.0.1}:${CAM_EDGE_API_PORT:-3101}:3101"
+    # The API is reachable only from cam-edge-web on the Compose network.
+    # Do not publish the backend port on the production host.
     restart: unless-stopped
     logging:
       driver: json-file
@@ -77,15 +77,16 @@ services:
       CAM_EDGE_CONTROL_HTTPS: ${CAM_EDGE_CONTROL_HTTPS:-false}
       CAM_EDGE_CONTROL_TLS_CERT_FILE: ${CAM_EDGE_CONTROL_TLS_CERT_FILE:-/tls/fullchain.pem}
       CAM_EDGE_CONTROL_TLS_KEY_FILE: ${CAM_EDGE_CONTROL_TLS_KEY_FILE:-/tls/privkey.pem}
-      CAM_EDGE_TRANSFER_HTTPS: ${CAM_EDGE_TRANSFER_HTTPS:-false}
-      CAM_EDGE_TRANSFER_TLS_CERT_FILE: ${CAM_EDGE_TRANSFER_TLS_CERT_FILE:-/tls/fullchain.pem}
-      CAM_EDGE_TRANSFER_TLS_KEY_FILE: ${CAM_EDGE_TRANSFER_TLS_KEY_FILE:-/tls/privkey.pem}
+      # Edge has one externally mapped control/API channel (8101).  There is
+      # no separate Edge transfer listener in the production topology.
     depends_on:
       - cam-edge
     ports:
-      - "${CAM_EDGE_WEB_BIND:-127.0.0.1}:${CAM_EDGE_WEB_PORT:-8088}:8080"
-      - "${CAM_EDGE_CONTROL_BIND:-127.0.0.1}:${CAM_EDGE_CONTROL_PORT:-8101}:8101"
-      - "${CAM_EDGE_TRANSFER_BIND:-127.0.0.1}:${CAM_EDGE_TRANSFER_PORT:-8201}:8201"
+      # Caddy listens on an unprivileged port in the container; the host
+      # publishes the standard public web ports directly.
+      - "${CAM_EDGE_WEB_HTTP_BIND:-0.0.0.0}:${CAM_EDGE_WEB_HTTP_PORT:-80}:8080"
+      - "${CAM_EDGE_WEB_HTTPS_BIND:-0.0.0.0}:${CAM_EDGE_WEB_HTTPS_PORT:-443}:8443"
+      - "${CAM_EDGE_CONTROL_BIND:-0.0.0.0}:${CAM_EDGE_CONTROL_PORT:-8101}:8101"
     restart: unless-stopped
     logging:
       driver: json-file

@@ -6,9 +6,9 @@
 
 | 模块 | Compose 文件 | 配置模板 | 服务入口 |
 |---|---|---|---|
-| Edge | `deploy/compose.edge.yaml` | `deploy/edge.env.example` | Edge Web（默认宿主机 8088），控制 Caddy（8101），传输 Caddy（8201），API（容器 3101） |
-| Core | `deploy/compose.core.yaml` | `deploy/core.env.example` | Core Web（默认宿主机 8092），控制 Caddy（8102），传输 Caddy（8202），API（容器 3102） |
-| Agent | `deploy/compose.agent.yaml` | `deploy/agent.env.example` | Agent API（仅 Compose 内部 3103）+ Agent Web（默认宿主机 3111） |
+| Edge | `deploy/compose.edge.yaml` | `deploy/edge.env.example` | 嵌入式 Caddy 页面（宿主机 80/443），控制/API（8101），API（仅 Compose 内部 3101） |
+| Core | `deploy/compose.core.yaml` | `deploy/core.env.example` | 嵌入式 Caddy 页面（宿主机 80/443），控制/API（8201），数据传输（8202），API（仅 Compose 内部 3102） |
+| Agent | `deploy/compose.agent.yaml` | `deploy/agent.env.example` | Agent API（仅 Compose 内部 3103）+ 嵌入式 Caddy 页面（宿主机 80/443） |
 
 根目录的 `compose.yaml` 和 `compose.direct.yaml` 保留给开发、联调和测试环境。正式分区部署不要用它们，因为它们会把多个安全区组件组合到同一 Compose 网络中。
 
@@ -298,25 +298,26 @@ chmod 600 /opt/cloud-artifact-management/edge/current/edge.env
 | `CAM_DATA_DIR` | 必填，设置为目标主机本地持久化路径；Edge、Core、每台 Agent 使用各自 `.env` 中互不重叠的目录。应用日志会写入对应数据目录下的 `logs/` 子目录 |
 | `CAM_LOG_MAX_BYTES` / `CAM_LOG_MAX_FILES` | 应用日志单文件大小和轮转数量，默认 `52428800` / `5`；Docker `json-file` 轮转仍独立生效 |
 | `CAM_LOG_COLLECTION_MAX_BYTES` | 单个 Agent 或 Core 日志归档的大小上限，默认 `104857600`（100 MiB） |
-| `CAM_*_WEB_PORT` / `CAM_*_API_PORT` | 有宿主机端口冲突时调整。API 端口仍固定为容器内 Edge `3101`、Core `3102`，默认只绑定宿主机回环；业务网闸不直接映射 API 端口 |
-| `CAM_*_CONTROL_BIND` / `CAM_*_CONTROL_PORT` | Caddy 控制通道的宿主机监听地址和端口；默认 Edge `127.0.0.1:8101`、Core `127.0.0.1:8102`。网闸从其他主机访问时改为专用内网地址并收紧防火墙 |
-| `CAM_*_TRANSFER_BIND` / `CAM_*_TRANSFER_PORT` | Caddy 传输通道的宿主机监听地址和端口；默认 Edge `127.0.0.1:8201`、Core `127.0.0.1:8202`。网闸从其他主机访问时改为专用内网地址并收紧防火墙 |
+| `CAM_*_WEB_HTTP_BIND` / `CAM_*_WEB_HTTP_PORT` | 嵌入式 Caddy 的 HTTP 页面入口，默认宿主机 `0.0.0.0:80`，映射到容器内非特权端口 `8080` |
+| `CAM_*_WEB_HTTPS_BIND` / `CAM_*_WEB_HTTPS_PORT` | 嵌入式 Caddy 的 HTTPS 页面入口，默认宿主机 `0.0.0.0:443`，映射到容器内非特权端口 `8443`；启用 `CAM_*_WEB_HTTPS=true` 后使用该入口 |
+| `CAM_*_CONTROL_BIND` / `CAM_*_CONTROL_PORT` | 网闸控制/API 入口；默认 Edge `0.0.0.0:8101`、Core `0.0.0.0:8201`。网闸从其他主机访问时保留专用端口并收紧防火墙 |
+| `CAM_*_TRANSFER_BIND` / `CAM_*_TRANSFER_PORT` | Core 数据传输入口；默认 Core `0.0.0.0:8202`。Edge 不发布独立传输端口，Edge→Core 传输使用 Core `8202` |
 | `CAM_*_TLS_DIR` | 宿主机证书目录，只读挂载到 Web 容器的 `/tls`；目录内的证书权限应允许容器用户读取 |
-| `CAM_*_WEB_HTTPS` / `CAM_*_CONTROL_HTTPS` / `CAM_*_TRANSFER_HTTPS` | 分别控制页面、控制、传输入口是否启用 HTTPS；默认均为 `false`，当前版本按 HTTP 运行 |
+| `CAM_*_WEB_HTTPS` / `CAM_*_CONTROL_HTTPS` / `CAM_*_TRANSFER_HTTPS` | 分别控制页面、控制、传输入口是否启用 HTTPS；默认均为 `false`，正式环境准备好证书后建议页面和需要加密的网闸通道设为 `true` |
 | `CAM_*_*_TLS_CERT_FILE` / `CAM_*_*_TLS_KEY_FILE` | 对应入口使用的证书和私钥路径，填写容器内 `/tls/...` 路径；可以三条入口共用一套证书，也可以分别配置 |
-| `CAM_*_WEB_BIND` / `CAM_*_API_BIND` | 页面/API 有本机反向代理时保持 `127.0.0.1`；跨主机网闸应使用控制/传输 Caddy 端口，并将对应 `*_BIND` 改为网闸可达的专用内网地址，配置防火墙 |
+| `CAM_*_API_BIND` | 正式 Compose 不发布 API 宿主机端口；API 仅供同项目 Web/Caddy 容器访问 |
 | `CAM_DOCKER_SUBNET` | 该 Compose 项目的 Docker 子网，模板为每个模块分配不同的 `192.168.241/242/243.0/24` 网段；部署前检查不与宿主机、VPN、业务网或其他 Docker 网络冲突，冲突时修改此值 |
 | `CAM_TRUST_PROXY` | 默认与本模块 Docker 子网相同，供同 Compose 内的 Caddy 或经宿主机映射的受控反代转发客户端地址；若反代拓扑不同，改成实际代理源地址/网段，不能信任所有来源 |
 | `CAM_COOKIE_SECURE` | HTTPS 正式环境保持 `true`；只有隔离的 HTTP 测试可设为 `false` |
-| `CAM_GATE_*_URL` | Edge 的 `CAM_GATE_CORE_CONTROL_URL` 是必填的部署启动地址，页面只读；传输地址可在页面配置。Core 的 Edge 控制地址可在网闸配置页面维护。网闸目标分别落到对端 Caddy 控制/传输端口（Edge `8101/8201`、Core `8102/8202`），不要填对端容器地址或自行拼接业务路径 |
+| `CAM_GATE_*_URL` | Edge 的 `CAM_GATE_CORE_CONTROL_URL` 是必填的部署启动地址，页面只读；`CAM_GATE_CORE_TRANSFER_URL` 指向 Core `8202`。Core 的 Edge 控制地址指向 Edge `8101`，在网闸配置页面维护。不要填对端容器地址或自行拼接业务路径 |
 | `CAM_GATE_TLS_*` | 只有映射 HTTPS 使用私有 CA 或指定证书名时设置；CA 文件须通过只读挂载等方式提供给容器，不能仅写一个容器内不存在的路径 |
 | `CAM_CLOUD_*` | 仅 Core 使用。`.env` 只保留 API 基址、认证用户 ID 和密钥；工单级别、来源、业务类型、部门、团队和处理人等在 Core 页面配置 |
 | `CAM_AAA_*` | Core、Agent 的 AAA 参数在各自页面配置；只有需要部署期预置时才放入对应 `.env`，不把普通用户密码放入配置文件 |
-| `CAM_AGENT_UPSTREAM` | Core Web 或其他受控反代使用，填写从反代容器可达的 Agent Web 地址。默认示例通过宿主机 `3111` 访问单台 Agent Web；多云中心按实际入口配置可路由的 Agent Web 地址 |
+| `CAM_AGENT_UPSTREAM` | Core Web 或其他受控反代使用，填写从反代容器可达的 Agent Web 地址（通常为 Agent 主机的 80/443 入口）；多云中心按实际入口配置可路由的 Agent Web 地址 |
 | `CAM_SOURCE_ALLOWLIST` | 仅 Edge 使用，配置允许拉取研发内网文件的来源地址/网段策略，按现网实际值收紧；不要照搬模板占位值 |
 | `CAM_MAX_CANDIDATE_SIZE` | 仅 Edge 使用，单个候选包允许的最大字节数；默认 2 TiB，必须结合本地磁盘容量收紧，超限或来源重定向会拒绝接收 |
 
-业务字典、人员匹配结果、密钥轮换和网闸映射配置中，适合日常调整的内容优先使用相应管理页面；`.env` 用于部署基础参数和首次启动默认值，不作为日常业务操作界面。页面、控制、传输三条 Caddy 入口都可独立切换 HTTP/HTTPS、指定证书/私钥和调整宿主机对外端口；启用 HTTPS 前先把证书目录放到 `CAM_*_TLS_DIR`，再重建对应 Web 容器。HTTP/HTTPS 切换会改变访问协议，`CAM_GATE_*_URL` 和外部网闸规则必须同步使用对应协议与端口。
+业务字典、人员匹配结果、密钥轮换和网闸映射配置中，适合日常调整的内容优先使用相应管理页面；`.env` 用于部署基础参数和首次启动默认值，不作为日常业务操作界面。各模块嵌入式 Caddy 的页面入口，以及 Edge 控制入口、Core 控制和传输入口，都可独立切换 HTTP/HTTPS、指定证书/私钥和调整宿主机对外端口；启用 HTTPS 前先把证书目录放到 `CAM_*_TLS_DIR`，再重建对应 Web 容器。HTTP/HTTPS 切换会改变访问协议，`CAM_GATE_*_URL` 和外部网闸规则必须同步使用对应协议与端口。
 
 ## 单独部署 Edge
 
@@ -326,11 +327,10 @@ chmod 600 /opt/cloud-artifact-management/edge/current/edge.env
 sudo docker compose --env-file /opt/cloud-artifact-management/edge/current/edge.env -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml config
 sudo docker compose --env-file /opt/cloud-artifact-management/edge/current/edge.env -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml up -d
 sudo docker compose --env-file /opt/cloud-artifact-management/edge/current/edge.env -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml ps
-curl -fsS http://127.0.0.1:3101/health/ready
-curl -fsS http://127.0.0.1:8088/
+curl -fsS http://127.0.0.1:80/health/ready
 ```
 
-外部 HTTPS 入口由所在环境的受控反向代理提供，将 Web 入口代理到 `127.0.0.1:8088`。Edge API 的 `3101` 是容器内 HTTP API，不作为网闸业务入口；Edge Caddy 另外监听 HTTP 控制端口 `8101` 和传输端口 `8201`，网闸规则应分别映射到这两个端口。默认端口只绑定回环地址，若网闸从其他主机访问，需将对应 `CAM_EDGE_CONTROL_BIND`/`CAM_EDGE_TRANSFER_BIND` 改为专用内网接口并配置防火墙。后续若需要 HTTPS，可在 Caddy 或其外部受控反向代理处终止 TLS。首次登录人员由 Core 统一授权，Edge 不再初始化独立人员账号。
+Edge Web 使用容器内嵌的 Caddy，宿主机直接发布 `80/443`；`CAM_EDGE_WEB_HTTPS=true` 时使用证书挂载的 443 入口，后续可在防火墙只放行 443。Edge API 的 `3101` 仅在 Compose 网络内可达，不发布到宿主机。Edge 唯一的网闸入口是控制/API `8101`；正式制品传输由 Edge 按配置主动访问 Core 的 `8202`，Edge 不再发布 `8201`。首次登录人员由 Core 统一授权，Edge 不再初始化独立人员账号。
 
 ## 单独部署 Core
 
@@ -340,8 +340,7 @@ curl -fsS http://127.0.0.1:8088/
 sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml config
 sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml up -d
 sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml ps
-curl -fsS http://127.0.0.1:3102/health/ready
-curl -fsS http://127.0.0.1:8092/
+curl -fsS http://127.0.0.1:80/health/ready
 ```
 
 首次建立账号时，可直接使用交互终端创建安全管理员；无需预先创建系统管理员。需要系统管理员时，安全管理员可登录页面后创建：
@@ -353,7 +352,7 @@ sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.
 
 初始口令在终端隐藏输入；登录后按要求修改密码。日常账号与角色管理由安全管理员完成。不要把账号密码写入 Compose 文件、镜像、命令行参数或版本库。
 
-Core 页面中的 Agent 功能通过 `/agent/` 反代到 `CAM_AGENT_UPSTREAM`。单机联调可把 Agent Web 发布端口限制在 Core 主机回环地址，使用默认 `host.docker.internal:3111`；跨主机部署时，将 Agent Web 的 `CAM_AGENT_WEB_BIND` 改为专用内网接口地址，并在 Core `.env` 中把 `CAM_AGENT_UPSTREAM` 改为该 Agent Web 主机的内网 DNS 名称/地址和端口。主机防火墙只允许受控反代主机访问 Agent Web 端口；Agent API 端口 3103 不发布到宿主机。Core API 的 `3102` 是容器内 HTTP API，不作为网闸业务入口；Core Caddy 另外监听 HTTP 控制端口 `8102` 和传输端口 `8202`，网闸规则应分别映射到这两个端口。后续若需要 HTTPS，可在 Caddy 或其外部受控反向代理处终止 TLS。Core 与 Agent 无须共享 Docker 网络。
+Core 页面中的 Agent 功能通过 `/agent/` 反代到 `CAM_AGENT_UPSTREAM`。跨主机部署时，把 `CAM_AGENT_UPSTREAM` 改为 Agent Web 主机的内网 DNS 名称/地址（Agent Web 直接发布 80/443），主机防火墙只允许受控 Core Web 访问；Agent API 端口 3103 不发布到宿主机。Core API 的 `3102` 仅在 Compose 网络内可达；Core Caddy 的控制/API 入口为 `8201`，专用数据传输入口为 `8202`。网闸规则应分别映射到这两个端口。Core 与 Agent 无须共享 Docker 网络。
 
 Core 的云管、AAA 和网闸地址必须从 Core 所在网络可达。云管工单配置和 Agent/Edge 间的审批状态通过 Core 后端流程完成；不要让 Edge 直接携带云管认证信息。
 
@@ -365,7 +364,7 @@ Core 的云管、AAA 和网闸地址必须从 Core 所在网络可达。云管�
 sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml config
 sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml up -d
 sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml ps
-curl -fsS http://127.0.0.1:3111/
+curl -fsS http://127.0.0.1:80/
 ```
 
 首次登录前，可直接交互式创建 Agent 安全管理员；不需要预先创建系统管理员。需要系统管理员时，再由安全管理员登录页面创建。也可以按运维安排独立初始化系统管理员：
@@ -375,7 +374,7 @@ sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agen
 sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-security-admin.js
 ```
 
-Agent 由两个容器组成：`cam-agent` 只监听 Compose 内部的 3103，负责 API、认证、任务调度、缓存和传输；`cam-agent-web` 负责直接提供构建时生成的静态页面，并承担 Caddy、TLS/反向代理和外部访问，默认发布到宿主机回环地址 3111。Caddy 只将 `/api/*` 和 `/health/*` 反代到 Agent API，其余请求由静态文件服务处理。由云中心已有 HTTPS 入口发布页面；Core Web 如果需要代用户打开该 Agent 页面，必须把 `CAM_AGENT_UPSTREAM` 配置成 Core Web 可达的 Agent Web 地址。Agent 本身直接连接 AAA；Core 负责 Agent 身份注册、授权和正式制品分发，不代理 Agent 用户登录。
+Agent 由两个容器组成：`cam-agent` 只监听 Compose 内部的 3103，负责 API、认证、任务调度、缓存和传输；`cam-agent-web` 负责静态页面、Caddy、TLS/反向代理和外部访问，宿主机直接发布 80/443。Caddy 只将 `/api/*` 和 `/health/*` 反代到 Agent API，其余请求由静态文件服务处理。Core Web 如果需要代用户打开该 Agent 页面，必须把 `CAM_AGENT_UPSTREAM` 配置成 Core Web 可达的 Agent Web 地址。Agent 本身直接连接 AAA；Core 负责 Agent 身份注册、授权和正式制品分发，不代理 Agent 用户登录。
 
 Core 与 Agent 完成双向服务身份配对后，再验证 Agent 在线、任务领取和文件摘要校验。若 Agent 经由外部反代连接 Core，需确保反代完整转发 Agent 身份认证请求头、响应签名头及二进制分块响应，并关闭会改变请求路径/响应正文的代理功能。
 
