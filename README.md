@@ -46,7 +46,7 @@ Core 是审批和分发的授权方；Agent 不能绕过 Core 直接选择或下
 根目录的 compose.yaml、compose.direct.yaml 仅用于开发、测试和联调，不用于正式分区部署：
 
     cp deploy/.env.example deploy/.env
-    # 按本机环境编辑 deploy/.env；不要把真实密钥提交到 Git
+    # 只填写数据目录和确需覆盖的测试项；不要把真实密钥提交到 Git
     sudo -E sh deploy/init-data-directories.sh
 
 有 Hillstone/VPN 模拟环境时：
