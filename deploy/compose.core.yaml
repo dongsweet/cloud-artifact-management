@@ -1,3 +1,5 @@
+name: cam-core
+
 services:
   cam-core:
     image: ${CAM_CORE_IMAGE:-cam-backend:0.2.4}

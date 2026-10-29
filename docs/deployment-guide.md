@@ -187,7 +187,7 @@ Core：CAM_DOCKER_SUBNET=192.168.242.0/24
 Agent：CAM_DOCKER_SUBNET=192.168.243.0/24
 ```
 
-这些网段只用于容器内部网络，不是网闸控制/传输地址。部署前必须确认不与宿主机业务网、管理网、VPN、路由表或其他 Docker 网络重叠；冲突时在模块 `.env` 中改成未占用的 `192.168.X.0/24`。修改已有网络网段需安排维护窗口执行对应 Compose 项目的 `sudo docker compose down` 和 `sudo docker compose up -d`，不要使用 `down -v`。
+正式 Compose 已固定项目名和默认网络名：Edge 为 `cam-edge_default`，Core 为 `cam-core_default`，Agent 为 `cam-agent_default`，不随 `current` 软链接目录名变化。这些网段只用于容器内部网络，不是网闸控制/传输地址。部署前必须确认不与宿主机业务网、管理网、VPN、路由表或其他 Docker 网络重叠；冲突时在模块 `.env` 中改成未占用的 `192.168.X.0/24`。修改已有网络网段需安排维护窗口执行对应 Compose 项目的 `sudo docker compose down` 和 `sudo docker compose up -d`，不要使用 `down -v`。
 
 ## 部署前置交付物
 

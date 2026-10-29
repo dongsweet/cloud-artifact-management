@@ -1,3 +1,5 @@
+name: cam-agent
+
 services:
   cam-agent:
     image: ${CAM_AGENT_IMAGE:-cam-backend:0.2.4}
