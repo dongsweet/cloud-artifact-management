@@ -248,6 +248,10 @@ services:
       - /config:size=4m,mode=0700,uid=10001,gid=10001
     environment:
       CAM_AGENT_UPSTREAM: cam-agent-1:3103
+      CAM_CADDY_MODULE: agent
+      CAM_AGENT_WEB_HTTPS: ${CAM_AGENT_WEB_HTTPS:-false}
+      CAM_AGENT_WEB_TLS_CERT_FILE: ${CAM_AGENT_WEB_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_AGENT_WEB_TLS_KEY_FILE: ${CAM_AGENT_WEB_TLS_KEY_FILE:-/tls/privkey.pem}
     depends_on:
       - cam-agent-1
     networks:
@@ -306,6 +310,10 @@ services:
       - /config:size=4m,mode=0700,uid=10001,gid=10001
     environment:
       CAM_AGENT_UPSTREAM: cam-agent-2:3103
+      CAM_CADDY_MODULE: agent
+      CAM_AGENT_WEB_HTTPS: ${CAM_AGENT_WEB_HTTPS:-false}
+      CAM_AGENT_WEB_TLS_CERT_FILE: ${CAM_AGENT_WEB_TLS_CERT_FILE:-/tls/fullchain.pem}
+      CAM_AGENT_WEB_TLS_KEY_FILE: ${CAM_AGENT_WEB_TLS_KEY_FILE:-/tls/privkey.pem}
     depends_on:
       - cam-agent-2
     networks:
