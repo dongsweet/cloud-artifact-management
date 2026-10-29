@@ -2,18 +2,21 @@
 
 本文记录在不能联网的银河麒麟服务器上部署 CAM Edge、Core 或 Agent 的完整准备步骤，包括 2T 数据盘分区、Docker 二进制安装、Docker Compose 安装、Docker systemd 服务、SELinux 处理和模块启动验证。
 
-正式环境不要在 root 家目录下保存和运行 CAM。建议建立专用的普通运维账号 `camops`：它负责接收部署包、维护 Compose 配置和执行日常发布；root 只用于磁盘、Docker、systemd、防火墙和 `/var/lib` 等系统级操作。本文中的 `/dev/vdb` 只是示例设备名，必须先根据 `lsblk` 确认，不能直接照搬到其他机器。
+正式环境不要在 root 家目录下保存和运行 CAM。本文假设专用的普通运维账号名为 `sugon`：它负责接收部署包、维护 Compose 配置和执行日常发布；root 只用于磁盘、Docker、systemd、防火墙和 `/var/lib` 等系统级操作。本文中的 `/dev/vdb` 只是示例设备名，必须先根据 `lsblk` 确认，不能直接照搬到其他机器。
 
 ## 0. 部署账号和目录规范
 
-在系统初始化阶段由 root 创建专用运维账号。账号应使用个人 SSH 密钥或企业账号登录，不共享 root 密码：
+以下账号初始化命令由 root 执行。账号应使用个人 SSH 密钥或企业账号登录，不共享 root 密码：
 
-    useradd --create-home --shell /bin/bash camops
-    passwd camops
+    useradd --create-home --shell /bin/bash sugon
+    passwd sugon
+    id sugon
 
-CAM 容器仍以镜像内的 `10001:10001` 运行，不能把宿主机的 `camops` UID 当成容器用户。若允许 `camops` 直接执行 Docker，可加入 `docker` 组并重新登录：
+CAM 容器仍以镜像内的 `10001:10001` 运行，不能把宿主机的 `sugon` UID 当成容器用户。若允许 `sugon` 直接执行 Docker，可加入 `docker` 组并重新登录：
 
-    usermod -aG docker camops
+    usermod -aG docker sugon
+    su - sugon
+    docker version
 
 `docker` 组具有接近 root 的主机控制能力；安全基线不允许时，不要加入该组，改用经过审计的 `sudo docker` / `sudo docker compose`。无论采用哪种方式，都不要用 root 作为日常应用部署账号。
 
@@ -24,12 +27,12 @@ CAM 容器仍以镜像内的 `10001:10001` 运行，不能把宿主机的 `camop
     /var/lib/cloud-artifact-management/<module>/                 # SQLite、身份密钥、制品和缓存
     /var/tmp/cam-incoming/                                       # 临时接收镜像和配置包
 
-其中 `<module>` 为 `edge`、`core` 或 `agent`。`/opt` 下的发布配置由 `camops:camops` 管理，版本目录建议 `0750`；实际 `.env` 含部署凭据，必须为 `0600`。`/var/lib/cloud-artifact-management` 是应用持久化数据目录，由 root 创建，模块目录交给容器 UID `10001:10001`，不要放在 `/home/camops` 或 `/root` 下。Docker 镜像层仍默认放在 `/var/lib/docker`，除非另行设计 Docker data-root，不要把它和 CAM 数据目录混用。
+其中 `<module>` 为 `edge`、`core` 或 `agent`。`/opt` 下的发布配置由 `sugon:sugon` 管理，版本目录建议 `0750`；实际 `.env` 含部署凭据，必须为 `0600`。`/var/lib/cloud-artifact-management` 是应用持久化数据目录，由 root 创建，模块目录交给容器 UID `10001:10001`，不要放在 `/home/sugon` 或 `/root` 下。Docker 镜像层仍默认放在 `/var/lib/docker`，除非另行设计 Docker data-root，不要把它和 CAM 数据目录混用。
 
 创建基础目录示例：
 
-    install -d -o camops -g camops -m 0750 /opt/cloud-artifact-management
-    install -d -o camops -g camops -m 0700 /var/tmp/cam-incoming
+    install -d -o sugon -g sugon -m 0750 /opt/cloud-artifact-management
+    install -d -o sugon -g sugon -m 0700 /var/tmp/cam-incoming
     install -d -o root -g root -m 0755 /var/lib/cloud-artifact-management
 
 ## 1. 确认系统和磁盘
@@ -203,16 +206,16 @@ CAM 容器仍以镜像内的 `10001:10001` 运行，不能把宿主机的 `camop
 - `cam-edge-images-<版本>.tar` 及其 `.sha256`
 - `cam-edge-config-<版本>.tar` 及其 `.sha256`
 
-Core、Agent 分别替换为各自前缀。配置包先放到 `/var/tmp/cam-incoming`，校验后由 `camops` 解包到版本目录；不要直接在 `/root` 下解包：
+Core、Agent 分别替换为各自前缀。配置包先放到 `/var/tmp/cam-incoming`，校验后由 `sugon` 解包到版本目录；不要直接在 `/root` 下解包：
 
     cd /var/tmp/cam-incoming
     sha256sum -c cam-edge-config-<版本>.tar.sha256
     tar -xf cam-edge-config-<版本>.tar
-    sudo install -d -o camops -g camops -m 0750 \
+    sudo install -d -o sugon -g sugon -m 0750 \
       /opt/cloud-artifact-management/edge/releases/<版本>
     sudo cp -a cam-edge-config-<版本>/. \
       /opt/cloud-artifact-management/edge/releases/<版本>/
-    sudo chown -R camops:camops \
+    sudo chown -R sugon:sugon \
       /opt/cloud-artifact-management/edge/releases/<版本>
     sudo chmod 600 \
       /opt/cloud-artifact-management/edge/releases/<版本>/edge.env
@@ -249,7 +252,7 @@ Core、Agent 分别检查 `cam-core-web:<版本>`、`cam-agent-web:<版本>`。C
 
 ## 9. 启动并验证模块
 
-以 Edge 为例，日常命令由 `camops` 执行；若未加入 `docker` 组，则在命令前加 `sudo`：
+以 Edge 为例，日常命令由 `sugon` 执行；若未加入 `docker` 组，则在命令前加 `sudo`：
 
     cd /opt/cloud-artifact-management/edge/current
     docker compose --env-file edge.env -f compose.edge.yaml config
