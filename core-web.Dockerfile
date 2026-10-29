@@ -19,6 +19,7 @@ COPY core-web/Caddyfile /etc/caddy/Caddyfile
 COPY web-shared/caddy-entrypoint.sh /usr/local/bin/cam-caddy-entrypoint
 COPY --from=assets /out /srv/web
 RUN addgroup -S -g 10001 cam && adduser -S -D -H -u 10001 -G cam cam \
+  && setcap -r /usr/bin/caddy \
   && chmod 0755 /usr/local/bin/cam-caddy-entrypoint \
   && chown -R cam:cam /srv/web /data /config
 USER cam

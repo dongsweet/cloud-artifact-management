@@ -14,6 +14,7 @@ COPY agent-web/Caddyfile /etc/caddy/Caddyfile
 COPY --from=assets /out /srv/web
 
 RUN addgroup -S -g 10001 cam && adduser -S -D -H -u 10001 -G cam cam \
+  && setcap -r /usr/bin/caddy \
   && mkdir -p /data /config \
   && chown -R cam:cam /srv/web /data /config
 
