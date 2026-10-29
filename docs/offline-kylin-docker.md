@@ -35,6 +35,14 @@ CAM 容器仍以镜像内的 `10001:10001` 运行，不能把宿主机的 `sugon
     install -d -o sugon -g sugon -m 0700 /var/tmp/cam-incoming
     install -d -o root -g root -m 0755 /var/lib/cloud-artifact-management
 
+三个模块的 Compose 网络可以限制在指定的私有 `/24` 网段内。建议分别使用不同网段，例如：
+
+    Edge：CAM_DOCKER_SUBNET=192.168.241.0/24
+    Core：CAM_DOCKER_SUBNET=192.168.242.0/24
+    Agent：CAM_DOCKER_SUBNET=192.168.243.0/24
+
+这些网段只用于各自 Compose 创建的 Docker bridge 网络，不是网闸控制/传输地址，也不会替代宿主机监听地址。部署前必须确认网段不与宿主机业务网、管理网、VPN、路由表或其他 Docker 网络重叠；冲突时在对应模块 `.env` 中改成其他未占用的 `192.168.X.0/24`。修改已存在的网络网段前，安排维护窗口执行对应 Compose 项目的 `down` 和 `up -d`，不要使用 `down -v`，也不要删除绑定挂载的数据目录。
+
 ## 1. 确认系统和磁盘
 
 先执行只读检查：
