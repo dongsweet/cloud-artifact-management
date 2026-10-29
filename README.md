@@ -153,6 +153,7 @@ SQLite 运行时会同时产生 -wal 和 -shm 文件。备份应使用 SQLite �
 ## 9. 文档索引
 
 - [部署指南](docs/deployment-guide.md)：镜像交付、独立分区 Compose、银河麒麟离线安装 Docker/Compose、配置、升级和备份。
+- `deploy/package-images.sh`、`deploy/package-configs.sh`：交付包统一输出到 `v<版本>/` 目录的镜像/配置打包脚本。
 - [技术方案](docs/technical-solution.md)：架构、权限、身份、传输和安全约束。
 - [系统设计](docs/system-design.md)：业务对象和流程设计。
 - [Core–Agent 制品接口](docs/core-agent-artifact-api.md)：分发、缓存、授权和下载接口。

@@ -2,14 +2,17 @@
 set -eu
 
 version="${1:-}"
-output_dir="${2:-.}"
+output_root="${2:-.}"
 if [ -z "$version" ]; then
-  echo "Usage: $0 <version> [output-dir]" >&2
+  echo "Usage: $0 <version> [output-root]" >&2
   exit 2
 fi
+case "$version" in
+  *[!A-Za-z0-9._-]*) echo "Invalid version: $version" >&2; exit 2 ;;
+esac
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+output_dir="$output_root/v$version"
 mkdir -p "$output_dir"
 
 tmp_dir=$(mktemp -d)

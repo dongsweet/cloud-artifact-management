@@ -212,7 +212,19 @@ chmod 700 /home/sugon/work/cam-deploy/v0.2.4
 cd /home/sugon/work/cam-deploy/v0.2.4
 ```
 
-将对应模块的镜像包、镜像校验文件、配置包和配置校验文件传到这个目录。该目录只是接收和校验区，不作为 Compose 工作目录；校验通过后，配置包解到 `/opt/cloud-artifact-management/<module>/releases/<版本>/`，镜像包直接用 `sudo docker load` 导入。不要把真实密钥放进接收目录的归档或版本库。
+将对应模块的镜像包、镜像校验文件、配置包和配置校验文件传到这个版本目录。打包工具也统一把交付物输出为 `cam/v<版本>/`，不要再把同一版本包复制到 `cam/` 根目录。该目录只是接收和校验区，不作为 Compose 工作目录；校验通过后，配置包解到 `/opt/cloud-artifact-management/<module>/releases/<版本>/`，镜像包直接用 `sudo docker load` 导入。不要把真实密钥放进接收目录的归档或版本库。
+
+构建机上统一使用以下命令生成交付物（镜像的源标签默认为 `dev`）：
+
+```bash
+VERSION=0.2.4
+OUTPUT_ROOT=$HOME/work/deploy/cam
+sh deploy/package-images.sh "$VERSION" "$OUTPUT_ROOT" dev
+sh deploy/package-configs.sh "$VERSION" "$OUTPUT_ROOT"
+ls -lh "$OUTPUT_ROOT/v$VERSION"
+```
+
+如果源镜像使用其他标签，将命令最后的 `dev` 换成实际标签。脚本会把共用后台镜像按模块包内约定标记为 `cam-backend:<版本>`，并输出到 `v<版本>` 目录；配置包中的镜像标签与该版本一致。
 
 配置包解包命令（Edge 的 `v0.2.4` 示例；Core、Agent 替换模块名和文件名）：
 
