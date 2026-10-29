@@ -214,6 +214,27 @@ cd /home/sugon/work/cam-deploy/v0.2.4
 
 将对应模块的镜像包、镜像校验文件、配置包和配置校验文件传到这个目录。该目录只是接收和校验区，不作为 Compose 工作目录；校验通过后，配置包解到 `/opt/cloud-artifact-management/<module>/releases/<版本>/`，镜像包直接用 `sudo docker load` 导入。不要把真实密钥放进接收目录的归档或版本库。
 
+配置包解包命令（Edge 的 `v0.2.4` 示例；Core、Agent 替换模块名和文件名）：
+
+```bash
+ROOT=/home/sugon/work/cam-deploy/v0.2.4
+MODULE=edge
+VERSION=0.2.4
+sha256sum -c "$ROOT/cam-edge-config-$VERSION.tar.sha256"
+mkdir -p "$ROOT/extracted"
+tar -xf "$ROOT/cam-edge-config-$VERSION.tar" -C "$ROOT/extracted"
+sudo install -d -o sugon -g sugon -m 0750 \
+  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION"
+sudo cp -a "$ROOT/extracted/cam-edge-config-$VERSION/." \
+  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION/"
+sudo chown -R sugon:sugon \
+  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION"
+sudo chmod 600 \
+  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION/edge.env"
+sudo ln -sfn "releases/$VERSION" \
+  "/opt/cloud-artifact-management/$MODULE/current"
+```
+
 部署时使用的镜像：
 
 | 镜像 | 用途 |
@@ -255,28 +276,7 @@ sudo CAM_AGENT_DATA_DIR=/var/lib/cloud-artifact-management/agent sh deploy/init-
 
 ## 配置文件准备
 
-正式交付使用模块配置包。以下以 Edge 的 `v0.2.4` 为例；Core、Agent 替换模块名和文件名即可：
-
-```bash
-ROOT=/home/sugon/work/cam-deploy/v0.2.4
-MODULE=edge
-VERSION=0.2.4
-sha256sum -c "$ROOT/cam-edge-config-$VERSION.tar.sha256"
-mkdir -p "$ROOT/extracted"
-tar -xf "$ROOT/cam-edge-config-$VERSION.tar" -C "$ROOT/extracted"
-sudo install -d -o sugon -g sugon -m 0750 \
-  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION"
-sudo cp -a "$ROOT/extracted/cam-edge-config-$VERSION/." \
-  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION/"
-sudo chown -R sugon:sugon \
-  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION"
-sudo chmod 600 \
-  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION/edge.env"
-sudo ln -sfn "releases/$VERSION" \
-  "/opt/cloud-artifact-management/$MODULE/current"
-```
-
-编辑当前版本配置：
+完成上面的配置包解包后，编辑当前版本配置：
 
 ```bash
 vi /opt/cloud-artifact-management/edge/current/edge.env
