@@ -189,17 +189,20 @@ Agent：CAM_DOCKER_SUBNET=192.168.243.0/24
 
 这些网段只用于容器内部网络，不是网闸控制/传输地址。部署前必须确认不与宿主机业务网、管理网、VPN、路由表或其他 Docker 网络重叠；冲突时在模块 `.env` 中改成未占用的 `192.168.X.0/24`。修改已有网络网段需安排维护窗口执行对应 Compose 项目的 `sudo docker compose down` 和 `sudo docker compose up -d`，不要使用 `down -v`。
 
-## 交付物与版本
+## 部署前置交付物
 
-每次发布应固定同一个版本号，并交付目标分区实际需要的镜像、对应 Compose 文件、该模块的 `.env.example`、初始化脚本和版本校验信息。版本号使用不可变发布标签，例如 `1.2.0`，不要在正式交付中使用 `latest` 或 `dev`。
+现场部署前，应从受控交付渠道收到目标模块对应的一组镜像包和配置包。部署文档只负责接收、校验、导入和启动，不负责镜像构建或发布包制作。包中的版本号必须一致，禁止使用 `latest` 或 `dev`。
 
-可以使用仓库内脚本为三台目标主机分别生成不含真实密钥的配置包。配置包包含对应 Compose、可复制为实际配置的 `.env` 模板、数据目录初始化脚本和版本文件：
+Edge 主机需要：
 
-```bash
-sh deploy/package-configs.sh "$VERSION" ./release
+```text
+cam-edge-images-<版本>.tar
+cam-edge-images-<版本>.tar.sha256
+cam-edge-config-<版本>.tar
+cam-edge-config-<版本>.tar.sha256
 ```
 
-输出 `cam-edge-config-$VERSION.tar`、`cam-core-config-$VERSION.tar` 和 `cam-agent-config-$VERSION.tar`，每个归档旁边都有 `.sha256` 校验文件。配置包与同版本镜像包分别传送到对应主机；实际部署前必须编辑归档中的 `.env` 并设置 `600` 权限，不能把测试机 `.env` 或真实云管/AAA 密钥放入归档。
+Core、Agent 分别将文件名中的 `edge` 替换为 `core`、`agent`。镜像包包含共用的 `cam-backend:<版本>` 和对应 Web/Caddy 镜像；配置包包含对应 Compose、`.env` 模板、初始化脚本和版本文件。配置包不应包含测试机配置、真实云管密钥或 AAA 密钥。
 
 目标主机接收文件时，使用 `sugon` 用户按版本建立目录。例如首次部署 `v0.2.4`：
 
@@ -211,7 +214,7 @@ cd /home/sugon/work/cam-deploy/v0.2.4
 
 将对应模块的镜像包、镜像校验文件、配置包和配置校验文件传到这个目录。该目录只是接收和校验区，不作为 Compose 工作目录；校验通过后，配置包解到 `/opt/cloud-artifact-management/<module>/releases/<版本>/`，镜像包直接用 `sudo docker load` 导入。不要把真实密钥放进接收目录的归档或版本库。
 
-镜像清单：
+部署时使用的镜像：
 
 | 镜像 | 用途 |
 |---|---|
@@ -220,33 +223,7 @@ cd /home/sugon/work/cam-deploy/v0.2.4
 | `cam-core-web:<版本>` | Core 页面和 Agent 页面入口反向代理 |
 | `cam-agent-web:<版本>` | Agent 静态页面、Caddy、TLS/反向代理 |
 
-生产构建在受控构建机上进行。先从可信的软件源取得并审核 Node.js、Caddy 基础镜像和 npm 依赖，再构建并测试应用镜像。示例命令在仓库根目录执行：
-
-```bash
-VERSION=1.2.0
-docker build -t cam-backend:$VERSION -f Dockerfile .
-docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-agent-web:$VERSION -f agent-web.Dockerfile .
-docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-edge-web:$VERSION -f edge-web.Dockerfile .
-docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-core-web:$VERSION -f core-web.Dockerfile .
-```
-
-构建前应运行 `npm ci` 和 `npm test`。离线环境有两种镜像导入方式：由受控镜像仓库同步签名后的镜像，或将镜像归档通过批准的介质/交换流程送入目标区。离线归档示例（按目标主机分别导出；每个包都包含同一个后端镜像和该模块的 Web 镜像）：
-
-```bash
-docker save cam-backend:$VERSION cam-edge-web:$VERSION \
-  -o cam-edge-images-$VERSION.tar
-sha256sum cam-edge-images-$VERSION.tar > cam-edge-images-$VERSION.tar.sha256
-
-docker save cam-backend:$VERSION cam-core-web:$VERSION \
-  -o cam-core-images-$VERSION.tar
-sha256sum cam-core-images-$VERSION.tar > cam-core-images-$VERSION.tar.sha256
-
-docker save cam-backend:$VERSION cam-agent-web:$VERSION \
-  -o cam-agent-images-$VERSION.tar
-sha256sum cam-agent-images-$VERSION.tar > cam-agent-images-$VERSION.tar.sha256
-```
-
-在目标主机校验归档摘要后导入：
+在目标主机校验镜像归档摘要后导入：
 
 ```bash
 sha256sum -c cam-edge-images-1.2.0.tar.sha256
@@ -254,7 +231,7 @@ sudo docker load -i cam-edge-images-1.2.0.tar
 sudo docker image inspect cam-backend:1.2.0 cam-edge-web:1.2.0
 ```
 
-Compose 中的镜像名必须与已导入的完整镜像名、标签一致。三个后端 Compose 服务共用 `cam-backend:<版本>`，并分别通过固定的 `SERVICE=cam-edge`、`SERVICE=cam-core`、`SERVICE=cam-agent` 选择运行模式；不要把该变量交给普通 `.env` 修改。若使用内部镜像仓库，给镜像加仓库前缀后，分别在模块 `.env` 中设置 `CAM_*_IMAGE`，再执行 `docker login` 并确认目标主机可访问该仓库。离线隔离区不要在 Compose 中使用 `build:`、`pull_policy: always`，也不要依赖容器启动时下载依赖。
+Compose 中的镜像名必须与已导入的完整镜像名、标签一致。三个后端 Compose 服务共用 `cam-backend:<版本>`，并分别通过固定的 `SERVICE=cam-edge`、`SERVICE=cam-core`、`SERVICE=cam-agent` 选择运行模式；不要把该变量交给普通 `.env` 修改。离线隔离区不要执行 `docker compose pull`，也不要在 Compose 中使用 `build:` 或 `pull_policy: always`。
 
 ## 目录和持久化
 
