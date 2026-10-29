@@ -12,30 +12,14 @@
     passwd sugon
     id sugon
 
-当前堡垒机不支持 SSH 密钥时，保留 `sugon` 的口令登录即可。口令应使用每台主机不同的高强度密码，由堡垒机或密码保险箱管理，不要写入文档、命令历史、配置文件或工单。先验证堡垒机登录和切换用户：
+当前通过堡垒机使用口令登录即可。口令应使用每台主机不同的高强度密码，由堡垒机或密码保险箱管理，不要写入文档、命令历史、配置文件或工单。先验证堡垒机登录和切换用户：
 
     su - sugon
     whoami
 
-确认口令登录正常后，再按安全基线考虑关闭 root 直登；不要关闭 SSH 密码登录，否则堡垒机无法进入。若以后堡垒机支持密钥，再切换到密钥方案并锁定本地密码。
+确认口令登录正常后，再按安全基线考虑关闭 root 直登；不要关闭 SSH 密码登录，否则堡垒机无法进入。当前不锁定 `sugon` 密码。
 
-后续若采用 SSH 密钥登录，可使用以下配置：
-
-    sudo -u sugon mkdir -p /home/sugon/.ssh
-    chmod 700 /home/sugon/.ssh
-    sudo -u sugon vi /home/sugon/.ssh/authorized_keys
-    chmod 600 /home/sugon/.ssh/authorized_keys
-    chown -R sugon:sugon /home/sugon/.ssh
-    # 确认密钥登录成功后，才可按策略锁定密码：
-    # passwd -l sugon
-
-CAM 容器仍以镜像内的 `10001:10001` 运行，不能把宿主机的 `sugon` UID 当成容器用户。若允许 `sugon` 直接执行 Docker，可加入 `docker` 组并重新登录：
-
-    usermod -aG docker sugon
-    su - sugon
-    docker version
-
-`docker` 组具有接近 root 的主机控制能力；安全基线不允许时，不要加入该组，改用经过审计的 `sudo docker` / `sudo docker compose`。不需要系统管理权限时，不要把 `sugon` 加入 `wheel`/`sudo` 管理员组；确需 sudo 时按主机安全策略配置最小命令范围。无论采用哪种方式，都不要用 root 作为日常应用部署账号。
+CAM 容器仍以镜像内的 `10001:10001` 运行，不能把宿主机的 `sugon` UID 当成容器用户。`sugon` 不加入 `docker`、`wheel` 或其他管理员组；日常 Docker 和 Compose 操作统一使用经过审计的 `sudo docker` / `sudo docker compose`。无论采用哪种方式，都不要用 root 作为日常应用部署账号。
 
 推荐目录布局：
 
@@ -270,8 +254,8 @@ Core、Agent 分别设置 `CAM_CORE_DATA_DIR`、`CAM_AGENT_DATA_DIR`。不要把
 
     cd /var/tmp/cam-incoming
     sha256sum -c cam-edge-images-<版本>.tar.sha256
-    docker load -i cam-edge-images-<版本>.tar
-    docker image inspect cam-backend:<版本> cam-edge-web:<版本>
+    sudo docker load -i cam-edge-images-<版本>.tar
+    sudo docker image inspect cam-backend:<版本> cam-edge-web:<版本>
 
 Core、Agent 分别检查 `cam-core-web:<版本>`、`cam-agent-web:<版本>`。Compose 文件中的镜像名和标签必须与 `docker image ls` / `docker image inspect` 的结果完全一致。离线环境不要执行 `docker compose pull`，也不要在 Compose 中使用 `build` 或 `pull_policy: always`。
 
@@ -280,16 +264,16 @@ Core、Agent 分别检查 `cam-core-web:<版本>`、`cam-agent-web:<版本>`。C
 以 Edge 为例，日常命令由 `sugon` 执行；若未加入 `docker` 组，则在命令前加 `sudo`：
 
     cd /opt/cloud-artifact-management/edge/current
-    docker compose --env-file edge.env -f compose.edge.yaml config
-    docker compose --env-file edge.env -f compose.edge.yaml up -d
+    sudo docker compose --env-file edge.env -f compose.edge.yaml config
+    sudo docker compose --env-file edge.env -f compose.edge.yaml up -d
 
 查看服务：
 
-    docker compose --env-file edge.env -f compose.edge.yaml ps
+    sudo docker compose --env-file edge.env -f compose.edge.yaml ps
 
 查看日志：
 
-    docker compose --env-file edge.env -f compose.edge.yaml logs --tail=200
+    sudo docker compose --env-file edge.env -f compose.edge.yaml logs --tail=200
 
 健康检查：
 

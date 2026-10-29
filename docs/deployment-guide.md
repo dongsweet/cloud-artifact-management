@@ -12,6 +12,26 @@
 
 根目录的 `compose.yaml` 和 `compose.direct.yaml` 保留给开发、联调和测试环境。正式分区部署不要用它们，因为它们会把多个安全区组件组合到同一 Compose 网络中。
 
+## 部署账号
+
+正式主机使用专用普通用户 `sugon` 部署，不在 `root` 家目录下保存或运行 CAM。以下账号创建命令由 root 执行；当前通过堡垒机使用口令登录，不加入 `docker` 组：
+
+```bash
+useradd --create-home --user-group --shell /bin/bash sugon
+passwd sugon
+id sugon
+```
+
+为 `sugon` 设置每台主机独立的高强度口令，并由堡垒机或密码保险箱管理。Docker、Compose 和系统服务操作统一使用经过审计的 `sudo`：
+
+```bash
+su - sugon
+sudo docker version
+sudo docker compose version
+```
+
+不要把 `sugon` 加入 `docker`、`wheel` 或其他管理员组；`docker` 组本身具备接近 root 的主机控制能力。配置文件放在 `/opt/cloud-artifact-management/<module>/`，应用数据放在 `/var/lib/cloud-artifact-management/<module>/`，临时交付包放在 `/var/tmp/cam-incoming/`。
+
 ## 交付物与版本
 
 每次发布应固定同一个版本号，并交付目标分区实际需要的镜像、对应 Compose 文件、该模块的 `.env.example`、初始化脚本和版本校验信息。版本号使用不可变发布标签，例如 `1.2.0`，不要在正式交付中使用 `latest` 或 `dev`。
@@ -63,8 +83,8 @@ sha256sum cam-agent-images-$VERSION.tar > cam-agent-images-$VERSION.tar.sha256
 
 ```bash
 sha256sum -c cam-edge-images-1.2.0.tar.sha256
-docker load -i cam-edge-images-1.2.0.tar
-docker image inspect cam-backend:1.2.0 cam-edge-web:1.2.0
+sudo docker load -i cam-edge-images-1.2.0.tar
+sudo docker image inspect cam-backend:1.2.0 cam-edge-web:1.2.0
 ```
 
 Compose 中的镜像名必须与已导入的完整镜像名、标签一致。三个后端 Compose 服务共用 `cam-backend:<版本>`，并分别通过固定的 `SERVICE=cam-edge`、`SERVICE=cam-core`、`SERVICE=cam-agent` 选择运行模式；不要把该变量交给普通 `.env` 修改。若使用内部镜像仓库，给镜像加仓库前缀后，分别在模块 `.env` 中设置 `CAM_*_IMAGE`，再执行 `docker login` 并确认目标主机可访问该仓库。离线隔离区不要在 Compose 中使用 `build:`、`pull_policy: always`，也不要依赖容器启动时下载依赖。
@@ -133,9 +153,9 @@ chmod 600 deploy/edge.env deploy/core.env deploy/agent.env
 在统一运维外部交换区主机导入 Edge 与 Edge Web 镜像，准备 `edge.env` 和 Edge 数据目录，再运行：
 
 ```bash
-docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml config
-docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml up -d
-docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml ps
+sudo docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml config
+sudo docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml up -d
+sudo docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml ps
 curl -fsS http://127.0.0.1:3101/health/ready
 curl -fsS http://127.0.0.1:8088/
 ```
@@ -147,9 +167,9 @@ curl -fsS http://127.0.0.1:8088/
 在统一运维内网主机导入 Core 与 Core Web 镜像，准备 `core.env`，初始化 Core 数据目录并运行：
 
 ```bash
-docker compose --env-file deploy/core.env -f deploy/compose.core.yaml config
-docker compose --env-file deploy/core.env -f deploy/compose.core.yaml up -d
-docker compose --env-file deploy/core.env -f deploy/compose.core.yaml ps
+sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml config
+sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml up -d
+sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml ps
 curl -fsS http://127.0.0.1:3102/health/ready
 curl -fsS http://127.0.0.1:8092/
 ```
@@ -157,8 +177,8 @@ curl -fsS http://127.0.0.1:8092/
 首次建立账号时，可直接使用交互终端创建安全管理员；无需预先创建系统管理员。需要系统管理员时，安全管理员可登录页面后创建：
 
 ```bash
-docker compose --env-file deploy/core.env -f deploy/compose.core.yaml exec -it cam-core node apps/cam-core/src/bootstrap-admin.js
-docker compose --env-file deploy/core.env -f deploy/compose.core.yaml exec -it cam-core node apps/cam-core/src/bootstrap-security-admin.js
+sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml exec -it cam-core node apps/cam-core/src/bootstrap-admin.js
+sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml exec -it cam-core node apps/cam-core/src/bootstrap-security-admin.js
 ```
 
 初始口令在终端隐藏输入；登录后按要求修改密码。日常账号与角色管理由安全管理员完成。不要把账号密码写入 Compose 文件、镜像、命令行参数或版本库。
@@ -172,17 +192,17 @@ Core 的云管、AAA 和网闸地址必须从 Core 所在网络可达。云管�
 每台 Agent 主机独立部署一份 Compose 实例、一份 `.env` 和一个专属数据目录。将该实例的 `agent.env.example` 复制为 `agent.env`，设置 `CAM_AGENT_DATA_DIR` 后启动；AAA 参数、Core 地址、公钥和轮换状态在 Agent 页面配置并保存到 `agent.sqlite`。主机绑定目录同时保存 `identity.json`（Agent 私钥，权限 `0600`），不得改为临时卷或容器内部路径：
 
 ```bash
-docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml config
-docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml up -d
-docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml ps
+sudo docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml config
+sudo docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml up -d
+sudo docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml ps
 curl -fsS http://127.0.0.1:3111/
 ```
 
 首次登录前，可直接交互式创建 Agent 安全管理员；不需要预先创建系统管理员。需要系统管理员时，再由安全管理员登录页面创建。也可以按运维安排独立初始化系统管理员：
 
 ```bash
-docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-admin.js
-docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-security-admin.js
+sudo docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-admin.js
+sudo docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-security-admin.js
 ```
 
 Agent 由两个容器组成：`cam-agent` 只监听 Compose 内部的 3103，负责 API、认证、任务调度、缓存和传输；`cam-agent-web` 负责直接提供构建时生成的静态页面，并承担 Caddy、TLS/反向代理和外部访问，默认发布到宿主机回环地址 3111。Caddy 只将 `/api/*` 和 `/health/*` 反代到 Agent API，其余请求由静态文件服务处理。由云中心已有 HTTPS 入口发布页面；Core Web 如果需要代用户打开该 Agent 页面，必须把 `CAM_AGENT_UPSTREAM` 配置成 Core Web 可达的 Agent Web 地址。Agent 本身直接连接 AAA；Core 负责 Agent 身份注册、授权和正式制品分发，不代理 Agent 用户登录。
@@ -194,8 +214,8 @@ Core 与 Agent 完成双向服务身份配对后，再验证 Agent 在线、任�
 更新只替换目标模块的镜像标签和对应 Compose 文件，不删除或覆盖数据目录。先备份模块数据库、密钥及文件，再导入新镜像、修改 `.env` 中镜像版本并重建容器。联网且已推送到内部仓库时，可先拉取镜像：
 
 ```bash
-docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml pull
-docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml up -d
+sudo docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml pull
+sudo docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml up -d
 ```
 
 对于离线镜像，先 `docker load`，然后直接执行 `up -d`（不要执行 `pull`）。若需回退，恢复旧镜像标签并重新 `up -d`；数据库 schema 迁移若不可逆，必须按本次版本说明恢复一致的数据备份，不能只切回旧镜像。
@@ -203,9 +223,9 @@ docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml up -d
 常用检查：
 
 ```bash
-docker compose --env-file deploy/core.env -f deploy/compose.core.yaml logs --tail=200
-docker compose --env-file deploy/core.env -f deploy/compose.core.yaml ps
-docker inspect cam-core
+sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml logs --tail=200
+sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml ps
+sudo docker inspect cam-core
 ```
 
 日志由 Docker `json-file` 驱动按大小轮转。定期检查 Docker 主机可用空间、各模块数据目录增长和备份结果。升级与排障时不得将数据库、私钥、下载令牌、云管密钥或 AAA 共享密钥复制到普通日志、工单或未经批准的区间。
