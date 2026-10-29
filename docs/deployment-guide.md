@@ -32,6 +32,159 @@ sudo docker compose version
 
 不要把 `sugon` 加入 `docker`、`wheel` 或其他管理员组；`docker` 组本身具备接近 root 的主机控制能力。配置文件放在 `/opt/cloud-artifact-management/<module>/`，应用数据放在 `/var/lib/cloud-artifact-management/<module>/`，临时交付包放在 `/var/tmp/cam-incoming/`。
 
+## 银河麒麟离线主机准备
+
+以下步骤用于不能联网的银河麒麟主机。磁盘、Docker、systemd 和 SELinux 操作由 root 或具备相应 sudo 权限的管理员执行；CAM 日常操作仍由 `sugon` 执行。
+
+### 确认系统和数据盘
+
+先做只读检查：
+
+```bash
+uname -m
+cat /etc/os-release
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL
+fdisk -l
+```
+
+下面以确认 `/dev/vdb` 是空的 2T 数据盘为例。`/dev/vdb` 只是示例，必须根据 `lsblk` 结果确认，不能直接照搬。格式化前再次检查：
+
+```bash
+wipefs -n /dev/vdb
+fdisk -l /dev/vdb
+```
+
+只有确认没有需要保留的数据后，才执行分区和格式化：
+
+```bash
+parted -s /dev/vdb mklabel gpt
+parted -s -a optimal /dev/vdb mkpart primary ext4 1MiB 100%
+partprobe /dev/vdb
+udevadm settle
+mkfs.ext4 -L cam-data /dev/vdb1
+tune2fs -m 1 /dev/vdb1
+```
+
+按模块挂载到对应目录；Edge、Core、Agent 通常使用各自独立主机和数据盘：
+
+```bash
+mkdir -p /var/lib/cloud-artifact-management/<module>
+mount /dev/vdb1 /var/lib/cloud-artifact-management/<module>
+df -h /var/lib/cloud-artifact-management/<module>
+blkid /dev/vdb1
+```
+
+记录 UUID 后写入 `/etc/fstab`，并验证：
+
+```text
+UUID=实际UUID  /var/lib/cloud-artifact-management/<module>  ext4  defaults,noatime  0  2
+```
+
+```bash
+umount /var/lib/cloud-artifact-management/<module>
+mount -a
+findmnt /var/lib/cloud-artifact-management/<module>
+```
+
+Docker 自身的镜像和容器数据默认位于 `/var/lib/docker`；不要未经设计就把 Docker data-root 和 CAM 数据目录混用。
+
+### 离线安装 Docker 二进制
+
+将与 `uname -m` 匹配的 Docker 压缩包和校验文件通过受控介质复制到主机，校验并查看内容：
+
+```bash
+sha256sum docker-<版本>.tgz
+tar -tzf docker-<版本>.tgz
+tar -xzf docker-<版本>.tgz
+install -m 0755 docker/* /usr/bin/
+file /usr/bin/docker /usr/bin/dockerd
+docker --version
+dockerd --version
+```
+
+如果出现 `exec format error`，说明二进制架构不匹配，应重新准备对应架构的离线包。
+
+### 配置 Docker systemd 服务
+
+如果系统没有可用的 Docker 服务，创建 `/usr/lib/systemd/system/docker.service`：
+
+```ini
+[Unit]
+Description=Docker Application Container Engine
+Documentation=https://docs.docker.com
+After=network-online.target firewalld.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/dockerd
+ExecReload=/bin/kill -s HUP $MAINPID
+LimitNOFILE=infinity
+LimitNPROC=infinity
+TimeoutStartSec=0
+Delegate=yes
+KillMode=process
+Restart=on-failure
+StartLimitBurst=3
+StartLimitInterval=60s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+加载并启动：
+
+```bash
+systemctl daemon-reload
+systemctl enable docker
+systemctl start docker
+systemctl --no-pager --full status docker
+docker version
+docker info
+```
+
+若系统已有 Docker 服务，先执行 `systemctl cat docker.service`，避免两个 dockerd 同时运行。
+
+### 安装 Docker Compose v2
+
+将匹配主机架构的 Compose v2 二进制放到 `/usr/bin/docker-compose`，再注册 Docker CLI 插件：
+
+```bash
+install -m 0755 docker-compose /usr/bin/docker-compose
+mkdir -p /usr/local/lib/docker/cli-plugins
+install -m 0755 /usr/bin/docker-compose \
+  /usr/local/lib/docker/cli-plugins/docker-compose
+docker-compose version
+docker compose version
+docker compose ls
+```
+
+正式环境使用系统级插件目录，不要只安装到某个用户的 `$HOME` 下。
+
+### SELinux
+
+当前 CAM 离线部署方案要求按所在安全基线处理 SELinux。若确认正式环境允许禁用，执行：
+
+```bash
+getenforce
+sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
+reboot
+```
+
+重启后确认 `getenforce` 输出为 `Disabled`。禁用 SELinux 会降低主机强制访问控制能力；如果安全基线不允许禁用，应先完成兼容性验证，不能直接照搬此步骤。
+
+### Docker 网络规划
+
+每个 Compose 项目使用独立的 `/24` bridge 网段：
+
+```text
+Edge：CAM_DOCKER_SUBNET=192.168.241.0/24
+Core：CAM_DOCKER_SUBNET=192.168.242.0/24
+Agent：CAM_DOCKER_SUBNET=192.168.243.0/24
+```
+
+这些网段只用于容器内部网络，不是网闸控制/传输地址。部署前必须确认不与宿主机业务网、管理网、VPN、路由表或其他 Docker 网络重叠；冲突时在模块 `.env` 中改成未占用的 `192.168.X.0/24`。修改已有网络网段需安排维护窗口执行对应 Compose 项目的 `sudo docker compose down` 和 `sudo docker compose up -d`，不要使用 `down -v`。
+
 ## 交付物与版本
 
 每次发布应固定同一个版本号，并交付目标分区实际需要的镜像、对应 Compose 文件、该模块的 `.env.example`、初始化脚本和版本校验信息。版本号使用不可变发布标签，例如 `1.2.0`，不要在正式交付中使用 `latest` 或 `dev`。
@@ -229,6 +382,37 @@ sudo docker inspect cam-core
 ```
 
 日志由 Docker `json-file` 驱动按大小轮转。定期检查 Docker 主机可用空间、各模块数据目录增长和备份结果。升级与排障时不得将数据库、私钥、下载令牌、云管密钥或 AAA 共享密钥复制到普通日志、工单或未经批准的区间。
+
+## 离线部署故障排查
+
+### `docker compose` 找不到
+
+确认 Compose 插件位于系统级目录：
+
+```bash
+ls -l /usr/local/lib/docker/cli-plugins/docker-compose
+sudo docker compose version
+```
+
+### Docker 服务启动失败
+
+```bash
+systemctl --no-pager --full status docker
+journalctl -u docker --no-pager -n 200
+```
+
+重点检查二进制架构、`/usr/bin/dockerd`、systemd 服务文件、已有 dockerd 进程和磁盘空间。
+
+### 数据目录权限错误
+
+```bash
+findmnt /var/lib/cloud-artifact-management/<module>
+ls -ld /var/lib/cloud-artifact-management/<module>
+sudo CAM_EDGE_DATA_DIR=/var/lib/cloud-artifact-management/edge \
+  sh /opt/cloud-artifact-management/edge/current/init-module-data.sh edge
+```
+
+Core、Agent 分别替换为 `CAM_CORE_DATA_DIR`/`core` 和 `CAM_AGENT_DATA_DIR`/`agent`。不要把数据目录改成 `777`。初始化脚本应将目录设置为容器用户 `10001:10001` 可写。
 
 ## 网络与安全要求
 
