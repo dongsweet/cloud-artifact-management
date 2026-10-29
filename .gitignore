@@ -7,4 +7,6 @@ coverage/
 *.sqlite-wal
 *.tmp
 deploy/.env
+deploy/aliyun-dns.env
+deploy/*.secret.env
 /local-docs/
