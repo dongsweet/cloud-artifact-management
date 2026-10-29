@@ -30,7 +30,7 @@ sudo docker version
 sudo docker compose version
 ```
 
-不要把 `sugon` 加入 `docker`、`wheel` 或其他管理员组；`docker` 组本身具备接近 root 的主机控制能力。配置文件放在 `/opt/cloud-artifact-management/<module>/`，应用数据放在 `/var/lib/cloud-artifact-management/<module>/`，临时交付包放在 `/var/tmp/cam-incoming/`。
+不要把 `sugon` 加入 `docker`、`wheel` 或其他管理员组；`docker` 组本身具备接近 root 的主机控制能力。配置文件放在 `/opt/cloud-artifact-management/<module>/`，应用数据放在 `/var/lib/cloud-artifact-management/<module>/`，接收中的交付包按版本放在 `/home/sugon/work/cam-deploy/<版本>/`。
 
 ## 银河麒麟离线主机准备
 
@@ -197,6 +197,16 @@ sh deploy/package-configs.sh "$VERSION" ./release
 
 输出 `cam-edge-config-$VERSION.tar`、`cam-core-config-$VERSION.tar` 和 `cam-agent-config-$VERSION.tar`，每个归档旁边都有 `.sha256` 校验文件。配置包与同版本镜像包分别传送到对应主机；实际部署前必须编辑归档中的 `.env` 并设置 `600` 权限，不能把测试机 `.env` 或真实云管/AAA 密钥放入归档。
 
+目标主机接收文件时，使用 `sugon` 用户按版本建立目录。例如首次部署 `v0.2.4`：
+
+```bash
+mkdir -p /home/sugon/work/cam-deploy/v0.2.4
+chmod 700 /home/sugon/work/cam-deploy/v0.2.4
+cd /home/sugon/work/cam-deploy/v0.2.4
+```
+
+将对应模块的镜像包、镜像校验文件、配置包和配置校验文件传到这个目录。该目录只是接收和校验区，不作为 Compose 工作目录；校验通过后，配置包解到 `/opt/cloud-artifact-management/<module>/releases/<版本>/`，镜像包直接用 `sudo docker load` 导入。不要把真实密钥放进接收目录的归档或版本库。
+
 镜像清单：
 
 | 镜像 | 用途 |
@@ -264,16 +274,35 @@ sudo CAM_AGENT_DATA_DIR=/var/lib/cloud-artifact-management/agent sh deploy/init-
 
 ## 配置文件准备
 
-在目标主机把对应模板复制为模块配置文件，限制访问权限，并只编辑该模块的配置：
+正式交付使用模块配置包。以下以 Edge 的 `v0.2.4` 为例；Core、Agent 替换模块名和文件名即可：
 
 ```bash
-cp deploy/edge.env.example deploy/edge.env
-cp deploy/core.env.example deploy/core.env
-cp deploy/agent.env.example deploy/agent.env
-chmod 600 deploy/edge.env deploy/core.env deploy/agent.env
+ROOT=/home/sugon/work/cam-deploy/v0.2.4
+MODULE=edge
+VERSION=0.2.4
+sha256sum -c "$ROOT/cam-edge-config-$VERSION.tar.sha256"
+mkdir -p "$ROOT/extracted"
+tar -xf "$ROOT/cam-edge-config-$VERSION.tar" -C "$ROOT/extracted"
+sudo install -d -o sugon -g sugon -m 0750 \
+  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION"
+sudo cp -a "$ROOT/extracted/cam-edge-config-$VERSION/." \
+  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION/"
+sudo chown -R sugon:sugon \
+  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION"
+sudo chmod 600 \
+  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION/edge.env"
+sudo ln -sfn "releases/$VERSION" \
+  "/opt/cloud-artifact-management/$MODULE/current"
 ```
 
-实际部署时将 Compose 文件、模板、初始化脚本和实际 `.env` 放在目标机同一部署目录中。生产环境只需要部署对应模块文件；不要把 Core 的 `.env`、云管/AAA 密钥或其他区的配置复制到 Edge、Agent 主机。模板只列启动必需项，其他配置由 Compose 默认值提供；网闸业务参数、AAA 参数和云管工单业务参数优先在页面保存。需要编辑的字段如下：
+编辑当前版本配置：
+
+```bash
+vi /opt/cloud-artifact-management/edge/current/edge.env
+chmod 600 /opt/cloud-artifact-management/edge/current/edge.env
+```
+
+生产环境只部署对应模块文件；不要把 Core 的 `.env`、云管/AAA 密钥或其他区的配置复制到 Edge、Agent 主机。配置模板只列启动必需项，其他配置由 Compose 默认值提供；网闸业务参数、AAA 参数和云管工单业务参数优先在页面保存。接收目录只用于收包和校验，不作为 Compose 工作目录。
 
 | 字段 | 修改要求 |
 |---|---|
