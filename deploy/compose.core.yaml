@@ -1,6 +1,6 @@
 services:
   cam-core:
-    image: ${CAM_CORE_IMAGE:-cam-core:1.0.0}
+    image: ${CAM_CORE_IMAGE:-cam-backend:0.2.1}
     container_name: cam-core
     read_only: true
     user: "10001:10001"
@@ -15,6 +15,8 @@ services:
     volumes:
       - ${CAM_CORE_DATA_DIR:-/var/lib/cloud-artifact-management/core}:/data
     environment:
+      # The backend image is shared by all modules; SERVICE selects this module.
+      SERVICE: cam-core
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 3102

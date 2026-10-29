@@ -20,20 +20,16 @@
 
 | 镜像 | 用途 |
 |---|---|
-| `cam-edge:<版本>` | Edge API 和后台任务 |
+| `cam-backend:<版本>` | Core、Edge、Agent 共用的 API 和后台任务镜像；由 Compose 的 `SERVICE` 选择运行模式 |
 | `cam-edge-web:<版本>` | Edge 页面和同源 API 反向代理 |
-| `cam-core:<版本>` | Core API、审批适配和后台任务 |
 | `cam-core-web:<版本>` | Core 页面和 Agent 页面入口反向代理 |
-| `cam-agent:<版本>` | Agent API、认证、任务调度、缓存与本地数据处理 |
 | `cam-agent-web:<版本>` | Agent 静态页面、Caddy、TLS/反向代理 |
 
 生产构建在受控构建机上进行。先从可信的软件源取得并审核 Node.js、Caddy 基础镜像和 npm 依赖，再构建并测试应用镜像。示例命令在仓库根目录执行：
 
 ```bash
 VERSION=1.2.0
-docker build --build-arg SERVICE=cam-edge -t cam-edge:$VERSION -f Dockerfile .
-docker build --build-arg SERVICE=cam-core -t cam-core:$VERSION -f Dockerfile .
-docker build --build-arg SERVICE=cam-agent -t cam-agent:$VERSION -f Dockerfile .
+docker build -t cam-backend:$VERSION -f Dockerfile .
 docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-agent-web:$VERSION -f agent-web.Dockerfile .
 docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-edge-web:$VERSION -f edge-web.Dockerfile .
 docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-core-web:$VERSION -f core-web.Dockerfile .
@@ -43,9 +39,8 @@ docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-core-web:$VERSION 
 
 ```bash
 docker save \
-  cam-edge:$VERSION cam-edge-web:$VERSION \
-  cam-core:$VERSION cam-core-web:$VERSION \
-  cam-agent:$VERSION cam-agent-web:$VERSION \
+  cam-backend:$VERSION cam-edge-web:$VERSION \
+  cam-core-web:$VERSION cam-agent-web:$VERSION \
   -o cam-images-$VERSION.tar
 sha256sum cam-images-$VERSION.tar > cam-images-$VERSION.tar.sha256
 ```
@@ -55,10 +50,10 @@ sha256sum cam-images-$VERSION.tar > cam-images-$VERSION.tar.sha256
 ```bash
 sha256sum -c cam-images-1.2.0.tar.sha256
 docker load -i cam-images-1.2.0.tar
-docker image inspect cam-edge:1.2.0 cam-edge-web:1.2.0
+docker image inspect cam-backend:1.2.0 cam-edge-web:1.2.0 cam-core-web:1.2.0 cam-agent-web:1.2.0
 ```
 
-Compose 中的镜像名必须与已导入的完整镜像名、标签一致。若使用内部镜像仓库，给镜像加仓库前缀后，分别在模块 `.env` 中设置 `CAM_*_IMAGE`，再执行 `docker login` 并确认目标主机可访问该仓库。离线隔离区不要在 Compose 中使用 `build:`、`pull_policy: always`，也不要依赖容器启动时下载依赖。
+Compose 中的镜像名必须与已导入的完整镜像名、标签一致。三个后端 Compose 服务共用 `cam-backend:<版本>`，并分别通过固定的 `SERVICE=cam-edge`、`SERVICE=cam-core`、`SERVICE=cam-agent` 选择运行模式；不要把该变量交给普通 `.env` 修改。若使用内部镜像仓库，给镜像加仓库前缀后，分别在模块 `.env` 中设置 `CAM_*_IMAGE`，再执行 `docker login` 并确认目标主机可访问该仓库。离线隔离区不要在 Compose 中使用 `build:`、`pull_policy: always`，也不要依赖容器启动时下载依赖。
 
 ## 目录和持久化
 

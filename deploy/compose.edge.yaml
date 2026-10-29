@@ -1,6 +1,6 @@
 services:
   cam-edge:
-    image: ${CAM_EDGE_IMAGE:-cam-edge:1.0.0}
+    image: ${CAM_EDGE_IMAGE:-cam-backend:0.2.1}
     container_name: cam-edge
     read_only: true
     user: "10001:10001"
@@ -14,6 +14,8 @@ services:
     volumes:
       - ${CAM_EDGE_DATA_DIR:-/var/lib/cloud-artifact-management/edge}:/data
     environment:
+      # The backend image is shared by all modules; SERVICE selects this module.
+      SERVICE: cam-edge
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 3101

@@ -1,6 +1,6 @@
 services:
   cam-agent:
-    image: ${CAM_AGENT_IMAGE:-cam-agent:1.0.0}
+    image: ${CAM_AGENT_IMAGE:-cam-backend:0.2.1}
     container_name: cam-agent
     read_only: true
     user: "10001:10001"
@@ -15,6 +15,8 @@ services:
     volumes:
       - ${CAM_AGENT_DATA_DIR:-/var/lib/cloud-artifact-management/agent}:/data
     environment:
+      # The backend image is shared by all modules; SERVICE selects this module.
+      SERVICE: cam-agent
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 3103
