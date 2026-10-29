@@ -16,6 +16,14 @@
 
 每次发布应固定同一个版本号，并交付目标分区实际需要的镜像、对应 Compose 文件、该模块的 `.env.example`、初始化脚本和版本校验信息。版本号使用不可变发布标签，例如 `1.2.0`，不要在正式交付中使用 `latest` 或 `dev`。
 
+可以使用仓库内脚本为三台目标主机分别生成不含真实密钥的配置包。配置包包含对应 Compose、可复制为实际配置的 `.env` 模板、数据目录初始化脚本和版本文件：
+
+```bash
+sh deploy/package-configs.sh "$VERSION" ./release
+```
+
+输出 `cam-edge-config-$VERSION.tar`、`cam-core-config-$VERSION.tar` 和 `cam-agent-config-$VERSION.tar`，每个归档旁边都有 `.sha256` 校验文件。配置包与同版本镜像包分别传送到对应主机；实际部署前必须编辑归档中的 `.env` 并设置 `600` 权限，不能把测试机 `.env` 或真实云管/AAA 密钥放入归档。
+
 镜像清单：
 
 | 镜像 | 用途 |
