@@ -31,16 +31,13 @@ export async function buildEdgeApp({ dataDir = DEFAULT_DATA_DIR, defaultChunkSiz
   const downloadGrants = new DownloadGrantStore({ db, candidateStore: store });
   const auth = new AuthStore(db);
   const freezes = new FreezeStore({ db, dataDir, candidateStore: store });
-  // The control endpoint is part of the deployment bootstrap path: changing it
-  // from the UI can make Edge unable to delegate authentication to Core.  In the
-  // production container the deployment value is authoritative and the API/UI
-  // expose it as read-only.  Non-production in-process tests keep the database
-  // fallback so they can bootstrap a pair without a compose environment.
+  // Endpoints are initialized before the first login by bootstrap-gate.js and
+  // persisted in Edge SQLite. Environment values remain optional defaults; the
+  // database is the runtime source of truth and the UI can manage them later.
   const gateConfig = new GateConfigStore(db, {
     table: 'edge_gate_config',
     eventsTable: 'edge_gate_config_events',
-    requiredUrlFields: ['coreControlUrl', 'coreTransferUrl'],
-    envOnlyFields: process.env.NODE_ENV === 'production' ? ['coreControlUrl'] : []
+    requiredUrlFields: ['coreControlUrl', 'coreTransferUrl']
   });
   const keyring = new GateKeyring({ filePath: join(dataDir, 'gate-keyring.json'), role: 'edge' });
   await keyring.ready;

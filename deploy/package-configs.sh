@@ -12,6 +12,7 @@ case "$version" in
 esac
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 output_dir="$output_root/v$version"
 mkdir -p "$output_dir"
 
@@ -23,6 +24,7 @@ for module in edge core agent; do
   mkdir -p "$package_dir"
   cp "$script_dir/compose.$module.yaml" "$package_dir/"
   cp "$script_dir/$module.env.example" "$package_dir/$module.env"
+  if [ "$module" = edge ]; then cp "$repo_dir/apps/cam-edge/src/bootstrap-gate.js" "$package_dir/"; fi
   module_upper=$(printf '%s' "$module" | tr '[:lower:]' '[:upper:]')
   # The source templates carry the repository's current development baseline.
   # A delivered config package must point at the same version as its archive.

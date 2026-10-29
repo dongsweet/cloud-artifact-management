@@ -397,6 +397,36 @@ curl -fsS http://127.0.0.1:80/health/ready
 
 Edge Web 使用容器内嵌的 Caddy，宿主机直接发布 `80/443`；`CAM_EDGE_WEB_HTTPS=true` 时使用证书挂载的 443 入口，后续可在防火墙只放行 443。Edge API 的 `3101` 仅在 Compose 网络内可达，不发布到宿主机。Edge 唯一的网闸入口是控制/API `8101`；正式制品传输由 Edge 按配置主动访问 Core 的 `8202`，Edge 不再发布 `8201`。首次登录人员由 Core 统一授权，Edge 不再初始化独立人员账号。
 
+### Edge 首次互信初始化
+
+Edge 首次启动时不能先登录页面再配置 Core，否则会形成“登录依赖互信、互信依赖登录”的循环。正式部署不要把 Core 地址或身份公钥写入镜像；`edge.env` 中的 `CAM_GATE_CORE_CONTROL_URL` 和 `CAM_GATE_CORE_TRANSFER_URL` 只是可选默认值，运行时以 Edge SQLite 中的配置为准。
+
+先在 Core 网闸对接页面登记 Edge 身份公钥。Edge 身份公钥包可通过以下命令显示（只含公钥和指纹，绝不显示私钥）：
+
+```bash
+sudo docker compose \
+  --env-file /opt/cloud-artifact-management/edge/current/edge.env \
+  -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml \
+  exec -T cam-edge node apps/cam-edge/src/bootstrap-gate.js --print-identity
+```
+
+将输出的 Edge 身份公钥包复制到 Core 的 Edge 身份登记处。然后在 Edge 执行初始化命令：
+
+```bash
+sudo docker compose \
+  --env-file /opt/cloud-artifact-management/edge/current/edge.env \
+  -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml \
+  exec -it cam-edge node apps/cam-edge/src/bootstrap-gate.js
+```
+
+按提示填写：
+
+1. Core 控制地址（外侧，指向 Core `8201` 映射地址）；
+2. Core 制品传输地址（外侧，指向 Core `8202` 映射地址）；
+3. Core 身份公钥包（从 Core 网闸对接页面导出/复制的 JSON）。
+
+脚本会把地址和 Core 公钥写入 Edge 本地数据库，并尝试执行签名配对探测。若 Core 尚未登记 Edge 公钥，可先在提示处输入 `-` 跳过测试；完成 Core 登记后重新执行脚本。私钥始终保存在 Edge 数据目录的 `gate-keyring.json` 中，只显示身份公钥包和公钥指纹，不允许通过脚本、页面或日志导出私钥。配对成功后即可登录 Edge 页面。
+
 ## 单独部署 Core
 
 在统一运维内网主机导入 Core 与 Core Web 镜像，准备 `core.env`，初始化 Core 数据目录并运行：
