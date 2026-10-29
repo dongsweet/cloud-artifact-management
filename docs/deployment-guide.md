@@ -317,6 +317,59 @@ chmod 600 /opt/cloud-artifact-management/edge/current/edge.env
 | `CAM_SOURCE_ALLOWLIST` | 仅 Edge 使用，配置允许拉取研发内网文件的来源地址/网段策略，按现网实际值收紧；不要照搬模板占位值 |
 | `CAM_MAX_CANDIDATE_SIZE` | 仅 Edge 使用，单个候选包允许的最大字节数；默认 2 TiB，必须结合本地磁盘容量收紧，超限或来源重定向会拒绝接收 |
 
+### TLS 证书准备（以 Edge 为例）
+
+正式环境使用容器内嵌 Caddy 时，证书放在宿主机证书目录，Web 容器以只读方式挂载为 `/tls`。默认 Edge 目录为：
+
+```text
+/var/lib/cloud-artifact-management/edge/tls/
+├── fullchain.pem
+└── privkey.pem
+```
+
+证书和私钥由主机管理员通过受控介质复制，不要放进镜像包、配置归档、Git 或数据库。容器以 UID/GID `10001:10001` 运行，证书目录和文件必须允许该用户读取；私钥仍应限制为仅容器用户可读：
+
+```bash
+sudo install -d -o 10001 -g 10001 -m 750 \
+  /var/lib/cloud-artifact-management/edge/tls
+
+sudo install -o 10001 -g 10001 -m 640 \
+  fullchain.pem \
+  /var/lib/cloud-artifact-management/edge/tls/fullchain.pem
+
+sudo install -o 10001 -g 10001 -m 600 \
+  privkey.pem \
+  /var/lib/cloud-artifact-management/edge/tls/privkey.pem
+```
+
+在真实的 `edge.env` 中启用页面 HTTPS：
+
+```env
+CAM_EDGE_TLS_DIR=/var/lib/cloud-artifact-management/edge/tls
+CAM_EDGE_WEB_HTTPS=true
+CAM_EDGE_WEB_TLS_CERT_FILE=/tls/fullchain.pem
+CAM_EDGE_WEB_TLS_KEY_FILE=/tls/privkey.pem
+```
+
+如果网闸控制/API 通道 `8101` 也需要 HTTPS，可复用同一证书（证书必须覆盖对应访问名称），并配置：
+
+```env
+CAM_EDGE_CONTROL_HTTPS=true
+CAM_EDGE_CONTROL_TLS_CERT_FILE=/tls/fullchain.pem
+CAM_EDGE_CONTROL_TLS_KEY_FILE=/tls/privkey.pem
+```
+
+修改证书或 HTTPS 开关后，重建对应 Web 容器；不要删除数据目录：
+
+```bash
+sudo docker compose \
+  --env-file /opt/cloud-artifact-management/edge/current/edge.env \
+  -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml \
+  up -d --force-recreate cam-edge-web
+```
+
+Core、Agent 分别使用各自的 `CAM_CORE_TLS_DIR`、`CAM_AGENT_TLS_DIR` 目录和对应的 `CAM_*_TLS_CERT_FILE`、`CAM_*_TLS_KEY_FILE`。启用页面 HTTPS 后，生产环境保持 `CAM_COOKIE_SECURE=true`；仅在隔离的临时 HTTP 测试环境才设置为 `false`。
+
 业务字典、人员匹配结果、密钥轮换和网闸映射配置中，适合日常调整的内容优先使用相应管理页面；`.env` 用于部署基础参数和首次启动默认值，不作为日常业务操作界面。各模块嵌入式 Caddy 的页面入口，以及 Edge 控制入口、Core 控制和传输入口，都可独立切换 HTTP/HTTPS、指定证书/私钥和调整宿主机对外端口；启用 HTTPS 前先把证书目录放到 `CAM_*_TLS_DIR`，再重建对应 Web 容器。HTTP/HTTPS 切换会改变访问协议，`CAM_GATE_*_URL` 和外部网闸规则必须同步使用对应协议与端口。
 
 ## 单独部署 Edge
