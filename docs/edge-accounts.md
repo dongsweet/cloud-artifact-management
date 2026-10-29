@@ -19,7 +19,7 @@
 
 Edge 不执行账号初始化命令。首次账号创建、密码设置和角色授权均在 Core 完成；只分配 Edge 角色的人员可以登录 Edge，但不能建立 Core 页面会话。
 
-Core 用户授权缓存、Edge 短期会话及认证审计表与现有候选表共用外部区 SQLite 数据库：`${CAM_EDGE_DATA_DIR}/edge/edge.sqlite`，由宿主机本地目录绑定进入容器；重建镜像和容器不会丢失会话审计数据。Edge 不保存密码。数据库未加密，备份及文件权限按部署规范保护；禁止清空数据目录。SQLite WAL 在线备份应使用 SQLite 备份机制，或停服后复制数据库及对应 WAL 文件，不能只复制运行中的主文件。
+Core 用户授权缓存、Edge 短期会话及认证审计表与现有候选表共用外部区 SQLite 数据库：`${CAM_DATA_DIR}/edge/edge.sqlite`，由宿主机本地目录绑定进入容器；重建镜像和容器不会丢失会话审计数据。Edge 不保存密码。数据库未加密，备份及文件权限按部署规范保护；禁止清空数据目录。SQLite WAL 在线备份应使用 SQLite 备份机制，或停服后复制数据库及对应 WAL 文件，不能只复制运行中的主文件。
 
 配置在项目 `.env`（Compose 默认读取）中设置；如果使用 `deploy/.env`，执行 Compose 时显式加 `--env-file deploy/.env`：
 

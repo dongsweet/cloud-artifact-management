@@ -246,7 +246,7 @@ sudo env CAM_DATA_DIR=/var/lib/cloud-artifact-management/$MODULE \
   sh /opt/cloud-artifact-management/$MODULE/current/init-module-data.sh $MODULE
 ```
 
-Core、Agent 只需将 `MODULE` 改为 `core`、`agent`；`CAM_DATA_DIR` 会按模块传入统一的数据目录。该脚本会设置容器用户 `10001:10001` 的访问权限。
+Core、Agent 只需将 `MODULE` 改为 `core`、`agent`，并将 `CAM_DATA_DIR` 改为对应数据目录。该脚本会设置容器用户 `10001:10001` 的访问权限。
 
 部署时使用的镜像：
 
@@ -295,7 +295,7 @@ chmod 600 /opt/cloud-artifact-management/edge/current/edge.env
 | 字段 | 修改要求 |
 |---|---|
 | `CAM_*_IMAGE` | 模板中的镜像名必须与本次导入镜像一致；仓库部署需包含仓库前缀 |
-| `CAM_*_DATA_DIR` | 必填，设置为目标主机本地持久化路径；Edge、Core、每台 Agent 使用互不重叠的目录。应用日志会写入对应数据目录下的 `logs/` 子目录 |
+| `CAM_DATA_DIR` | 必填，设置为目标主机本地持久化路径；Edge、Core、每台 Agent 使用各自 `.env` 中互不重叠的目录。应用日志会写入对应数据目录下的 `logs/` 子目录 |
 | `CAM_LOG_MAX_BYTES` / `CAM_LOG_MAX_FILES` | 应用日志单文件大小和轮转数量，默认 `52428800` / `5`；Docker `json-file` 轮转仍独立生效 |
 | `CAM_LOG_COLLECTION_MAX_BYTES` | 单个 Agent 或 Core 日志归档的大小上限，默认 `104857600`（100 MiB） |
 | `CAM_*_WEB_PORT` / `CAM_*_API_PORT` | 有宿主机端口冲突时调整。API 端口仍固定为容器内 Edge `3101`、Core `3102`，默认只绑定宿主机回环；业务网闸不直接映射 API 端口 |
@@ -359,7 +359,7 @@ Core 的云管、AAA 和网闸地址必须从 Core 所在网络可达。云管�
 
 ## 单独部署 Agent
 
-每台 Agent 主机独立部署一份 Compose 实例、一份 `.env` 和一个专属数据目录。将该实例的 `agent.env.example` 复制为 `agent.env`，设置 `CAM_AGENT_DATA_DIR` 后启动；AAA 参数、Core 地址、公钥和轮换状态在 Agent 页面配置并保存到 `agent.sqlite`。主机绑定目录同时保存 `identity.json`（Agent 私钥，权限 `0600`），不得改为临时卷或容器内部路径：
+每台 Agent 主机独立部署一份 Compose 实例、一份 `.env` 和一个专属数据目录。将该实例的 `agent.env.example` 复制为 `agent.env`，设置 `CAM_DATA_DIR` 后启动；AAA 参数、Core 地址、公钥和轮换状态在 Agent 页面配置并保存到 `agent.sqlite`。主机绑定目录同时保存 `identity.json`（Agent 私钥，权限 `0600`），不得改为临时卷或容器内部路径：
 
 ```bash
 sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml config
@@ -429,7 +429,7 @@ sudo env CAM_DATA_DIR=/var/lib/cloud-artifact-management/edge \
   sh /opt/cloud-artifact-management/edge/current/init-module-data.sh edge
 ```
 
-Core、Agent 只需将路径和脚本参数替换为 `core`、`agent`。`CAM_DATA_DIR` 优先于旧的模块专用变量；未设置时脚本仍兼容 `CAM_EDGE_DATA_DIR`、`CAM_CORE_DATA_DIR`、`CAM_AGENT_DATA_DIR`。不要把数据目录改成 `777`。初始化脚本应将目录设置为容器用户 `10001:10001` 可写。
+Core、Agent 只需将路径和脚本参数替换为 `core`、`agent`，并使用对应的 `CAM_DATA_DIR`。不要把数据目录改成 `777`。初始化脚本应将目录设置为容器用户 `10001:10001` 可写。
 
 ## 网络与安全要求
 

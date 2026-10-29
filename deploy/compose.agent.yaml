@@ -13,7 +13,7 @@ services:
     # 主机绑定目录必须持久化：其中包含 agent.sqlite、identity.json（Agent 私钥）和制品缓存。
     # `docker compose down` 不会删除该目录；删除或更换目录会导致身份丢失并需要重新配对。
     volumes:
-      - ${CAM_AGENT_DATA_DIR:-/var/lib/cloud-artifact-management/agent}:/data
+      - ${CAM_DATA_DIR:-/var/lib/cloud-artifact-management/agent}:/data
     environment:
       # The backend image is shared by all modules; SERVICE selects this module.
       SERVICE: cam-agent
