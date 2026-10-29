@@ -8,17 +8,26 @@
 
 以下账号初始化命令由 root 执行。账号应使用个人 SSH 密钥或企业账号登录，不共享 root 密码：
 
-    useradd --create-home --shell /bin/bash sugon
+    useradd --create-home --user-group --shell /bin/bash sugon
     passwd sugon
     id sugon
 
-CAM 容器仍以镜像内的 `10001:10001` 运行，不能把宿主机的 `sugon` UID 当成容器用户。若允许 `sugon` 直接执行 Docker，可加入 `docker` 组并重新登录：
+如果采用 SSH 密钥登录，建议先建立并锁定本地密码（不要在文档、命令历史或工单中记录密码）：
+
+    sudo -u sugon mkdir -p /home/sugon/.ssh
+    chmod 700 /home/sugon/.ssh
+    sudo -u sugon vi /home/sugon/.ssh/authorized_keys
+    chmod 600 /home/sugon/.ssh/authorized_keys
+    chown -R sugon:sugon /home/sugon/.ssh
+    passwd -l sugon
+
+确认密钥可以登录后，再考虑在 `/etc/ssh/sshd_config` 中关闭 root 直登和密码登录，并用 `sshd -t` 校验后重载 SSH；不要在密钥验证前关闭现有登录方式。CAM 容器仍以镜像内的 `10001:10001` 运行，不能把宿主机的 `sugon` UID 当成容器用户。若允许 `sugon` 直接执行 Docker，可加入 `docker` 组并重新登录：
 
     usermod -aG docker sugon
     su - sugon
     docker version
 
-`docker` 组具有接近 root 的主机控制能力；安全基线不允许时，不要加入该组，改用经过审计的 `sudo docker` / `sudo docker compose`。无论采用哪种方式，都不要用 root 作为日常应用部署账号。
+`docker` 组具有接近 root 的主机控制能力；安全基线不允许时，不要加入该组，改用经过审计的 `sudo docker` / `sudo docker compose`。不需要系统管理权限时，不要把 `sugon` 加入 `wheel`/`sudo` 管理员组；确需 sudo 时按主机安全策略配置最小命令范围。无论采用哪种方式，都不要用 root 作为日常应用部署账号。
 
 推荐目录布局：
 
