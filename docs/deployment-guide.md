@@ -12,38 +12,6 @@
 
 根目录的 `compose.yaml` 和 `compose.direct.yaml` 保留给开发、联调和测试环境。正式分区部署不要用它们，因为它们会把多个安全区组件组合到同一 Compose 网络中。
 
-## 阿里云 DNS 二级域名配置
-
-仓库提供 `tools/aliyun-dns-record.mjs`，用于通过阿里云 DNS API 创建、检查、更新或删除二级域名解析记录。脚本只使用 Node.js 内置模块，不依赖阿里云 CLI，也不会把 AccessKey 写入代码、镜像或数据库；它只负责 DNS 记录，后续 ACME 证书申请由独立的受控流程执行，不使用 Caddy 内置申请。
-
-先在受控主机上创建私有配置文件：
-
-```bash
-install -m 600 /dev/null /opt/cloud-artifact-management/aliyun-dns.env
-vi /opt/cloud-artifact-management/aliyun-dns.env
-```
-
-内容参照 `deploy/aliyun-dns.env.example`，至少填写 `ALIYUN_ACCESS_KEY_ID`、`ALIYUN_ACCESS_KEY_SECRET` 和托管域名 `ALIYUN_DNS_DOMAIN`。AccessKey 只应授予阿里云 DNS 的最小权限（至少查询、添加、修改、删除解析记录），不要使用主账号密钥；实际文件不得提交 Git。
-
-创建 `cam-edge.example.com` 的 A 记录：
-
-```bash
-node tools/aliyun-dns-record.mjs \
-  --env-file /opt/cloud-artifact-management/aliyun-dns.env \
-  --name cam-edge --type A --value 192.0.2.10 --ttl 600
-```
-
-`--name` 也可以写完整的 `cam-edge.example.com`。脚本按完整的 RR、类型、线路和值查找，重复执行是幂等的；发现同一 RR/类型已有不同值时默认拒绝修改，只有确认要替换唯一旧记录时才使用 `--replace`。正式变更前可以加 `--dry-run`，删除时必须同时给出精确的 `--value`：
-
-```bash
-node tools/aliyun-dns-record.mjs --env-file /opt/cloud-artifact-management/aliyun-dns.env \
-  --dry-run --name cam-edge --type A --value 192.0.2.10
-node tools/aliyun-dns-record.mjs --env-file /opt/cloud-artifact-management/aliyun-dns.env \
-  --delete --name cam-edge --type A --value 192.0.2.10
-```
-
-脚本不会申请域名注册，也不会申请证书。证书流程应在 DNS 记录生效并完成解析验证后，使用已审计的 ACME 客户端和独立的证书目录执行；AccessKey Secret 不应传给 Caddy 或写入 Caddyfile。
-
 ## 部署账号
 
 正式主机使用专用普通用户 `sugon` 部署，不在 `root` 家目录下保存或运行 CAM。以下账号创建命令由 root 执行；当前通过堡垒机使用口令登录，不加入 `docker` 组：
