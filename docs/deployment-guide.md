@@ -217,20 +217,22 @@ cd /home/sugon/work/cam-deploy/v0.2.4
 配置包解包命令（Edge 的 `v0.2.4` 示例；Core、Agent 替换模块名和文件名）：
 
 ```bash
-ROOT=/home/sugon/work/cam-deploy/v0.2.4
 MODULE=edge
 VERSION=0.2.4
-sha256sum -c "$ROOT/cam-edge-config-$VERSION.tar.sha256"
+ROOT=/home/sugon/work/cam-deploy/v$VERSION
+WEB_IMAGE=cam-$MODULE-web
+
+sha256sum -c "$ROOT/cam-$MODULE-config-$VERSION.tar.sha256"
 mkdir -p "$ROOT/extracted"
-tar -xf "$ROOT/cam-edge-config-$VERSION.tar" -C "$ROOT/extracted"
+tar -xf "$ROOT/cam-$MODULE-config-$VERSION.tar" -C "$ROOT/extracted"
 sudo install -d -o sugon -g sugon -m 0750 \
   "/opt/cloud-artifact-management/$MODULE/releases/$VERSION"
-sudo cp -a "$ROOT/extracted/cam-edge-config-$VERSION/." \
+sudo cp -a "$ROOT/extracted/cam-$MODULE-config-$VERSION/." \
   "/opt/cloud-artifact-management/$MODULE/releases/$VERSION/"
 sudo chown -R sugon:sugon \
   "/opt/cloud-artifact-management/$MODULE/releases/$VERSION"
 sudo chmod 600 \
-  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION/edge.env"
+  "/opt/cloud-artifact-management/$MODULE/releases/$VERSION/$MODULE.env"
 sudo ln -sfn "releases/$VERSION" \
   "/opt/cloud-artifact-management/$MODULE/current"
 ```
@@ -247,9 +249,9 @@ sudo ln -sfn "releases/$VERSION" \
 在目标主机校验镜像归档摘要后导入：
 
 ```bash
-sha256sum -c cam-edge-images-1.2.0.tar.sha256
-sudo docker load -i cam-edge-images-1.2.0.tar
-sudo docker image inspect cam-backend:1.2.0 cam-edge-web:1.2.0
+sha256sum -c "$ROOT/cam-$MODULE-images-$VERSION.tar.sha256"
+sudo docker load -i "$ROOT/cam-$MODULE-images-$VERSION.tar"
+sudo docker image inspect "cam-backend:$VERSION" "$WEB_IMAGE:$VERSION"
 ```
 
 Compose 中的镜像名必须与已导入的完整镜像名、标签一致。三个后端 Compose 服务共用 `cam-backend:<版本>`，并分别通过固定的 `SERVICE=cam-edge`、`SERVICE=cam-core`、`SERVICE=cam-agent` 选择运行模式；不要把该变量交给普通 `.env` 修改。离线隔离区不要执行 `docker compose pull`，也不要在 Compose 中使用 `build:` 或 `pull_policy: always`。
@@ -316,9 +318,9 @@ chmod 600 /opt/cloud-artifact-management/edge/current/edge.env
 在统一运维外部交换区主机导入 Edge 与 Edge Web 镜像，准备 `edge.env` 和 Edge 数据目录，再运行：
 
 ```bash
-sudo docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml config
-sudo docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml up -d
-sudo docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml ps
+sudo docker compose --env-file /opt/cloud-artifact-management/edge/current/edge.env -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml config
+sudo docker compose --env-file /opt/cloud-artifact-management/edge/current/edge.env -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml up -d
+sudo docker compose --env-file /opt/cloud-artifact-management/edge/current/edge.env -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml ps
 curl -fsS http://127.0.0.1:3101/health/ready
 curl -fsS http://127.0.0.1:8088/
 ```
@@ -330,9 +332,9 @@ curl -fsS http://127.0.0.1:8088/
 在统一运维内网主机导入 Core 与 Core Web 镜像，准备 `core.env`，初始化 Core 数据目录并运行：
 
 ```bash
-sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml config
-sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml up -d
-sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml ps
+sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml config
+sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml up -d
+sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml ps
 curl -fsS http://127.0.0.1:3102/health/ready
 curl -fsS http://127.0.0.1:8092/
 ```
@@ -340,8 +342,8 @@ curl -fsS http://127.0.0.1:8092/
 首次建立账号时，可直接使用交互终端创建安全管理员；无需预先创建系统管理员。需要系统管理员时，安全管理员可登录页面后创建：
 
 ```bash
-sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml exec -it cam-core node apps/cam-core/src/bootstrap-admin.js
-sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml exec -it cam-core node apps/cam-core/src/bootstrap-security-admin.js
+sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml exec -it cam-core node apps/cam-core/src/bootstrap-admin.js
+sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml exec -it cam-core node apps/cam-core/src/bootstrap-security-admin.js
 ```
 
 初始口令在终端隐藏输入；登录后按要求修改密码。日常账号与角色管理由安全管理员完成。不要把账号密码写入 Compose 文件、镜像、命令行参数或版本库。
@@ -355,17 +357,17 @@ Core 的云管、AAA 和网闸地址必须从 Core 所在网络可达。云管�
 每台 Agent 主机独立部署一份 Compose 实例、一份 `.env` 和一个专属数据目录。将该实例的 `agent.env.example` 复制为 `agent.env`，设置 `CAM_AGENT_DATA_DIR` 后启动；AAA 参数、Core 地址、公钥和轮换状态在 Agent 页面配置并保存到 `agent.sqlite`。主机绑定目录同时保存 `identity.json`（Agent 私钥，权限 `0600`），不得改为临时卷或容器内部路径：
 
 ```bash
-sudo docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml config
-sudo docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml up -d
-sudo docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml ps
+sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml config
+sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml up -d
+sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml ps
 curl -fsS http://127.0.0.1:3111/
 ```
 
 首次登录前，可直接交互式创建 Agent 安全管理员；不需要预先创建系统管理员。需要系统管理员时，再由安全管理员登录页面创建。也可以按运维安排独立初始化系统管理员：
 
 ```bash
-sudo docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-admin.js
-sudo docker compose --env-file deploy/agent.env -f deploy/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-security-admin.js
+sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-admin.js
+sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-security-admin.js
 ```
 
 Agent 由两个容器组成：`cam-agent` 只监听 Compose 内部的 3103，负责 API、认证、任务调度、缓存和传输；`cam-agent-web` 负责直接提供构建时生成的静态页面，并承担 Caddy、TLS/反向代理和外部访问，默认发布到宿主机回环地址 3111。Caddy 只将 `/api/*` 和 `/health/*` 反代到 Agent API，其余请求由静态文件服务处理。由云中心已有 HTTPS 入口发布页面；Core Web 如果需要代用户打开该 Agent 页面，必须把 `CAM_AGENT_UPSTREAM` 配置成 Core Web 可达的 Agent Web 地址。Agent 本身直接连接 AAA；Core 负责 Agent 身份注册、授权和正式制品分发，不代理 Agent 用户登录。
@@ -377,8 +379,8 @@ Core 与 Agent 完成双向服务身份配对后，再验证 Agent 在线、任�
 更新只替换目标模块的镜像标签和对应 Compose 文件，不删除或覆盖数据目录。先备份模块数据库、密钥及文件，再导入新镜像、修改 `.env` 中镜像版本并重建容器。联网且已推送到内部仓库时，可先拉取镜像：
 
 ```bash
-sudo docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml pull
-sudo docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml up -d
+sudo docker compose --env-file /opt/cloud-artifact-management/edge/current/edge.env -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml pull
+sudo docker compose --env-file /opt/cloud-artifact-management/edge/current/edge.env -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml up -d
 ```
 
 对于离线镜像，先 `docker load`，然后直接执行 `up -d`（不要执行 `pull`）。若需回退，恢复旧镜像标签并重新 `up -d`；数据库 schema 迁移若不可逆，必须按本次版本说明恢复一致的数据备份，不能只切回旧镜像。
@@ -386,8 +388,8 @@ sudo docker compose --env-file deploy/edge.env -f deploy/compose.edge.yaml up -d
 常用检查：
 
 ```bash
-sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml logs --tail=200
-sudo docker compose --env-file deploy/core.env -f deploy/compose.core.yaml ps
+sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml logs --tail=200
+sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml ps
 sudo docker inspect cam-core
 ```
 
