@@ -1,8 +1,36 @@
 # 银河麒麟离线准备与 CAM 部署
 
-本文记录在不能联网的银河麒麟服务器上部署 CAM Edge 的完整准备步骤，包括 2T 数据盘分区、Docker 二进制安装、Docker Compose 安装、Docker systemd 服务、SELinux 处理和 Edge 启动验证。
+本文记录在不能联网的银河麒麟服务器上部署 CAM Edge、Core 或 Agent 的完整准备步骤，包括 2T 数据盘分区、Docker 二进制安装、Docker Compose 安装、Docker systemd 服务、SELinux 处理和模块启动验证。
 
-命令默认按 root 执行；普通用户请在需要写入系统目录或管理 Docker 服务的命令前加 sudo。本文中的 /dev/vdb 只是示例设备名，必须先根据 lsblk 确认，不能直接照搬到其他机器。
+正式环境不要在 root 家目录下保存和运行 CAM。建议建立专用的普通运维账号 `camops`：它负责接收部署包、维护 Compose 配置和执行日常发布；root 只用于磁盘、Docker、systemd、防火墙和 `/var/lib` 等系统级操作。本文中的 `/dev/vdb` 只是示例设备名，必须先根据 `lsblk` 确认，不能直接照搬到其他机器。
+
+## 0. 部署账号和目录规范
+
+在系统初始化阶段由 root 创建专用运维账号。账号应使用个人 SSH 密钥或企业账号登录，不共享 root 密码：
+
+    useradd --create-home --shell /bin/bash camops
+    passwd camops
+
+CAM 容器仍以镜像内的 `10001:10001` 运行，不能把宿主机的 `camops` UID 当成容器用户。若允许 `camops` 直接执行 Docker，可加入 `docker` 组并重新登录：
+
+    usermod -aG docker camops
+
+`docker` 组具有接近 root 的主机控制能力；安全基线不允许时，不要加入该组，改用经过审计的 `sudo docker` / `sudo docker compose`。无论采用哪种方式，都不要用 root 作为日常应用部署账号。
+
+推荐目录布局：
+
+    /opt/cloud-artifact-management/<module>/releases/<version>/  # Compose、.env、初始化脚本
+    /opt/cloud-artifact-management/<module>/current              # 指向当前版本的符号链接
+    /var/lib/cloud-artifact-management/<module>/                 # SQLite、身份密钥、制品和缓存
+    /var/tmp/cam-incoming/                                       # 临时接收镜像和配置包
+
+其中 `<module>` 为 `edge`、`core` 或 `agent`。`/opt` 下的发布配置由 `camops:camops` 管理，版本目录建议 `0750`；实际 `.env` 含部署凭据，必须为 `0600`。`/var/lib/cloud-artifact-management` 是应用持久化数据目录，由 root 创建，模块目录交给容器 UID `10001:10001`，不要放在 `/home/camops` 或 `/root` 下。Docker 镜像层仍默认放在 `/var/lib/docker`，除非另行设计 Docker data-root，不要把它和 CAM 数据目录混用。
+
+创建基础目录示例：
+
+    install -d -o camops -g camops -m 0750 /opt/cloud-artifact-management
+    install -d -o camops -g camops -m 0700 /var/tmp/cam-incoming
+    install -d -o root -g root -m 0755 /var/lib/cloud-artifact-management
 
 ## 1. 确认系统和磁盘
 
@@ -168,68 +196,79 @@
 
 输出应为 Disabled。禁用 SELinux 会降低主机的强制访问控制能力；正式环境应确认这是所在安全基线允许的部署要求，并配合防火墙、最小权限和受控网络策略。
 
-## 7. 初始化 CAM Edge 数据目录
+## 7. 解包模块配置并初始化数据目录
 
-将 CAM 的 Edge 部署文件复制到服务器，至少包括：
+每台主机只接收对应模块的镜像包和配置包。例如 Edge 主机接收：
 
-- deploy/compose.edge.yaml
-- deploy/edge.env.example
-- deploy/init-module-data.sh
-- Edge 和 Edge Web 镜像或离线镜像归档
+- `cam-edge-images-<版本>.tar` 及其 `.sha256`
+- `cam-edge-config-<版本>.tar` 及其 `.sha256`
 
-准备配置：
+Core、Agent 分别替换为各自前缀。配置包先放到 `/var/tmp/cam-incoming`，校验后由 `camops` 解包到版本目录；不要直接在 `/root` 下解包：
 
-    cp deploy/edge.env.example deploy/edge.env
-    chmod 600 deploy/edge.env
-    vi deploy/edge.env
+    cd /var/tmp/cam-incoming
+    sha256sum -c cam-edge-config-<版本>.tar.sha256
+    tar -xf cam-edge-config-<版本>.tar
+    sudo install -d -o camops -g camops -m 0750 \
+      /opt/cloud-artifact-management/edge/releases/<版本>
+    sudo cp -a cam-edge-config-<版本>/. \
+      /opt/cloud-artifact-management/edge/releases/<版本>/
+    sudo chown -R camops:camops \
+      /opt/cloud-artifact-management/edge/releases/<版本>
+    sudo chmod 600 \
+      /opt/cloud-artifact-management/edge/releases/<版本>/edge.env
+    sudo ln -sfn releases/<版本> \
+      /opt/cloud-artifact-management/edge/current
 
-确认 CAM_EDGE_DATA_DIR 指向：
+将上面的 `edge` 替换为 `core` 或 `agent`，并使用对应的 `.env` 文件。编辑配置时使用当前版本目录中的文件：
+
+    vi /opt/cloud-artifact-management/edge/current/edge.env
+
+配置中的数据目录应分别指向：
 
     /var/lib/cloud-artifact-management/edge
+    /var/lib/cloud-artifact-management/core
+    /var/lib/cloud-artifact-management/agent
 
-初始化目录权限：
+初始化目录权限时使用对应模块配置和脚本：
 
-    CAM_EDGE_DATA_DIR=/var/lib/cloud-artifact-management/edge \
-      sh deploy/init-module-data.sh edge
+    sudo CAM_EDGE_DATA_DIR=/var/lib/cloud-artifact-management/edge \
+      sh /opt/cloud-artifact-management/edge/current/init-module-data.sh edge
 
-不要把 CAM 数据目录改成 777；初始化脚本会按容器用户 10001:10001 设置访问权限。
+Core、Agent 分别设置 `CAM_CORE_DATA_DIR`、`CAM_AGENT_DATA_DIR`。不要把 CAM 数据目录改成 `777`；初始化脚本会按容器用户 `10001:10001` 设置访问权限。
 
 ## 8. 导入离线镜像
 
-如果收到镜像归档和校验文件，先校验再导入：
+镜像 `.tar` 是 Docker 镜像归档，不需要用 `tar -xf` 解包；校验通过后直接 `docker load`：
 
-    sha256sum -c cam-images-<版本>.tar.sha256
-    docker load -i cam-images-<版本>.tar
-    docker image ls
+    cd /var/tmp/cam-incoming
+    sha256sum -c cam-edge-images-<版本>.tar.sha256
+    docker load -i cam-edge-images-<版本>.tar
+    docker image inspect cam-backend:<版本> cam-edge-web:<版本>
 
-Compose 文件中的镜像名和标签必须与 docker image ls 的结果完全一致。离线环境不要执行 docker compose pull，也不要在 Compose 中使用 build 或 pull_policy: always。
+Core、Agent 分别检查 `cam-core-web:<版本>`、`cam-agent-web:<版本>`。Compose 文件中的镜像名和标签必须与 `docker image ls` / `docker image inspect` 的结果完全一致。离线环境不要执行 `docker compose pull`，也不要在 Compose 中使用 `build` 或 `pull_policy: always`。
 
-## 9. 启动并验证 Edge
+## 9. 启动并验证模块
 
-先检查 Compose 展开结果：
+以 Edge 为例，日常命令由 `camops` 执行；若未加入 `docker` 组，则在命令前加 `sudo`：
 
-    docker compose --env-file deploy/edge.env \
-      -f deploy/compose.edge.yaml config
-
-启动 Edge：
-
-    docker compose --env-file deploy/edge.env \
-      -f deploy/compose.edge.yaml up -d
+    cd /opt/cloud-artifact-management/edge/current
+    docker compose --env-file edge.env -f compose.edge.yaml config
+    docker compose --env-file edge.env -f compose.edge.yaml up -d
 
 查看服务：
 
-    docker compose --env-file deploy/edge.env \
-      -f deploy/compose.edge.yaml ps
+    docker compose --env-file edge.env -f compose.edge.yaml ps
 
 查看日志：
 
-    docker compose --env-file deploy/edge.env \
-      -f deploy/compose.edge.yaml logs --tail=200
+    docker compose --env-file edge.env -f compose.edge.yaml logs --tail=200
 
 健康检查：
 
     curl -fsS http://127.0.0.1:3101/health/ready
     curl -fsS http://127.0.0.1:8088/
+
+Core 使用 `current/core.env` 与 `compose.core.yaml`，Agent 使用 `current/agent.env` 与 `compose.agent.yaml`；健康检查端口分别按对应 Compose 文件和 `.env` 设置确认。升级时创建新的 `releases/<版本>`，校验配置和镜像后再切换 `current`，不要覆盖正在运行的版本目录。回退时把 `current` 指回上一版本并重新执行 `up -d`。
 
 正式 HTTPS 入口由所在安全区的受控反向代理提供，CAM Web 默认只绑定本机受控端口。不要把 API 端口直接暴露到不受控网络。
 
@@ -260,7 +299,7 @@ Compose 文件中的镜像名和标签必须与 docker image ls 的结果完全�
     findmnt /var/lib/cloud-artifact-management/edge
     ls -ld /var/lib/cloud-artifact-management/edge
     CAM_EDGE_DATA_DIR=/var/lib/cloud-artifact-management/edge \
-      sh deploy/init-module-data.sh edge
+      sh /opt/cloud-artifact-management/edge/current/init-module-data.sh edge
 
 不要通过把目录改成 777 来绕过权限问题。
 
