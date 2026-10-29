@@ -16,7 +16,10 @@ output_dir="$output_root/v$version"
 mkdir -p "$output_dir"
 
 for module in edge core agent; do
-  source_backend="cam-$module:$source_tag"
+  # The backend image is shared by all three modules. Do not source the
+  # legacy module-specific backend tags: they can be stale and omit files
+  # added after the shared-image migration.
+  source_backend="cam-backend:$source_tag"
   backend="cam-backend:$version"
   web="cam-$module-web:$version"
   source_web="cam-$module-web:$source_tag"
