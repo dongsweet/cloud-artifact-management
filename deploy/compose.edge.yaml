@@ -1,6 +1,6 @@
 services:
   cam-edge:
-    image: ${CAM_EDGE_IMAGE:-cam-backend:0.2.2}
+    image: ${CAM_EDGE_IMAGE:-cam-backend:0.2.4}
     container_name: cam-edge
     read_only: true
     user: "10001:10001"
