@@ -22,13 +22,7 @@ passwd sugon
 id sugon
 ```
 
-为 `sugon` 设置每台主机独立的高强度口令，并由堡垒机或密码保险箱管理。Docker、Compose 和系统服务操作统一使用经过审计的 `sudo`：
-
-```bash
-su - sugon
-sudo docker version
-sudo docker compose version
-```
+为 `sugon` 设置每台主机独立的高强度口令，并由堡垒机或密码保险箱管理。Docker、Compose 和系统服务操作在完成离线安装后，统一使用经过审计的 `sudo`；本节不提前执行 Docker 检查。
 
 不要把 `sugon` 加入 `docker`、`wheel` 或其他管理员组；`docker` 组本身具备接近 root 的主机控制能力。配置文件放在 `/opt/cloud-artifact-management/<module>/`，应用数据放在 `/var/lib/cloud-artifact-management/<module>/`，接收中的交付包按版本放在 `/home/sugon/work/cam-deploy/<版本>/`。
 
@@ -160,6 +154,16 @@ docker compose ls
 ```
 
 正式环境使用系统级插件目录，不要只安装到某个用户的 `$HOME` 下。
+
+完成 Docker 和 Compose 安装、并由 root 验证服务正常后，再切换到 `sugon` 验证日常操作权限：
+
+```bash
+su - sugon
+sudo docker version
+sudo docker compose version
+```
+
+如果 `sugon` 没有必要的 sudo 权限，应由系统管理员按安全策略授予最小命令范围；不要因此把用户加入 `docker` 组。
 
 ### SELinux
 
