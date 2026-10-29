@@ -35,22 +35,28 @@ docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-edge-web:$VERSION 
 docker build --build-arg CADDY_BASE_IMAGE=caddy:2.11.4 -t cam-core-web:$VERSION -f core-web.Dockerfile .
 ```
 
-构建前应运行 `npm ci` 和 `npm test`。离线环境有两种镜像导入方式：由受控镜像仓库同步签名后的镜像，或将镜像归档通过批准的介质/交换流程送入目标区。离线归档示例：
+构建前应运行 `npm ci` 和 `npm test`。离线环境有两种镜像导入方式：由受控镜像仓库同步签名后的镜像，或将镜像归档通过批准的介质/交换流程送入目标区。离线归档示例（按目标主机分别导出；每个包都包含同一个后端镜像和该模块的 Web 镜像）：
 
 ```bash
-docker save \
-  cam-backend:$VERSION cam-edge-web:$VERSION \
-  cam-core-web:$VERSION cam-agent-web:$VERSION \
-  -o cam-images-$VERSION.tar
-sha256sum cam-images-$VERSION.tar > cam-images-$VERSION.tar.sha256
+docker save cam-backend:$VERSION cam-edge-web:$VERSION \
+  -o cam-edge-images-$VERSION.tar
+sha256sum cam-edge-images-$VERSION.tar > cam-edge-images-$VERSION.tar.sha256
+
+docker save cam-backend:$VERSION cam-core-web:$VERSION \
+  -o cam-core-images-$VERSION.tar
+sha256sum cam-core-images-$VERSION.tar > cam-core-images-$VERSION.tar.sha256
+
+docker save cam-backend:$VERSION cam-agent-web:$VERSION \
+  -o cam-agent-images-$VERSION.tar
+sha256sum cam-agent-images-$VERSION.tar > cam-agent-images-$VERSION.tar.sha256
 ```
 
 在目标主机校验归档摘要后导入：
 
 ```bash
-sha256sum -c cam-images-1.2.0.tar.sha256
-docker load -i cam-images-1.2.0.tar
-docker image inspect cam-backend:1.2.0 cam-edge-web:1.2.0 cam-core-web:1.2.0 cam-agent-web:1.2.0
+sha256sum -c cam-edge-images-1.2.0.tar.sha256
+docker load -i cam-edge-images-1.2.0.tar
+docker image inspect cam-backend:1.2.0 cam-edge-web:1.2.0
 ```
 
 Compose 中的镜像名必须与已导入的完整镜像名、标签一致。三个后端 Compose 服务共用 `cam-backend:<版本>`，并分别通过固定的 `SERVICE=cam-edge`、`SERVICE=cam-core`、`SERVICE=cam-agent` 选择运行模式；不要把该变量交给普通 `.env` 修改。若使用内部镜像仓库，给镜像加仓库前缀后，分别在模块 `.env` 中设置 `CAM_*_IMAGE`，再执行 `docker login` 并确认目标主机可访问该仓库。离线隔离区不要在 Compose 中使用 `build:`、`pull_policy: always`，也不要依赖容器启动时下载依赖。

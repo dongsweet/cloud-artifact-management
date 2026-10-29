@@ -1,6 +1,6 @@
 services:
   cam-agent:
-    image: ${CAM_AGENT_IMAGE:-cam-backend:0.2.1}
+    image: ${CAM_AGENT_IMAGE:-cam-backend:0.2.2}
     container_name: cam-agent
     read_only: true
     user: "10001:10001"
