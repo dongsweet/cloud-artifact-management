@@ -27,6 +27,8 @@ test('Agent creates human delivery grants for cached formal artifacts and record
   core.coreStore.createDistributionTask({ agentId: registered.agentId, artifactId: 'BASELINE-REQ-DELIVERY' });
   try {
     const headers = await login(app); const artifactId = 'BASELINE-REQ-DELIVERY';
+    const traversal = await app.inject({ method: 'GET', url: '/api/v1/cache/%2e%2e%2fagent.sqlite', headers });
+    assert.equal(traversal.statusCode, 400, traversal.body);
     const available = await app.inject({ method: 'GET', url: '/api/v1/available-artifacts', headers });
     assert.equal(available.statusCode, 200, available.body); assert.equal(available.json().cacheSummary.totalVersionCount, 1); assert.equal(available.json().cacheSummary.cachedFileCount, 1); assert.equal(available.json().items[0].files[0].cacheState, 'READY'); assert.equal(available.json().items[0].agentStatus, 'CACHED'); assert.equal(available.json().items[0].distributionAuthorized, true);
     const summary = await app.inject({ method: 'GET', url: '/api/v1/cache/summary', headers });
