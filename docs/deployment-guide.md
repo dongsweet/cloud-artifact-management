@@ -237,6 +237,17 @@ sudo ln -sfn "releases/$VERSION" \
   "/opt/cloud-artifact-management/$MODULE/current"
 ```
 
+`$ROOT/extracted` 只是接收目录下的临时解包区；Compose 和初始化操作都使用 `/opt/cloud-artifact-management/<module>/current/`，不要从 `extracted` 目录直接启动。
+
+配置包安装完成后，初始化对应模块的数据目录。以下是 Edge 示例；Core、Agent 分别替换环境变量名和模块名：
+
+```bash
+sudo env CAM_EDGE_DATA_DIR=/var/lib/cloud-artifact-management/edge \
+  sh /opt/cloud-artifact-management/edge/current/init-module-data.sh edge
+```
+
+Core 使用 `CAM_CORE_DATA_DIR`/`core`，Agent 使用 `CAM_AGENT_DATA_DIR`/`agent`。该脚本会设置容器用户 `10001:10001` 的访问权限。
+
 部署时使用的镜像：
 
 | 镜像 | 用途 |
@@ -266,13 +277,7 @@ CAM 的 SQLite 数据库、密钥、下载文件、候选包和 Agent 缓存均�
 /var/lib/cloud-artifact-management/agent/  Agent 数据、私钥、制品和缓存
 ```
 
-在各目标主机只初始化对应目录。以 Linux Docker 主机为例：
-
-```bash
-sudo CAM_EDGE_DATA_DIR=/var/lib/cloud-artifact-management/edge sh deploy/init-module-data.sh edge
-sudo CAM_CORE_DATA_DIR=/var/lib/cloud-artifact-management/core sh deploy/init-module-data.sh core
-sudo CAM_AGENT_DATA_DIR=/var/lib/cloud-artifact-management/agent sh deploy/init-module-data.sh agent
-```
+在各目标主机只初始化对应目录。应先完成对应配置包解包，再使用配置包中的 `current/init-module-data.sh` 初始化；具体命令见下方“配置文件准备”。
 
 脚本会创建目录并设为容器用户 `10001:10001` 可读写。若目标主机的挂载目录需要使用其他 UID/GID，可在执行脚本时设置 `CAM_DATA_UID` 和 `CAM_DATA_GID`，并确保容器也以相同用户运行。目录必须位于本机可靠存储上，并纳入所在区域的备份和恢复策略。不要把 SQLite 数据库放到多主机共享文件系统，也不要对运行中的数据库文件做普通文件复制；备份时应停服务或使用 SQLite 一致性备份方式。日常禁止使用 `docker compose down -v`，该命令会删除 Compose 管理的命名卷；本部署使用主机绑定目录，仍应避免执行任何清理数据目录的命令。
 
