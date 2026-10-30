@@ -16,6 +16,11 @@ services:
     # 删除或更换目录会导致服务身份丢失并需要重新配对。
     volumes:
       - ${CAM_DATA_DIR:-/var/lib/cloud-artifact-management/core}:/data
+    # Core 所在主机没有 DNS 时，取消注释并将占位符替换为现场 IP。
+    # extra_hosts:
+    #   - "cam-edge-gate.xcsgwan.cn:<Edge-gateway-IP>"
+    #   - "cam-xinjiang.xcsgwan.cn:<Xinjiang-gateway-IP>"
+    #   - "cam-fuzhou.xcsgwan.cn:<Fuzhou-gateway-IP>"
     environment:
       # The backend image is shared by all modules; SERVICE selects this module.
       SERVICE: cam-core

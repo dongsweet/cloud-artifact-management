@@ -203,7 +203,7 @@ cam-edge-config-<版本>.tar
 cam-edge-config-<版本>.tar.sha256
 ```
 
-Core、Agent 分别将文件名中的 `edge` 替换为 `core`、`agent`。镜像包包含共用的 `cam-backend:<版本>` 和对应 Web/Caddy 镜像；配置包包含对应 Compose、`.env` 模板、初始化脚本和版本文件。配置包不应包含测试机配置、真实云管密钥或 AAA 密钥。
+Core、Agent 分别将文件名中的 `edge` 替换为 `core`、`agent`。镜像包包含共用的 `cam-backend:<版本>` 和对应 Web/Caddy 镜像；配置包包含对应 Compose、`.env` 模板、初始化脚本和版本文件。配置包不应包含现场 IP、测试机配置、真实云管密钥或 AAA 密钥。
 
 目标主机接收文件时，使用 `sugon` 用户按版本建立目录。例如首次部署 `v0.2.4`：
 
@@ -332,6 +332,26 @@ chmod 600 /opt/cloud-artifact-management/$MODULE/current/$MODULE.env
 | `CAM_SOURCE_ALLOWLIST` | 仅 Edge 使用，配置允许拉取研发内网文件的来源地址/网段策略，按现网实际值收紧；不要照搬模板占位值 |
 | `CAM_MAX_CANDIDATE_SIZE` | 仅 Edge 使用，单个候选包允许的最大字节数；默认 2 TiB，必须结合本地磁盘容量收紧，超限或来源重定向会拒绝接收 |
 
+### 无 DNS 服务器时的域名解析
+
+Core 和 Edge 的请求分别由 `cam-core`、`cam-edge` 容器发起。宿主机 `/etc/hosts` 的自定义记录不会自动复制到容器，所以只改宿主机 hosts 可能仍会出现容器内 `EAI_AGAIN`。有 DNS 时保持 Compose 文件不变；无 DNS 时，只需编辑对应主 Compose 文件：在 `deploy/compose.core.yaml` 的 `cam-core` 服务中，或 `deploy/compose.edge.yaml` 的 `cam-edge` 服务中，取消 `extra_hosts` 示例注释并把占位符替换为现场 IP。Core 的示例覆盖三个 Edge/站点域名，Edge 的示例覆盖 Core 网关域名。这样只需修改一个 YAML 文件，不需要在 `.env` 另配 IP 或加载第二个 Compose 文件。静态映射只解决名称解析，不会跳过 TLS 证书校验；应用地址仍使用域名，以保留 HTTPS 主机名校验。
+
+编辑 Core 的 Compose 后，校验并重建 Core API 容器：
+
+```bash
+sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml config
+sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml up -d --force-recreate cam-core
+sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml exec -T cam-core cat /etc/hosts
+```
+
+编辑 Edge 的 Compose 后，也用单文件校验并重建 `cam-edge`：
+
+```bash
+sudo docker compose --env-file /opt/cloud-artifact-management/edge/current/edge.env -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml config
+sudo docker compose --env-file /opt/cloud-artifact-management/edge/current/edge.env -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml up -d --force-recreate cam-edge
+sudo docker compose --env-file /opt/cloud-artifact-management/edge/current/edge.env -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml exec -T cam-edge cat /etc/hosts
+```
+
 ### TLS 证书准备（以 Edge 为例）
 
 正式环境使用容器内嵌 Caddy 时，证书放在宿主机证书目录，Web 容器以只读方式挂载为 `/tls`。默认 Edge 目录为：
@@ -449,11 +469,21 @@ sudo docker compose \
   exec -it cam-edge node apps/cam-edge/src/bootstrap-gate.js
 ```
 
+执行过程中需要导入 Core 网闸对接页面导出的身份公钥包。命令在 `cam-edge` 容器内运行，提示中的 `@/路径` 必须是容器内路径，不能直接填写 Edge 宿主机上的 `/home/...` 路径。Edge Compose 将宿主机 `CAM_DATA_DIR` 挂载到容器 `/data`；例如 `edge.env` 使用默认 `CAM_DATA_DIR=/var/lib/cloud-artifact-management/edge`，且公钥包已放在 `/home/sugon/work/cam-deploy/tls/core.pub` 时，先复制到挂载目录：
+
+```bash
+sudo install -D -m 0644 \
+  /home/sugon/work/cam-deploy/tls/core.pub \
+  /var/lib/cloud-artifact-management/edge/core.pub
+```
+
+若 `CAM_DATA_DIR` 设置为其他路径，应将文件复制到该目录下；然后在初始化提示处输入容器内路径 `@/data/core.pub`。该文件只包含公钥，可设为 `0644`，无需把它改成容器用户所有。若公钥导入失败后重新运行脚本，已保存的 Core 地址可直接回车保留。
+
 按提示填写：
 
 1. Core 控制地址（外侧，指向 Core `8201` 映射地址）；
 2. Core 制品传输地址（外侧，指向 Core `8202` 映射地址）；
-3. Core 身份公钥包（从 Core 网闸对接页面导出/复制的 JSON）。
+3. Core 身份公钥包（输入 `@/data/core.pub`，从挂载目录读取）。
 
 脚本会把地址和 Core 公钥写入 Edge 本地数据库，并尝试执行签名配对探测。若 Core 尚未登记 Edge 公钥，可先在提示处输入 `-` 跳过测试；完成 Core 登记后重新执行脚本。私钥始终保存在 Edge 数据目录的 `gate-keyring.json` 中，只显示身份公钥包和公钥指纹，不允许通过脚本、页面或日志导出私钥。配对成功后即可登录 Edge 页面。
 
@@ -471,13 +501,12 @@ curl -fsS http://127.0.0.1:80/health/ready
 首次建立账号时，可直接使用交互终端创建安全管理员；无需预先创建系统管理员。需要系统管理员时，安全管理员可登录页面后创建：
 
 ```bash
-sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml exec -it cam-core node apps/cam-core/src/bootstrap-admin.js
 sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env -f /opt/cloud-artifact-management/core/current/compose.core.yaml exec -it cam-core node apps/cam-core/src/bootstrap-security-admin.js
 ```
 
-初始口令在终端隐藏输入；登录后按要求修改密码。日常账号与角色管理由安全管理员完成。不要把账号密码写入 Compose 文件、镜像、命令行参数或版本库。
+`bootstrap-admin.js` 创建的是 Core 系统管理员，本流程不需要执行；首次安全管理员登录后，如确有需要，可在账号管理页面创建系统管理员。初始口令在终端隐藏输入；登录后按要求修改密码。日常账号与角色管理由安全管理员完成。不要把账号密码写入 Compose 文件、镜像、命令行参数或版本库。
 
-Core 页面中的 Agent 功能通过 `/agent/` 反代到 `CAM_AGENT_UPSTREAM`。跨主机部署时，把 `CAM_AGENT_UPSTREAM` 改为 Agent Web 主机的内网 DNS 名称/地址（Agent Web 直接发布 80/443），主机防火墙只允许受控 Core Web 访问；Agent API 端口 3103 不发布到宿主机。Core API 的 `3102` 仅在 Compose 网络内可达；Core Caddy 的控制/API 入口为 `8201`，专用数据传输入口为 `8202`。网闸规则应分别映射到这两个端口。Core 与 Agent 无须共享 Docker 网络。
+Core 页面里的“Agent 管理”用于管理已注册 Agent 的身份和任务，不是 Agent 自身的 Web 管理页面。Agent 管理页面通常直接通过 Agent 主机的 Web 地址访问。Core Web 虽配置了 `/agent/` 到 `CAM_AGENT_UPSTREAM` 的反向代理路由，但 Core 菜单目前没有对应入口；只有计划通过 Core 地址访问该代理路径时，才需要配置 `CAM_AGENT_UPSTREAM`。跨主机时，填写 Core Web 容器可达的 Agent Web 主机内网 DNS 名称/地址及端口（Agent Web 默认在宿主机发布 `80/443`），并在 Agent 主机防火墙中仅允许 Core 主机的实际出站地址访问对应 Web 端口。Agent API 端口 `3103` 不发布到宿主机。Core API 的 `3102` 仅在 Compose 网络内可达；Core Caddy 的控制/API 入口为 `8201`，专用数据传输入口为 `8202`。网闸规则应分别映射到这两个端口。Core 与 Agent 无须共享 Docker 网络。
 
 Core 的云管、AAA 和网闸地址必须从 Core 所在网络可达。云管工单配置和 Agent/Edge 间的审批状态通过 Core 后端流程完成；不要让 Edge 直接携带云管认证信息。
 
@@ -495,7 +524,6 @@ curl -fsS http://127.0.0.1:80/
 首次登录前，可直接交互式创建 Agent 安全管理员；不需要预先创建系统管理员。需要系统管理员时，再由安全管理员登录页面创建。也可以按运维安排独立初始化系统管理员：
 
 ```bash
-sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-admin.js
 sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-security-admin.js
 ```
 
