@@ -62,9 +62,10 @@ tune2fs -m 1 /dev/vdb1
 按模块挂载到对应目录；Edge、Core、Agent 通常使用各自独立主机和数据盘：
 
 ```bash
-mkdir -p /var/lib/cloud-artifact-management/<module>
-mount /dev/vdb1 /var/lib/cloud-artifact-management/<module>
-df -h /var/lib/cloud-artifact-management/<module>
+MODULE=core
+mkdir -p /var/lib/cloud-artifact-management/$MODULE
+mount /dev/vdb1 /var/lib/cloud-artifact-management/$MODULE
+df -h /var/lib/cloud-artifact-management/$MODULE
 blkid /dev/vdb1
 ```
 
@@ -75,9 +76,9 @@ UUID=实际UUID  /var/lib/cloud-artifact-management/<module>  ext4  defaults,noa
 ```
 
 ```bash
-umount /var/lib/cloud-artifact-management/<module>
+umount /var/lib/cloud-artifact-management/$MODULE
 mount -a
-findmnt /var/lib/cloud-artifact-management/<module>
+findmnt /var/lib/cloud-artifact-management/$MODULE
 ```
 
 Docker 自身的镜像和容器数据默认位于 `/var/lib/docker`；不要未经设计就把 Docker data-root 和 CAM 数据目录混用。
@@ -298,8 +299,8 @@ CAM 的 SQLite 数据库、密钥、下载文件、候选包和 Agent 缓存均�
 完成上面的配置包解包后，编辑当前版本配置：
 
 ```bash
-vi /opt/cloud-artifact-management/edge/current/edge.env
-chmod 600 /opt/cloud-artifact-management/edge/current/edge.env
+vi /opt/cloud-artifact-management/$MODULE/current/$MODULE.env
+chmod 600 /opt/cloud-artifact-management/$MODULE/current/$MODULE.env
 ```
 
 生产环境只部署对应模块文件；不要把 Core 的 `.env`、云管/AAA 密钥或其他区的配置复制到 Edge、Agent 主机。配置模板只列启动必需项，其他配置由 Compose 默认值提供；网闸业务参数、AAA 参数和云管工单业务参数优先在页面保存。接收目录只用于收包和校验，不作为 Compose 工作目录。
@@ -323,7 +324,9 @@ chmod 600 /opt/cloud-artifact-management/edge/current/edge.env
 | `CAM_COOKIE_SECURE` | HTTPS 正式环境保持 `true`；只有隔离的 HTTP 测试可设为 `false` |
 | `CAM_GATE_*_URL` | Edge 的 `CAM_GATE_CORE_CONTROL_URL` 是必填的部署启动地址，页面只读；`CAM_GATE_CORE_TRANSFER_URL` 指向 Core `8202`。Core 的 Edge 控制地址指向 Edge `8101`，在网闸配置页面维护。不要填对端容器地址或自行拼接业务路径 |
 | `CAM_GATE_TLS_*` | 只有映射 HTTPS 使用私有 CA 或指定证书名时设置；CA 文件须通过只读挂载等方式提供给容器，不能仅写一个容器内不存在的路径 |
-| `CAM_CLOUD_*` | 仅 Core 使用。`.env` 只保留 API 基址、认证用户 ID 和密钥；工单级别、来源、业务类型、部门、团队和处理人等在 Core 页面配置 |
+| `CAM_CLOUD_*` | 仅 Core 使用。`.env` 只保留 API 基址、认证用户 ID、密钥及 TLS 信任设置；工单级别、来源、业务类型、部门、团队和处理人等在 Core 页面配置 |
+| `CAM_CLOUD_TLS_CA_FILE` | 可选，Core 容器内的私有 CA/证书链 PEM 路径，例如 `/data/cloud-ca.pem`；证书文件放在 `CAM_DATA_DIR` 下并限制权限。不要填写云管私钥 |
+| `CAM_CLOUD_TLS_INSECURE` | 仅临时排障使用，默认 `false`；设为 `true` 会只对云管连接跳过证书校验，正式环境禁止启用 |
 | `CAM_AAA_*` | Core、Agent 的 AAA 参数在各自页面配置；只有需要部署期预置时才放入对应 `.env`，不把普通用户密码放入配置文件 |
 | `CAM_AGENT_UPSTREAM` | Core Web 或其他受控反代使用，填写从反代容器可达的 Agent Web 地址（通常为 Agent 主机的 80/443 入口）；多云中心按实际入口配置可路由的 Agent Web 地址 |
 | `CAM_SOURCE_ALLOWLIST` | 仅 Edge 使用，配置允许拉取研发内网文件的来源地址/网段策略，按现网实际值收紧；不要照搬模板占位值 |
@@ -343,15 +346,15 @@ chmod 600 /opt/cloud-artifact-management/edge/current/edge.env
 
 ```bash
 sudo install -d -o 10001 -g 10001 -m 750 \
-  /var/lib/cloud-artifact-management/edge/tls
+  /var/lib/cloud-artifact-management/$MODULE/tls
 
 sudo install -o 10001 -g 10001 -m 640 \
   fullchain.pem \
-  /var/lib/cloud-artifact-management/edge/tls/fullchain.pem
+  /var/lib/cloud-artifact-management/$MODULE/tls/fullchain.pem
 
 sudo install -o 10001 -g 10001 -m 600 \
   privkey.pem \
-  /var/lib/cloud-artifact-management/edge/tls/privkey.pem
+  /var/lib/cloud-artifact-management/$MODULE/tls/privkey.pem
 ```
 
 在真实的 `edge.env` 中启用页面 HTTPS：
@@ -381,6 +384,33 @@ sudo docker compose \
 ```
 
 Core、Agent 分别使用各自的 `CAM_CORE_TLS_DIR`、`CAM_AGENT_TLS_DIR` 目录和对应的 `CAM_*_TLS_CERT_FILE`、`CAM_*_TLS_KEY_FILE`。启用页面 HTTPS 后，生产环境保持 `CAM_COOKIE_SECURE=true`；仅在隔离的临时 HTTP 测试环境才设置为 `false`。
+
+### 云管 HTTPS 证书
+
+云管使用 HTTPS 且证书由内部 CA 签发时，向云管管理员获取根 CA/中间 CA 证书链，不要索取或复制云管服务器私钥。将 CA 文件放入 Core 的 `CAM_DATA_DIR`，例如：
+
+```bash
+sudo install -o 10001 -g 10001 -m 640 cloud-ca.pem \
+  /var/lib/cloud-artifact-management/core/cloud-ca.pem
+```
+
+在 `core.env` 中填写容器内路径，并保持跳过校验关闭：
+
+```env
+CAM_CLOUD_API_BASE_URL=https://云管域名
+CAM_CLOUD_TLS_CA_FILE=/data/cloud-ca.pem
+CAM_CLOUD_TLS_INSECURE=false
+```
+
+修改后重建 Core 后端容器：
+
+```bash
+sudo docker compose --env-file /opt/cloud-artifact-management/core/current/core.env \
+  -f /opt/cloud-artifact-management/core/current/compose.core.yaml \
+  up -d --force-recreate cam-core
+```
+
+如果管理员暂时只能提供服务器证书，可在确认其为自签名证书或完整信任链后临时作为 CA 文件测试；普通叶子证书不一定能作为信任锚。`CAM_CLOUD_TLS_INSECURE=true` 只适合短时排障，会降低云管连接安全性。
 
 业务字典、人员匹配结果、密钥轮换和网闸映射配置中，适合日常调整的内容优先使用相应管理页面；`.env` 用于部署基础参数和首次启动默认值，不作为日常业务操作界面。各模块嵌入式 Caddy 的页面入口，以及 Edge 控制入口、Core 控制和传输入口，都可独立切换 HTTP/HTTPS、指定证书/私钥和调整宿主机对外端口；启用 HTTPS 前先把证书目录放到 `CAM_*_TLS_DIR`，再重建对应 Web 容器。HTTP/HTTPS 切换会改变访问协议，`CAM_GATE_*_URL` 和外部网闸规则必须同步使用对应协议与端口。
 

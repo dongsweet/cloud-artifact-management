@@ -1,5 +1,6 @@
-import { ProxyAgent } from 'undici';
+import { Agent, ProxyAgent } from 'undici';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { attachmentContentType } from '../../../libs/cam-server/src/attachment-types.js';
 import { maskApprovalCode } from './approval-code.js';
@@ -21,6 +22,24 @@ const EOMS_PATHS = Object.freeze({
 const text = (value) => value === undefined || value === null ? '' : String(value).trim();
 const normalized = (value) => text(value).replace(/\s+/gu, ' ').trim().toLocaleLowerCase();
 const normalizedPath = (value) => text(value).split('/').map(normalized).join('/');
+
+function tlsInsecureValue(value) {
+  const normalizedValue = text(value).toLocaleLowerCase();
+  if (!normalizedValue || ['0', 'false', 'no', 'off'].includes(normalizedValue)) return false;
+  if (['1', 'true', 'yes', 'on'].includes(normalizedValue)) return true;
+  throw Object.assign(new Error('CAM_CLOUD_TLS_INSECURE 必须是 true 或 false'), { code: 'cloud_tls_config_invalid' });
+}
+
+function cloudDispatcher({ proxyUrl, tlsCaFile, tlsInsecure }) {
+  const tls = { rejectUnauthorized: !tlsInsecure };
+  if (tlsCaFile) {
+    try { tls.ca = readFileSync(tlsCaFile); }
+    catch (error) { throw Object.assign(new Error(`无法读取云管 CA 证书：${tlsCaFile}`), { code: 'cloud_tls_ca_unreadable', cause: error }); }
+  }
+  if (proxyUrl) return new ProxyAgent({ uri: proxyUrl, requestTls: tls });
+  if (tlsCaFile || tlsInsecure) return new Agent({ connect: tls });
+  return undefined;
+}
 
 function configurationError(message) {
   return Object.assign(new Error(message), { code: 'cloud_mapping_not_configured' });
@@ -200,6 +219,8 @@ export class CloudAdapter {
     authUsername = process.env.CAM_CLOUD_AUTH_USERNAME,
     authSecret = process.env.CAM_CLOUD_AUTH_SECRET,
     proxyUrl = process.env.CAM_CLOUD_HTTP_PROXY,
+    tlsCaFile = process.env.CAM_CLOUD_TLS_CA_FILE,
+    tlsInsecure = process.env.CAM_CLOUD_TLS_INSECURE,
     timeoutMs = Number(process.env.CAM_CLOUD_TIMEOUT_MS ?? 10000),
     fetchImpl = globalThis.fetch,
     env = process.env
@@ -211,7 +232,9 @@ export class CloudAdapter {
     this.timeoutMs = timeoutMs;
     this.fetch = fetchImpl;
     this.env = env;
-    this.dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
+    this.tlsCaFile = text(tlsCaFile);
+    this.tlsInsecure = tlsInsecureValue(tlsInsecure);
+    this.dispatcher = cloudDispatcher({ proxyUrl, tlsCaFile: this.tlsCaFile, tlsInsecure: this.tlsInsecure });
   }
 
   enabled() { return Boolean(this.baseUrl && this.authUserId && this.authSecret && this.fetch); }

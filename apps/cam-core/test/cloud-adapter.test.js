@@ -32,6 +32,21 @@ test('CloudAdapter keeps upstream socket failure details without exposing creden
   });
 });
 
+test('CloudAdapter configures a private CA without disabling TLS verification', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'cam-cloud-tls-'));
+  const caPath = join(dataDir, 'cloud-ca.pem');
+  await writeFile(caPath, '-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n');
+  const adapter = new CloudAdapter({ baseUrl: 'https://cloud.test:9443', authUserId: '2308', authSecret: 'secret', tlsCaFile: caPath, tlsInsecure: false, env, fetchImpl: async () => response({ ok: true }) });
+  assert.ok(adapter.dispatcher, 'a custom dispatcher is required to pass the CA to undici');
+  assert.equal(adapter.tlsInsecure, false);
+  await rm(dataDir, { recursive: true, force: true });
+});
+
+test('CloudAdapter rejects invalid TLS bypass values and unreadable CA files', async () => {
+  assert.throws(() => new CloudAdapter({ baseUrl: 'https://cloud.test:9443', authUserId: '2308', authSecret: 'secret', tlsInsecure: 'sometimes', env }), { code: 'cloud_tls_config_invalid' });
+  assert.throws(() => new CloudAdapter({ baseUrl: 'https://cloud.test:9443', authUserId: '2308', authSecret: 'secret', tlsCaFile: 'missing-cloud-ca.pem', env }), { code: 'cloud_tls_ca_unreadable' });
+});
+
 test('CloudAdapter uploads a verified report as a workflow multipart attachment', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-cloud-upload-'));
   const path = join(dataDir, 'verification report.pdf');
