@@ -123,7 +123,7 @@ test('Agent account page serves the shared Core role and account presentation as
   assert.match(webDockerfile, /COPY --from=assets \/out \/srv\/web/);
   const caddyfile = await readFile(resolve(process.cwd(), 'agent-web/Caddyfile'), 'utf8');
   assert.match(caddyfile, /file_server/);
-  assert.match(caddyfile, /reverse_proxy \{\$CAM_AGENT_UPSTREAM:cam-agent:3103\}/);
+  assert.match(caddyfile, /reverse_proxy cam-agent:3103/);
   const sharedLayout = await readFile(resolve(process.cwd(), 'web-shared/layout.css'), 'utf8');
   assert.match(sharedLayout, /\.cam-account-modal \{/);
   assert.match(sharedLayout, /\.cam-password-modal::backdrop \{ background: rgb\(0 0 0 \/ 55%\); \}/);

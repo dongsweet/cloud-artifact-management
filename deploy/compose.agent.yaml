@@ -62,7 +62,6 @@ services:
     volumes:
       - ${CAM_AGENT_TLS_DIR:-/var/lib/cloud-artifact-management/agent/tls}:/tls:ro
     environment:
-      CAM_AGENT_UPSTREAM: ${CAM_AGENT_UPSTREAM:-cam-agent:3103}
       CAM_CADDY_MODULE: agent
       CAM_AGENT_WEB_HTTPS: ${CAM_AGENT_WEB_HTTPS:-false}
       CAM_AGENT_WEB_TLS_CERT_FILE: ${CAM_AGENT_WEB_TLS_CERT_FILE:-/tls/fullchain.pem}

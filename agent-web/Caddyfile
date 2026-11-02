@@ -11,11 +11,11 @@ CAM-CADDY-WEB-ADDRESS {
   root * /srv/web
 
   handle /api/* {
-    reverse_proxy {$CAM_AGENT_UPSTREAM:cam-agent:3103}
+    reverse_proxy cam-agent:3103
   }
 
   handle /health/* {
-    reverse_proxy {$CAM_AGENT_UPSTREAM:cam-agent:3103}
+    reverse_proxy cam-agent:3103
   }
 
   handle {

@@ -328,7 +328,7 @@ chmod 600 /opt/cloud-artifact-management/$MODULE/current/$MODULE.env
 | `CAM_CLOUD_TLS_CA_FILE` | 可选，Core 容器内的私有 CA/证书链 PEM 路径，例如 `/data/cloud-ca.pem`；证书文件放在 `CAM_DATA_DIR` 下并限制权限。不要填写云管私钥 |
 | `CAM_CLOUD_TLS_INSECURE` | 仅临时排障使用，默认 `false`；设为 `true` 会只对云管连接跳过证书校验，正式环境禁止启用 |
 | `CAM_AAA_*` | Core、Agent 的 AAA 参数在各自页面配置；只有需要部署期预置时才放入对应 `.env`，不把普通用户密码放入配置文件 |
-| `CAM_AGENT_UPSTREAM` | Core Web 或其他受控反代使用，填写从反代容器可达的 Agent Web 地址（通常为 Agent 主机的 80/443 入口）；多云中心按实际入口配置可路由的 Agent Web 地址 |
+| `CAM_AGENT_UPSTREAM`（仅 Core Web） | Core Web 的可选 `/agent/` 反代使用，填写从 Core Web 容器可达的 Agent Web 地址（通常为 Agent 主机的 80/443 入口）；Agent 自身不配置此项 |
 | `CAM_SOURCE_ALLOWLIST` | 仅 Edge 使用，配置允许拉取研发内网文件的来源地址/网段策略，按现网实际值收紧；不要照搬模板占位值 |
 | `CAM_MAX_CANDIDATE_SIZE` | 仅 Edge 使用，单个候选包允许的最大字节数；默认 2 TiB，必须结合本地磁盘容量收紧，超限或来源重定向会拒绝接收 |
 
@@ -485,7 +485,14 @@ sudo install -D -m 0644 \
 2. Core 制品传输地址（外侧，指向 Core `8202` 映射地址）；
 3. Core 身份公钥包（输入 `@/data/core.pub`，从挂载目录读取）。
 
-脚本会把地址和 Core 公钥写入 Edge 本地数据库，并尝试执行签名配对探测。若 Core 尚未登记 Edge 公钥，可先在提示处输入 `-` 跳过测试；完成 Core 登记后重新执行脚本。私钥始终保存在 Edge 数据目录的 `gate-keyring.json` 中，只显示身份公钥包和公钥指纹，不允许通过脚本、页面或日志导出私钥。配对成功后即可登录 Edge 页面。
+脚本会把地址和 Core 公钥写入 Edge 本地数据库，并尝试执行签名配对探测。若 Core 尚未登记 Edge 公钥，可先在提示处输入 `-` 跳过测试；完成 Core 登记后重新执行脚本。私钥始终保存在 Edge 数据目录的 `gate-keyring.json` 中，只显示身份公钥包和公钥指纹，不允许通过脚本、页面或日志导出私钥。配对测试成功后，需重启 Edge 后端容器，使运行中的服务重新加载已保存的身份信任，然后再登录 Edge；不需要重启 Edge Web 容器。
+
+```bash
+sudo docker compose \
+  --env-file /opt/cloud-artifact-management/edge/current/edge.env \
+  -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml \
+  restart cam-edge
+```
 
 ## 单独部署 Core
 
@@ -527,7 +534,7 @@ curl -fsS http://127.0.0.1:80/
 sudo docker compose --env-file /opt/cloud-artifact-management/agent/current/agent.env -f /opt/cloud-artifact-management/agent/current/compose.agent.yaml exec -it cam-agent node apps/cam-agent/src/bootstrap-security-admin.js
 ```
 
-Agent 由两个容器组成：`cam-agent` 只监听 Compose 内部的 3103，负责 API、认证、任务调度、缓存和传输；`cam-agent-web` 负责静态页面、Caddy、TLS/反向代理和外部访问，宿主机直接发布 80/443。Caddy 只将 `/api/*` 和 `/health/*` 反代到 Agent API，其余请求由静态文件服务处理。Core Web 如果需要代用户打开该 Agent 页面，必须把 `CAM_AGENT_UPSTREAM` 配置成 Core Web 可达的 Agent Web 地址。Agent 本身直接连接 AAA；Core 负责 Agent 身份注册、授权和正式制品分发，不代理 Agent 用户登录。
+Agent 由两个容器组成：`cam-agent` 只监听 Compose 内部的 3103，负责 API、认证、任务调度、缓存和传输；`cam-agent-web` 负责静态页面、Caddy、TLS/反向代理和外部访问，宿主机直接发布 80/443。Caddy 固定将 `/api/*` 和 `/health/*` 反代到同一 Compose 内的 `cam-agent:3103`，不需要在 Agent `.env` 中配置上游地址；其余请求由静态文件服务处理。Core Web 如果需要代用户打开该 Agent 页面，才需要把 Core 自己的 `CAM_AGENT_UPSTREAM` 配置成 Core Web 可达的 Agent Web 地址。Agent 本身直接连接 AAA；Core 负责 Agent 身份注册、授权和正式制品分发，不代理 Agent 用户登录。
 
 Core 与 Agent 完成双向服务身份配对后，再验证 Agent 在线、任务领取和文件摘要校验。若 Agent 经由外部反代连接 Core，需确保反代完整转发 Agent 身份认证请求头、响应签名头及二进制分块响应，并关闭会改变请求路径/响应正文的代理功能。
 

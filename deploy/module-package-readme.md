@@ -14,6 +14,13 @@
 
 Core 或 Edge 所在主机没有 DNS 时，直接编辑对应的 `compose.core.yaml` 或 `compose.edge.yaml`，取消 `extra_hosts` 示例注释并替换为现场 IP；主机的 `/etc/hosts` 不会自动传入容器。修改后使用原 Compose 命令重新创建对应后端容器。具体说明见部署指南“无 DNS 服务器时的域名解析”。
 
-Edge 首次启动后，先在 Core 登记 Edge 身份公钥，再执行容器内的 `apps/cam-edge/src/bootstrap-gate.js` 初始化 Core 地址和 Core 身份信任。该脚本只显示 Edge 身份公钥包，不显示或导出 Edge 私钥；配置包中的同名文件仅用于留存部署说明，不能在宿主机直接执行。
+Edge 首次启动后，先在 Core 登记 Edge 身份公钥，再执行容器内的 `apps/cam-edge/src/bootstrap-gate.js` 初始化 Core 地址和 Core 身份信任。配对测试成功后，在 Edge 主机重启 `cam-edge` 后端容器，使服务加载新身份后再登录；无需重启 Web 容器。该脚本只显示 Edge 身份公钥包，不显示或导出 Edge 私钥；配置包中的同名文件仅用于留存部署说明，不能在宿主机直接执行。
+
+```bash
+sudo docker compose \
+  --env-file /opt/cloud-artifact-management/edge/current/edge.env \
+  -f /opt/cloud-artifact-management/edge/current/compose.edge.yaml \
+  restart cam-edge
+```
 
 `.env` 是不含密钥的部署模板；Core 的云管/AAA 密钥和网闸业务配置按部署要求填写或在页面中保存，不要把真实密钥回传到版本库或镜像包。

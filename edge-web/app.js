@@ -986,7 +986,15 @@ document.querySelectorAll('[data-modal]').forEach((button) => button.addEventLis
 $('#product-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
-  try { await api('/api/v1/products', { method: 'POST', body: JSON.stringify({ name: $('#product-name').value.trim() }) }); modal('product').hide(); form.reset(); state.products = []; showAlert('软件产品已创建'); navigate('products'); }
+  try {
+    await api('/api/v1/products', { method: 'POST', body: JSON.stringify({ name: $('#product-name').value.trim() }) });
+    modal('product').hide();
+    form.reset();
+    showAlert('软件产品已创建');
+    // The products route may already be active, so navigating to the same
+    // hash does not emit hashchange. Refresh the current list explicitly.
+    await loadProducts(state.routeGeneration);
+  }
   catch (error) { showAlert(error.message, 'danger'); }
 });
 
