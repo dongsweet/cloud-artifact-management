@@ -178,6 +178,9 @@ test('Agent tests its signed Core pairing and persists a rotated identity', asyn
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: 'admin', password: 'Agent-Integration-2026' } });
     assert.equal(login.statusCode, 200, login.body);
     const headers = { cookie: login.headers['set-cookie'].map((value) => value.split(';')[0]).join('; '), 'x-cam-agent-csrf': login.json().csrfToken };
+    const pairing = await app.inject({ method: 'POST', url: '/api/v1/core-config/test', headers, payload: {} });
+    assert.equal(pairing.statusCode, 200, pairing.body, 'manual pairing test must work before Agent ID has been echoed');
+    assert.equal(pairing.json().item.lastTestState, 'PASSED');
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/identity/test', headers, payload: {} })).statusCode, 200);
     assert.equal((await app.inject({ method: 'GET', url: '/api/v1/identity', headers })).json().agentId, registered.agentId, 'Core assigned ID is echoed to the Agent after signed key discovery');
     assert.equal((await app.inject({ method: 'POST', url: '/api/v1/identity/rotate', headers: { cookie: headers.cookie }, payload: {} })).statusCode, 403);
