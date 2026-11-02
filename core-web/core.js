@@ -887,8 +887,36 @@ $('#new-user').addEventListener('click', () => openUserEditor()); $('#user-cance
 document.querySelectorAll('input[name="user-auth-source"]').forEach((input) => input.addEventListener('change', () => updateUserCredentialFields(false)));
 $('#user-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const userId = form.dataset.userId; const roles = [...document.querySelectorAll('#user-roles input:checked')].map((input) => input.value); const edgeRolesSelected = [...document.querySelectorAll('#user-edge-roles input:checked')].map((input) => input.value); const body = { username: $('#user-name').value, displayName: $('#user-display').value, authSource: selectedUserAuthSource(), coreEnabled: $('#user-core-enabled').checked, roles, edgeEnabled: $('#user-edge-enabled').checked, edgeRoles: edgeRolesSelected }; if (!userId && body.authSource === 'LOCAL') body.password = $('#user-password').value; try { const result = await api(userId ? `/api/v1/users/${encodeURIComponent(userId)}` : '/api/v1/users', { method: userId ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); message(userId ? '账号信息已保存；该账号需要重新登录' : body.authSource === 'AAA' ? `AAA 账号 ${result.user.username} 已登记并分配 CAM 角色` : `本地账号 ${result.user.username} 已创建，首次登录须修改初始密码`); closeUserDialog(); if (userId === currentUser?.id) { await api('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); showLogin(); } else await loadUsers(); } catch (error) { $('#user-error').textContent = error.message; $('#user-error').classList.remove('d-none'); } });
 $('#reset-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api(`/api/v1/users/${encodeURIComponent(resetUserId)}/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: $('#reset-password').value }) }); closeUserDialog(); message('密码已重置；该账号下次登录须修改初始密码'); await loadUsers(); } catch (error) { $('#reset-error').textContent = error.message; $('#reset-error').classList.remove('d-none'); } });
-$('#cloud-config-form').addEventListener('submit', async (event) => { event.preventDefault(); const body = Object.fromEntries(new FormData(event.currentTarget)); try { const result = await api('/api/v1/cloud/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); renderCloudMappings(result.item.resolvedMappings); message('云管业务参数和匹配 ID 已保存；后续工单将复用这些 ID。'); await loadCloudConfig(); } catch (error) { message(error.message, 'danger'); } });
-$('#cloud-test').addEventListener('click', async () => { const button = $('#cloud-test'); button.disabled = true; try { const config = Object.fromEntries(new FormData($('#cloud-config-form'))); const result = await api('/api/v1/cloud/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(config) }); renderCloudMappings(result.mappings); $('#cloud-status').textContent = '连接和参数校验成功；点击“保存配置”后，匹配 ID 将持久化并供后续工单复用。'; message('云管连接正常，全部工单参数校验成功。'); } catch (error) { renderCloudMappings(); $('#cloud-status').textContent = '校验失败，请检查填写项后重新测试。'; message(`连接或字典解析失败：${error.message}`, 'danger'); } finally { button.disabled = false; } });
+$('#cloud-config-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const body = Object.fromEntries(new FormData(event.currentTarget));
+  try {
+    const result = await api('/api/v1/cloud/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    renderCloudMappings(result.item.resolvedMappings);
+    message('云管业务参数和匹配 ID 已保存；后续工单将复用这些 ID。');
+    await loadCloudConfig();
+  } catch (error) {
+    $('#cloud-status').textContent = `保存失败：${error.message}`;
+    message(error.message, 'danger');
+  }
+});
+$('#cloud-test').addEventListener('click', async () => {
+  const button = $('#cloud-test');
+  button.disabled = true;
+  try {
+    const config = Object.fromEntries(new FormData($('#cloud-config-form')));
+    const result = await api('/api/v1/cloud/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(config) });
+    renderCloudMappings(result.mappings);
+    $('#cloud-status').textContent = '连接和参数校验成功；点击“保存配置”后，匹配 ID 将持久化并供后续工单复用。';
+    message('云管连接正常，全部工单参数校验成功。');
+  } catch (error) {
+    renderCloudMappings();
+    $('#cloud-status').textContent = `校验失败：${error.message}`;
+    message(`连接或字典解析失败：${error.message}`, 'danger');
+  } finally {
+    button.disabled = false;
+  }
+});
 $('#cloud-config-form').addEventListener('input', () => { renderCloudMappings(); $('#cloud-status').textContent = '参数已修改，需重新测试并保存以更新匹配 ID。'; clearMessage(); });
 $('#gate-config-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await api('/api/v1/gate/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); message('网闸映射配置已保存'); await loadGateConfig(); } catch (error) { message(error.message, 'danger'); } });
 $('#gate-test').addEventListener('click', async () => { const button = $('#gate-test'); button.disabled = true; try { const result = await api('/api/v1/gate/config/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData($('#gate-config-form')))) }); $('#gate-config-status').textContent = `控制通道测试成功：${Object.keys(result.checks).map((key) => `${key}=${result.checks[key].service ?? 'ready'}`).join('，')}`; message('网闸映射通道测试成功'); } catch (error) { $('#gate-config-status').textContent = '映射通道测试失败，请检查网闸虚拟地址和策略。'; message(error.message, 'danger'); } finally { button.disabled = false; } });

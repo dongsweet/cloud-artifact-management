@@ -32,6 +32,44 @@ test('CloudAdapter keeps upstream socket failure details without exposing creden
   });
 });
 
+test('CloudAdapter identifies failing cloud field and returns sanitized diagnostics', async () => {
+  const secret = 'private-cloud-secret';
+  const adapter = new CloudAdapter({
+    baseUrl: 'https://cloud.test/eoms', authUserId: '2308', authSecret: secret, env,
+    fetchImpl: async () => new Response(JSON.stringify({ code: 500, msg: '服务异常', data: null }), {
+      status: 200, headers: { 'content-type': 'application/json' }
+    })
+  });
+  await assert.rejects(adapter.request(EOMS_PATHS.departments, { operation: '部门/中心列表' }), (error) => {
+    assert.match(error.message, /部门\/中心列表查询失败.*code 500.*服务异常/u);
+    assert.equal(error.cloudDiagnostics.operation, '部门/中心列表');
+    assert.equal(error.cloudDiagnostics.path, `/eoms${EOMS_PATHS.departments}`);
+    assert.equal(error.cloudDiagnostics.httpStatus, 200);
+    assert.equal(error.cloudDiagnostics.contentType, 'application/json');
+    assert.equal(error.cloudDiagnostics.failureType, 'business_error');
+    assert.equal(error.cloudDiagnostics.upstreamCode, '500');
+    assert.doesNotMatch(JSON.stringify(error.cloudDiagnostics), /private-cloud-secret/u);
+    return true;
+  });
+});
+
+test('CloudAdapter identifies non-JSON upstream errors without retaining response body', async () => {
+  const adapter = new CloudAdapter({
+    baseUrl: 'https://cloud.test/eoms', authUserId: '2308', authSecret: 'secret', env,
+    fetchImpl: async () => new Response('<html>not found</html>', {
+      status: 404, headers: { 'content-type': 'text/html; charset=utf-8' }
+    })
+  });
+  await assert.rejects(adapter.request(EOMS_PATHS.departments, { operation: '部门/中心列表' }), (error) => {
+    assert.match(error.message, /部门\/中心列表查询失败.*HTTP 404.*text\/html/u);
+    assert.equal(error.cloudDiagnostics.httpStatus, 404);
+    assert.equal(error.cloudDiagnostics.contentType, 'text/html; charset=utf-8');
+    assert.equal(error.cloudDiagnostics.failureType, 'non_json_response');
+    assert.doesNotMatch(JSON.stringify(error.cloudDiagnostics), /not found/u);
+    return true;
+  });
+});
+
 test('CloudAdapter configures a private CA without disabling TLS verification', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cam-cloud-tls-'));
   const caPath = join(dataDir, 'cloud-ca.pem');
@@ -185,7 +223,7 @@ test('CloudAdapter requires the complete business type path returned by EOMS', a
   const mappings = await adapter.resolveMappings({ ...env, processUserNames: 'zhuren_luan', businessTypePath: 'OpenStack平台系统类/平台类-其他' });
   assert.equal(mappings.businessType.id, '230');
   assert.equal(mappings.businessType.path, 'OpenStack平台系统类/平台类-其他');
-  await assert.rejects(adapter.resolveMappings({ ...env, processUserNames: 'zhuren_luan', businessTypePath: '平台类/其他' }), /matched 0 leaf dictionary records/);
+  await assert.rejects(adapter.resolveMappings({ ...env, processUserNames: 'zhuren_luan', businessTypePath: '平台类/其他' }), /业务类型路径.*匹配到 0 条字典记录/u);
 });
 
 test('CloudAdapter permits a multi-department processor returned for the work-order department', async () => {
@@ -218,7 +256,7 @@ test('CloudAdapter rejects ambiguous or non-leaf mappings before creating a work
     throw new Error('create must not be called when mapping is ambiguous');
   };
   const adapter = new CloudAdapter({ baseUrl: 'http://cloud.test:9006', authUserId: '2308', authSecret: 'secret', env: { ...env, CAM_CLOUD_WORK_ORDER_PROCESS_USER_IDS: '2308' }, fetchImpl });
-  await assert.rejects(adapter.createApproval({ requestId: 'FREEZE-1' }), /priority mapping/);
+  await assert.rejects(adapter.createApproval({ requestId: 'FREEZE-1' }), /工单级别.*匹配到 2 条字典记录/u);
 });
 
 test('CloudAdapter fails closed when a processor username is missing or ambiguous', async () => {

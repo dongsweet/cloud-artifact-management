@@ -11,6 +11,26 @@ import { hasCorePermission } from '../../../libs/cam-auth/src/roles.js';
 import { buildCoreLogCollection, expireCoreLogCollections } from './log-collection.js';
 
 function error(reply, status, code, message) { return reply.code(status).send({ error: { code, message } }); }
+function logCloudConfigFailure(request, err, action) {
+  const diagnostics = err.cloudDiagnostics ?? {};
+  const failures = Array.isArray(diagnostics.failures) ? diagnostics.failures : [diagnostics];
+  for (const failure of failures) {
+    request.log.warn({
+      requestId: request.id,
+      action,
+      operation: failure.operation ?? '云管配置校验',
+      method: failure.method ?? null,
+      path: failure.path ?? null,
+      httpStatus: failure.httpStatus ?? err.statusCode ?? null,
+      contentType: failure.contentType ?? null,
+      elapsedMs: failure.elapsedMs ?? null,
+      failureType: failure.failureType ?? (err.code === 'cloud_mapping_not_configured' ? 'mapping_validation' : 'configuration_error'),
+      upstreamCode: failure.upstreamCode ?? null,
+      errorCode: failure.errorCode ?? err.code ?? 'cloud_config_failed',
+      message: failure.message ?? err.message
+    }, '云管连接或字典校验失败');
+  }
+}
 function requireCorePermission(request, reply, permission, message) {
   // Auth-disabled application instances are used by internal protocol tests;
   // production requests always have a principal from Core auth middleware.
@@ -602,13 +622,19 @@ export function registerCoreRoutes(app, { store, cloud, gateConfig, keyring, age
       const config = request.body ?? {};
       const mappings = await cloud.resolveMappings(config);
       return reply.send({ item: store.saveCloudConfig(config, request.principal?.id, mappings) });
-    } catch (err) { return error(reply, err.code === 'cloud_not_configured' ? 503 : ['cloud_config_invalid', 'cloud_mapping_not_configured'].includes(err.code) ? 400 : 502, err.code ?? 'cloud_config_invalid', err.message); }
+    } catch (err) {
+      logCloudConfigFailure(request, err, 'save');
+      return error(reply, err.code === 'cloud_not_configured' ? 503 : ['cloud_config_invalid', 'cloud_mapping_not_configured'].includes(err.code) ? 400 : 502, err.code ?? 'cloud_config_invalid', err.message);
+    }
   });
 
   app.post('/api/v1/cloud/test', { bodyLimit: 8192 }, async (request, reply) => {
     if (requireCorePermission(request, reply, 'configRead', '需要平台配置查看权限')) return;
     try { return reply.send({ mappings: await cloud.resolveMappings(request.body && Object.keys(request.body).length ? request.body : store.getCloudConfig()) }); }
-    catch (err) { return error(reply, err.code === 'cloud_not_configured' ? 503 : 502, err.code ?? 'cloud_test_failed', err.message); }
+    catch (err) {
+      logCloudConfigFailure(request, err, 'test');
+      return error(reply, err.code === 'cloud_not_configured' ? 503 : 502, err.code ?? 'cloud_test_failed', err.message);
+    }
   });
 
   app.get('/api/v1/approval-requests', async (request, reply) => {

@@ -45,8 +45,12 @@ function configurationError(message) {
   return Object.assign(new Error(message), { code: 'cloud_mapping_not_configured' });
 }
 
-function cloudError(message, statusCode = undefined) {
-  return Object.assign(new Error(message), { code: 'cloud_api_error', ...(statusCode ? { statusCode } : {}) });
+function cloudError(message, statusCode = undefined, cloudDiagnostics = undefined) {
+  return Object.assign(new Error(message), {
+    code: 'cloud_api_error',
+    ...(statusCode ? { statusCode } : {}),
+    ...(cloudDiagnostics ? { cloudDiagnostics } : {})
+  });
 }
 
 function asId(value, field) {
@@ -104,7 +108,10 @@ function dictionaryItem(nodes, { label, value, path, field }) {
   });
   if (matches.length !== 1) {
     const description = path || label || value || '(empty)';
-    throw cloudError(`${field} mapping ${description} matched ${matches.length} leaf dictionary records`);
+    throw cloudError(`${field}“${description}”匹配到 ${matches.length} 条字典记录（应唯一匹配一条）`, undefined, {
+      operation: field,
+      failureType: 'mapping_validation'
+    });
   }
   return matches[0];
 }
@@ -117,7 +124,10 @@ function rowsFrom(data, keys) {
 function namedRow(rows, expectedName, field, { nameKeys, idKeys }) {
   const expected = normalized(expectedName);
   const matches = rows.filter((row) => nameKeys.some((key) => normalized(valueOf(row, [key])) === expected));
-  if (matches.length !== 1) throw cloudError(`${field} mapping ${expectedName} matched ${matches.length} records`);
+  if (matches.length !== 1) throw cloudError(`${field}“${expectedName}”匹配到 ${matches.length} 条记录（应唯一匹配一条）`, undefined, {
+    operation: field,
+    failureType: 'mapping_validation'
+  });
   const id = valueOf(matches[0], idKeys);
   return { id: asId(id, `${field}.id`), label: expectedName };
 }
@@ -189,11 +199,11 @@ function readConfig(env = process.env, overrides = undefined) {
   config.processUserNames = parseProcessorNames(config.processUserNames);
   config.legacyProcessUserIds = parseLegacyProcessorIds(config.legacyProcessUserIds);
   if (!config.processUserNames.length && !config.legacyProcessUserIds.length) throw configurationError('请填写云管审批处理人用户名');
-  if (!config.priorityLabel) throw configurationError('CAM_CLOUD_WORK_ORDER_PRIORITY_LABEL is required');
-  if (!config.sourceLabel) throw configurationError('CAM_CLOUD_WORK_ORDER_SOURCE_LABEL is required');
-  if (!config.businessTypePath) throw configurationError('CAM_CLOUD_WORK_ORDER_BUSINESS_TYPE_PATH is required');
-  if (!config.deptName) throw configurationError('CAM_CLOUD_WORK_ORDER_DEPT_NAME is required');
-  if (!config.teamName) throw configurationError('CAM_CLOUD_WORK_ORDER_TEAM_NAME is required');
+  if (!config.priorityLabel) throw configurationError('请填写工单级别');
+  if (!config.sourceLabel) throw configurationError('请填写工单来源');
+  if (!config.businessTypePath) throw configurationError('请填写完整的业务类型路径');
+  if (!config.deptName) throw configurationError('请填写部门/中心');
+  if (!config.teamName) throw configurationError('请填写处理团队');
   return config;
 }
 
@@ -251,12 +261,20 @@ export class CloudAdapter {
     };
   }
 
-  async request(path, { method = 'GET', query = undefined, body = undefined, formData = undefined } = {}) {
+  async request(path, { method = 'GET', query = undefined, body = undefined, formData = undefined, operation = path } = {}) {
     if (!this.enabled()) throw Object.assign(new Error('cloud adapter is not configured'), { code: 'cloud_not_configured' });
     const url = new URL(`${this.baseUrl}${path}`);
     for (const [key, value] of Object.entries(query ?? {})) if (value !== undefined && value !== null && text(value)) url.searchParams.set(key, text(value));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const startedAt = Date.now();
+    let httpStatus = null;
+    let contentType = null;
+    const safeMessage = (message) => {
+      let value = text(message).replace(/[\r\n\t]+/gu, ' ').slice(0, 300);
+      if (this.authSecret) value = value.replaceAll(this.authSecret, '[已隐藏]');
+      return value;
+    };
     try {
       const headers = {
         accept: 'application/json',
@@ -267,17 +285,54 @@ export class CloudAdapter {
       if (body !== undefined) headers['content-type'] = 'application/json';
       const requestBody = formData ?? (body === undefined ? undefined : JSON.stringify(body));
       const response = await this.fetch(url, { method, headers, body: requestBody, signal: controller.signal, ...(this.dispatcher ? { dispatcher: this.dispatcher } : {}) });
+      httpStatus = response.status;
+      contentType = response.headers.get('content-type') ?? null;
       const rawText = await response.text();
       let value;
-      try { value = rawText ? JSON.parse(rawText) : {}; } catch { throw cloudError(`cloud API returned non-JSON response (${response.status})`, response.status); }
-      if (!response.ok) throw cloudError(value?.msg ?? value?.message ?? value?.error ?? `cloud API returned ${response.status}`, response.status);
-      if (value && value.code !== undefined && String(value.code) !== '0') throw cloudError(value.msg ?? value.message ?? `cloud API returned business code ${value.code}`, response.status);
+      try { value = rawText ? JSON.parse(rawText) : {}; } catch {
+        throw cloudError(`云管返回非 JSON 响应（HTTP ${response.status}，${contentType ?? '未提供 Content-Type'}）`, response.status, { failureType: 'non_json_response' });
+      }
+      if (!response.ok) {
+        const upstreamMessage = safeMessage(value?.msg ?? value?.message ?? value?.error ?? '无错误说明');
+        throw cloudError(`云管 HTTP 请求失败（HTTP ${response.status}）：${upstreamMessage}`, response.status, {
+          failureType: 'http_error',
+          upstreamCode: value?.code === undefined ? null : String(value.code)
+        });
+      }
+      if (value && value.code !== undefined && String(value.code) !== '0') {
+        const upstreamMessage = safeMessage(value.msg ?? value.message ?? `业务 code ${value.code}`);
+        throw cloudError(`云管业务返回错误（code ${value.code}）：${upstreamMessage}`, response.status, {
+          failureType: 'business_error',
+          upstreamCode: String(value.code)
+        });
+      }
       return dataOf(value);
     } catch (error) {
-      if (error.code === 'cloud_api_error') throw error;
       const causeCode = error.cause?.code ?? error.code;
-      if (error.name === 'AbortError' || causeCode === 'UND_ERR_ABORTED') throw cloudError(`云管 API 请求超时（${url.host}）`);
-      if (causeCode) throw cloudError(`云管 API 连接失败（${url.host}）：${causeCode}`);
+      const failureType = error.cloudDiagnostics?.failureType
+        ?? (error.name === 'AbortError' || causeCode === 'UND_ERR_ABORTED' ? 'timeout' : causeCode ? 'network_error' : 'request_error');
+      let message = error.code === 'cloud_api_error'
+        ? safeMessage(error.message)
+        : error.name === 'AbortError' || causeCode === 'UND_ERR_ABORTED'
+          ? `云管 API 请求超时（${url.host}）`
+          : causeCode
+            ? `云管 API 连接失败（${url.host}）：${causeCode}`
+            : `云管 API 请求失败：${safeMessage(error.message)}`;
+      if (error.code !== 'cloud_api_error') error.code = 'cloud_api_error';
+      const diagnostics = {
+        operation,
+        method,
+        path: url.pathname,
+        httpStatus,
+        contentType,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        failureType,
+        upstreamCode: error.cloudDiagnostics?.upstreamCode ?? null,
+        errorCode: error.code,
+        message
+      };
+      error.cloudDiagnostics = { ...diagnostics, ...error.cloudDiagnostics, operation, method, path: url.pathname, httpStatus, contentType, elapsedMs: diagnostics.elapsedMs, errorCode: error.code, message };
+      error.message = `${operation}查询失败：${message}`;
       throw error;
     } finally { clearTimeout(timer); }
   }
@@ -285,22 +340,22 @@ export class CloudAdapter {
   async resolveMappings(overrides = undefined) {
     const config = readConfig(this.env, overrides);
     const [priorityData, sourceData, businessData, deptData, teamData] = await Promise.all([
-      this.request(EOMS_PATHS.priorities, { query: { dictType: 'demand_ticket' } }),
-      this.request(EOMS_PATHS.sources, { query: { dictType: 'work_order_source' } }),
-      this.request(EOMS_PATHS.businessTypes, { query: { orderType: 'demand_ticket' } }),
-      this.request(EOMS_PATHS.departments),
-      this.request(EOMS_PATHS.teams)
+      this.request(EOMS_PATHS.priorities, { query: { dictType: 'demand_ticket' }, operation: '工单级别字典' }),
+      this.request(EOMS_PATHS.sources, { query: { dictType: 'work_order_source' }, operation: '工单来源字典' }),
+      this.request(EOMS_PATHS.businessTypes, { query: { orderType: 'demand_ticket' }, operation: '业务类型字典' }),
+      this.request(EOMS_PATHS.departments, { operation: '部门/中心列表' }),
+      this.request(EOMS_PATHS.teams, { operation: '处理团队列表' })
     ]);
-    const priority = dictionaryItem(priorityData, { label: config.priorityLabel, field: 'priority' });
-    const source = dictionaryItem(sourceData, { label: config.sourceLabel, field: 'workOrderSource' });
-    const businessType = dictionaryItem(businessData, { path: config.businessTypePath, field: 'businessType' });
+    const priority = dictionaryItem(priorityData, { label: config.priorityLabel, field: '工单级别' });
+    const source = dictionaryItem(sourceData, { label: config.sourceLabel, field: '工单来源' });
+    const businessType = dictionaryItem(businessData, { path: config.businessTypePath, field: '业务类型路径' });
     const departments = rowsFrom(deptData, ['centerList', 'rows', 'list']);
     const teams = rowsFrom(teamData, ['rows', 'list']);
-    const dept = namedRow(departments, config.deptName, 'dept', {
+    const dept = namedRow(departments, config.deptName, '部门/中心', {
       nameKeys: ['deptName', 'departmentName', 'centerName', 'deptLabel', 'name', 'label'],
       idKeys: ['deptId', 'departmentId', 'id']
     });
-    const team = namedRow(teams, config.teamName, 'team', {
+    const team = namedRow(teams, config.teamName, '处理团队', {
       nameKeys: ['teamName', 'teamRoleName', 'name', 'label', 'roleName'],
       idKeys: ['teamId', 'id']
     });
@@ -312,7 +367,7 @@ export class CloudAdapter {
       // work-order department. A returned user's own deptId may name only their
       // primary department, so membership in this result is the authoritative
       // check for multi-department accounts.
-      const personsData = await this.request(EOMS_PATHS.responsiblePersons, { query: { deptId: dept.id, isAll: true, userType: true } });
+      const personsData = await this.request(EOMS_PATHS.responsiblePersons, { query: { deptId: dept.id, isAll: true, userType: true }, operation: '审批处理人列表' });
       persons = rowsFrom(personsData, ['rows', 'list', 'users', 'records', 'data']);
     }
     for (const value of config.processUserNames) {
